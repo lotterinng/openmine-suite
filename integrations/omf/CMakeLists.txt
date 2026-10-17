@@ -1,0 +1,7 @@
+find_package(ZLIB REQUIRED)
+find_package(nlohmann_json 3.10 REQUIRED)
+add_library(openmine_omf src/Omf.cpp src/OmfProject.cpp)
+add_library(OpenMine::omf ALIAS openmine_omf)
+target_include_directories(openmine_omf PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_link_libraries(openmine_omf PUBLIC openmine_core openmine_geology PRIVATE openmine_cad openmine_survey ZLIB::ZLIB nlohmann_json::nlohmann_json)
+openmine_set_warnings(openmine_omf)

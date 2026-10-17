@@ -46,6 +46,10 @@ struct PreparedDataset {
 /// Converts the file into an octree asset (worker thread). Nothing is added to the model.
 PreparedDataset prepareImport(Project& project, const std::filesystem::path& file, const ImportOptions& options,
                               jobs::Progress& progress = jobs::nullProgress());
+/// Builds a dataset from points already in project coordinates (e.g. points read from an
+/// exchange file) — worker thread. Nothing is added to the model.
+PreparedDataset prepareFromPoints(Project& project, const PointBuffer& points, const std::string& name, const std::string& sourceFile,
+                                  const std::string& sourceFormat, jobs::Progress& progress = jobs::nullProgress());
 /// Adds the asset and dataset (UI thread, one undo step). Returns the dataset id.
 Uuid commitDataset(Project& project, PreparedDataset prepared, const std::string& commandText = "Import point cloud");
 /// prepareImport + commitDataset.

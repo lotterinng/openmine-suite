@@ -17,9 +17,10 @@ add_executable(openmine_unit_tests
     unit/test_survey_processing.cpp
     unit/test_planning.cpp
     unit/test_geology.cpp
+    unit/test_omf.cpp
 )
 target_link_libraries(openmine_unit_tests PRIVATE
-    openmine_core openmine_scheduling openmine_mine_design openmine_cad openmine_formats openmine_survey openmine_planning openmine_geology SQLite::SQLite3 GTest::gtest_main)
+    openmine_core openmine_scheduling openmine_mine_design openmine_cad openmine_formats openmine_survey openmine_planning openmine_geology openmine_omf SQLite::SQLite3 GTest::gtest_main)
 gtest_discover_tests(openmine_unit_tests DISCOVERY_TIMEOUT 60)
 
 if(TARGET openmine_occt)
@@ -66,6 +67,14 @@ if(TARGET openmine_optimisation)
     add_executable(openmine_optimisation_tests unit/test_optimiser.cpp)
     target_link_libraries(openmine_optimisation_tests PRIVATE openmine_optimisation GTest::gtest_main)
     gtest_discover_tests(openmine_optimisation_tests DISCOVERY_TIMEOUT 60)
+endif()
+
+# OMF v1 validation against the GMG reference library (omf 1.0.x). Skipped by pytest if missing.
+add_executable(omf_tool tools/omf_tool.cpp)
+target_link_libraries(omf_tool PRIVATE openmine_omf openmine_geology openmine_survey nlohmann_json::nlohmann_json)
+if(Python3_EXECUTABLE)
+    add_test(NAME omf_reference_validation COMMAND ${Python3_EXECUTABLE} -m pytest -q ${CMAKE_CURRENT_SOURCE_DIR}/integration/test_omf.py)
+    set_tests_properties(omf_reference_validation PROPERTIES ENVIRONMENT "OPENMINE_OMF_TOOL=$<TARGET_FILE:omf_tool>" LABELS integration)
 endif()
 
 add_executable(report_tool tools/report_tool.cpp)

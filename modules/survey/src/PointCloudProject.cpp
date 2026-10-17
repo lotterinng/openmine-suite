@@ -158,6 +158,15 @@ PreparedDataset prepareImport(Project& p, const fs::path& file, const ImportOpti
     return out;
 }
 
+PreparedDataset prepareFromPoints(Project& p, const PointBuffer& points, const std::string& name, const std::string& sourceFile,
+                                  const std::string& sourceFormat, jobs::Progress& progress) {
+    BufferSource src(points);
+    auto out = prepareFromSource(p, src, name, OctreeBuildOptions{}, progress);
+    out.dataset.sourceFile = sourceFile;
+    out.dataset.sourceFormat = sourceFormat;
+    return out;
+}
+
 Uuid commitDataset(Project& p, PreparedDataset prepared, const std::string& text) {
     ProjectEditor ed(p);
     CommandStack::MacroScope macro(p.commands(), text);

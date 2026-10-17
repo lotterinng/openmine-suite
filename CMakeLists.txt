@@ -41,6 +41,7 @@ add_subdirectory(modules/reporting)
 add_subdirectory(modules/planning)
 add_subdirectory(modules/geology)
 add_subdirectory(integrations/file_formats)
+add_subdirectory(integrations/omf)
 
 option(OPENMINE_WITH_PROJ "Build the PROJ coordinate integration" ON)
 if(OPENMINE_WITH_PROJ)
