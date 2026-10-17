@@ -282,3 +282,34 @@ TEST(MineDesign, QuantitiesReport) {
     EXPECT_NEAR(rows[0].scheduledQuantity, 150, 1e-9);
     EXPECT_TRUE(rows[0].scheduleMatchesDesign);
 }
+
+TEST(Profiles, ExactAreasAndPerimetersFromBulgedOutlines) {
+    constexpr double pi = 3.14159265358979323846;
+    TunnelProfile p;
+    p.width = 5.5;
+    p.height = 5.5;
+    p.shape = ProfileShape::ShoulderArch;
+    p.shoulderRadius = 1.0;
+    EXPECT_NEAR(geometry::profileArea(p), 5.5 * 5.5 - 2 * (1 - pi / 4), 1e-12);
+    EXPECT_NEAR(geometry::profilePerimeter(p), 4 * 5.5 - 4 + pi, 1e-12);
+    EXPECT_NEAR(geometry::profilePerimeter(p, false), 3 * 5.5 - 4 + pi, 1e-12);
+    p.shape = ProfileShape::SemicircularArch;
+    p.width = 5;
+    p.height = 5;
+    EXPECT_NEAR(geometry::profileArea(p), 5 * 2.5 + pi * 2.5 * 2.5 / 2, 1e-12);
+    p.shape = ProfileShape::SegmentalArch;
+    p.archRise = 1.0; // chord 5, rise 1 → R = (6.25 + 1) / 2 = 3.625
+    const double R = 3.625, th = 2 * std::asin(2.5 / R);
+    EXPECT_NEAR(geometry::profileArea(p), 5 * 4 + R * R / 2 * (th - std::sin(th)), 1e-12);
+    p.shape = ProfileShape::Horseshoe;
+    p.wallBatter = 0.0;
+    EXPECT_NEAR(geometry::profileArea(p), 5 * 2.5 + pi * 2.5 * 2.5 / 2, 1e-12);
+    // The tessellated outline converges to the exact area from below.
+    p.shape = ProfileShape::ShoulderArch;
+    p.width = 5.5;
+    p.height = 5.5;
+    const double coarse = geometry::area(geometry::profileOutline(p, 4)), fine = geometry::area(geometry::profileOutline(p, 64));
+    EXPECT_LT(coarse, fine);
+    EXPECT_LT(fine, geometry::profileArea(p));
+    EXPECT_NEAR(fine, geometry::profileArea(p), 2e-4); // two quarter arcs, 64 chords each: 2·64·θ³/12 with θ = π/128
+}

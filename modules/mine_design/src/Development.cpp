@@ -37,6 +37,12 @@ geometry::Ring developmentProfile(const Project& p, const MineDevelopment& d) {
     return geometry::rectangleOutline(d.designWidth, d.designHeight);
 }
 
+geometry::ProfileCurve developmentProfileCurve(const Project& p, const MineDevelopment& d) {
+    if (const auto* prof = p.model().profiles.find(d.profileId)) return geometry::profileCurve(*prof);
+    const auto r = geometry::rectangleOutline(d.designWidth, d.designHeight);
+    return {r, std::vector<double>(r.size(), 0.0)};
+}
+
 MeshData excavationEnvelope(const Project& p, const MineDevelopment& d, geometry::SectionOrientation o) {
     return geometry::sweepProfile(centrelinePoints(p, d), developmentProfile(p, d), o);
 }

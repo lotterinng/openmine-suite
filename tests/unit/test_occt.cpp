@@ -35,3 +35,238 @@ TEST(Occt, RejectsInvalidInput) {
     EXPECT_FALSE(occt::sweepRectangularProfile(std::vector<Vec3>{{0, 0, 0}, {0, 0, 10}}, 5, 5).ok); // vertical
     EXPECT_FALSE(occt::sweepRectangularProfile(std::vector<Vec3>{{0, 0, 0}, {10, 0, 0}}, 0, 5).ok);
 }
+
+// ---- Solid kernel ---------------------------------------------------------------------------------
+#include "openmine/cad/Edit.h"
+#include "openmine/geometry/MeshOps.h"
+#include "openmine/geometry/Profile.h"
+#include "openmine/geometry/Sweep.h"
+#include "openmine/mine_design/Development.h"
+#include "openmine/occt/Solid.h"
+#include "openmine/occt/SolidObjects.h"
+#include "openmine/persistence/ProjectFile.h"
+#include "openmine/project/ProjectEditor.h"
+
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <numbers>
+
+namespace {
+constexpr double kPi = std::numbers::pi;
+std::filesystem::path tempDir() {
+    auto d = std::filesystem::temp_directory_path() / ("openmine_occt_" + Uuid::generate().toString());
+    std::filesystem::create_directories(d);
+    return d;
+}
+} // namespace
+
+TEST(OcctSolid, PrimitivesHaveExactProperties) {
+    const auto box = occt::makeBox({0, 0, 0}, {10, 20, 30});
+    const auto bi = occt::analyse(box);
+    EXPECT_TRUE(bi.valid);
+    EXPECT_TRUE(bi.closed);
+    EXPECT_NEAR(bi.volume, 6000, 1e-9);
+    EXPECT_NEAR(bi.area, 2 * (200 + 600 + 300), 1e-9);
+    EXPECT_EQ(bi.faces, 6);
+    EXPECT_EQ(bi.edges, 12);
+    EXPECT_EQ(bi.vertices, 8);
+    EXPECT_NEAR(bi.centreOfMass.z, 15, 1e-9);
+    EXPECT_NEAR(occt::analyse(occt::makeCylinder({0, 0, 0}, {0, 0, 1}, 2, 5)).volume, kPi * 4 * 5, 1e-9);
+    EXPECT_NEAR(occt::analyse(occt::makeSphere({1, 2, 3}, 3)).volume, 4.0 / 3.0 * kPi * 27, 1e-6);
+    EXPECT_NEAR(occt::analyse(occt::makeCone({0, 0, 0}, {0, 0, 1}, 3, 1, 6)).volume, kPi * 6 / 3 * (9 + 3 + 1), 1e-6);
+    EXPECT_THROW(occt::makeBox({0, 0, 0}, {0, 1, 1}), occt::SolidError);
+    EXPECT_THROW(occt::makeCylinder({0, 0, 0}, {0, 0, 1}, -1, 5), occt::SolidError);
+}
+
+TEST(OcctSolid, FacesFromCurvesExtrudeAndRevolve) {
+    // Rectangle 20 × 10 with a circular hole r = 2 → extrude 3 m.
+    const auto rect = cad::makeRectangle({0, 0, 0}, {20, 10, 0});
+    const auto hole = cad::makeCircle({10, 5, 0}, 2);
+    const auto face = occt::planarFace(rect, {&hole});
+    EXPECT_NEAR(occt::analyse(face).area, 200 - kPi * 4, 1e-9);
+    const auto prism = occt::extrude(face, {0, 0, 3});
+    EXPECT_NEAR(occt::analyse(prism).volume, 3 * (200 - kPi * 4), 1e-9);
+    // Stadium from a bulged polyline: two semicircles r = 1 and a 4 × 2 rectangle → area 8 + π.
+    auto stadium = cad::makePolyline({{0, 0, 0}, {4, 0, 0}, {4, 2, 0}, {0, 2, 0}}, true);
+    stadium.bulges = {0.0, 1.0, 0.0, 1.0};
+    EXPECT_NEAR(occt::analyse(occt::planarFace(stadium)).area, 8 + kPi, 1e-9);
+    // Revolve a 1 × 2 rectangle at radius 3..4 about Z → annulus volume π(16 − 9)·2.
+    const auto r = occt::planarFace(std::vector<Vec3>{{3, 0, 0}, {4, 0, 0}, {4, 0, 2}, {3, 0, 2}});
+    EXPECT_NEAR(occt::analyse(occt::revolve(r, {0, 0, 0}, {0, 0, 1}, 2 * kPi)).volume, kPi * 7 * 2, 1e-6);
+    EXPECT_THROW(occt::planarFace(cad::makeLine({0, 0, 0}, {1, 0, 0})), occt::SolidError);
+    EXPECT_THROW(occt::planarFace(std::vector<Vec3>{{0, 0, 0}, {1, 0, 0}, {1, 1, 1}, {0, 1, -1}}), occt::SolidError);
+}
+
+TEST(OcctSolid, SweepAlongDeclineArcAndCorners) {
+    TunnelProfile tp;
+    tp.shape = ProfileShape::ShoulderArch;
+    tp.width = 5.5;
+    tp.height = 5.5;
+    tp.shoulderRadius = 1.0;
+    const auto curve = geometry::profileCurve(tp); // exact: shoulders are true arcs
+    const auto& prof = curve.points;
+    const auto& bul = curve.bulges;
+    const double A = geometry::profileArea(tp);
+    EXPECT_NEAR(A, 5.5 * 5.5 - 2 * (1 - kPi / 4), 1e-12);
+    // Straight 1:7 decline: V = A × slope length.
+    const auto straight = cad::makeLine({0, 0, 0}, {140, 0, -20});
+    auto s = occt::sweepProfile(prof, bul, straight);
+    auto info = occt::analyse(s);
+    EXPECT_TRUE(info.valid);
+    EXPECT_NEAR(info.volume, A * std::hypot(140.0, 20.0), 1e-9 * A * 140);
+    // Horizontal plan arc (bulge): Pappus — the profile centroid is on the path (u = 0), so V = A × arc length.
+    auto bend = cad::makePolyline({{0, 0, 0}, {30, 30, 0}});
+    bend.bulges = {std::tan(kPi / 8), 0.0}; // 90° arc, radius 30
+    info = occt::analyse(occt::sweepProfile(prof, bul, bend));
+    EXPECT_TRUE(info.valid);
+    EXPECT_NEAR(info.volume, A * 30 * kPi / 2, 1e-4 * A * 47);
+    // Polyline with a 90° corner: right-corner sweep equals the core mitred envelope.
+    const auto corner = cad::makePolyline({{0, 0, 0}, {50, 0, 0}, {50, 40, 0}});
+    const auto polyProf = geometry::profileOutline(tp, 64);
+    info = occt::analyse(occt::sweepProfile(polyProf, corner, occt::SweepTransition::RightCorner));
+    const auto meshEnv = geometry::sweepProfile(corner.vertices, polyProf);
+    EXPECT_TRUE(info.valid);
+    EXPECT_NEAR(info.volume, geometry::meshSignedVolume(meshEnv), 1e-6 * info.volume);
+    EXPECT_THROW(occt::sweepProfile({{0, 0}, {1, 0}}, straight), occt::SolidError);
+}
+
+TEST(OcctSolid, LoftBooleansFilletOffset) {
+    const auto frustum = occt::loft({{{0, 0, 0}, {10, 0, 0}, {10, 10, 0}, {0, 10, 0}}, {{2.5, 2.5, 10}, {7.5, 2.5, 10}, {7.5, 7.5, 10}, {2.5, 7.5, 10}}}, true, true);
+    EXPECT_NEAR(occt::analyse(frustum).volume, 10.0 / 3 * (100 + 25 + 50), 1e-6);
+
+    const auto a = occt::makeBox({0, 0, 0}, {10, 10, 10});
+    const auto b = occt::makeBox({5, 5, 5}, {15, 15, 15});
+    EXPECT_NEAR(occt::analyse(occt::boolean(a, b, occt::BooleanOp::Union)).volume, 2000 - 125, 1e-6);
+    EXPECT_NEAR(occt::analyse(occt::boolean(a, b, occt::BooleanOp::Difference)).volume, 1000 - 125, 1e-6);
+    const auto common = occt::boolean(a, b, occt::BooleanOp::Intersection);
+    EXPECT_NEAR(occt::analyse(common).volume, 125, 1e-6);
+    EXPECT_EQ(occt::analyse(common).faces, 6); // coplanar faces merged
+    // Union of two touching boxes merges into one 6-face box.
+    const auto u = occt::boolean(a, occt::makeBox({10, 0, 0}, {20, 10, 10}), occt::BooleanOp::Union);
+    EXPECT_EQ(occt::analyse(u).faces, 6);
+    EXPECT_THROW(occt::boolean(a, occt::makeBox({20, 20, 20}, {30, 30, 30}), occt::BooleanOp::Intersection), occt::SolidError);
+
+    const double L = 10, r = 1;
+    const double filleted = L * L * L - 12 * (1 - kPi / 4) * r * r * (L - 2 * r) - 8 * (1 - kPi / 6) * r * r * r;
+    EXPECT_NEAR(occt::analyse(occt::filletAllEdges(a, r)).volume, filleted, 1e-4);
+    const double d = 1;
+    const double grown = L * L * L + 6 * L * L * d + 12 * (kPi / 4) * d * d * L + 4.0 / 3.0 * kPi * d * d * d;
+    EXPECT_NEAR(occt::analyse(occt::offsetSolid(a, d)).volume, grown, 1e-4);
+}
+
+TEST(OcctSolid, MeshConversionTessellationSections) {
+    const auto mesh = geometry::extrudeOutline(std::vector<Vec2>{{0, 0}, {10, 0}, {10, 4}, {0, 4}}, -5, 5);
+    const auto s = occt::fromMesh(mesh);
+    const auto info = occt::analyse(s);
+    EXPECT_TRUE(info.valid);
+    EXPECT_TRUE(info.closed);
+    EXPECT_EQ(info.solids, 1);
+    EXPECT_EQ(info.faces, 6);
+    EXPECT_NEAR(info.volume, 400, 1e-9);
+    // Open mesh → shell, not a solid.
+    MeshData open = mesh;
+    open.triangles.pop_back();
+    EXPECT_EQ(occt::analyse(occt::fromMesh(open)).solids, 0);
+
+    const auto cyl = occt::makeCylinder({0, 0, 0}, {0, 0, 1}, 2, 4);
+    const auto t = occt::tessellate(cyl, 0.001, 0.1);
+    EXPECT_TRUE(geometry::topology(t).watertight());
+    EXPECT_NEAR(geometry::meshSignedVolume(t), kPi * 16, 0.01 * kPi * 16); // positive: outward
+    const auto loops = occt::section(cyl, {0, 0, 2}, {0, 0, 1}, 1e-5);
+    ASSERT_EQ(loops.size(), 1u);
+    EXPECT_NEAR(geometry::length3d(loops[0]), 2 * kPi * 2, 1e-3);
+
+    const auto box2 = occt::makeBox({13, 0, 0}, {14, 1, 1});
+    const auto dist = occt::minimumDistance(occt::makeBox({0, 0, 0}, {10, 10, 10}), box2);
+    EXPECT_NEAR(dist.distance, 3, 1e-9);
+    EXPECT_EQ(occt::classify(cyl, {0, 0, 1}), occt::PointState::Inside);
+    EXPECT_EQ(occt::classify(cyl, {2, 0, 1}), occt::PointState::On);
+    EXPECT_EQ(occt::classify(cyl, {3, 0, 1}), occt::PointState::Outside);
+}
+
+TEST(OcctSolid, TransformsAndExchangeFormats) {
+    const auto box = occt::makeBox({0, 0, 0}, {2, 3, 4});
+    EXPECT_NEAR(occt::analyse(occt::transformed(box, Transform3::rotation({1, 1, 0}, 0.7))).volume, 24, 1e-9);
+    EXPECT_NEAR(occt::analyse(occt::transformed(box, Transform3::scaling(2.0))).volume, 192, 1e-9);
+    EXPECT_NEAR(occt::analyse(occt::transformed(box, Transform3::scaling({2, 1, 1}))).volume, 48, 1e-6);
+    EXPECT_NEAR(occt::analyse(occt::transformed(box, Transform3::mirror({0, 0, 0}, {1, 0, 0}))).volume, 24, 1e-6);
+
+    const auto again = occt::fromBrep(occt::toBrep(box));
+    EXPECT_NEAR(occt::analyse(again).volume, 24, 1e-12);
+    EXPECT_THROW(occt::fromBrep("garbage"), occt::SolidError);
+
+    const auto dir = tempDir();
+    const auto cyl = occt::makeCylinder({100, 200, -50}, {0, 0, 1}, 1.5, 3);
+    occt::writeStep({box, cyl}, (dir / "two.step").string());
+    {
+        std::ifstream in(dir / "two.step");
+        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        EXPECT_NE(text.find("SI_UNIT($,.METRE.)"), std::string::npos); // declared in metres, not millimetres
+    }
+    const auto step = occt::readStep((dir / "two.step").string());
+    double v = 0;
+    for (const auto& s : step) v += occt::analyse(s).volume;
+    EXPECT_NEAR(v, 24 + kPi * 2.25 * 3, 1e-6);
+    occt::writeIges({box}, (dir / "box.igs").string());
+    const auto iges = occt::readIges((dir / "box.igs").string());
+    ASSERT_FALSE(iges.empty());
+    EXPECT_NEAR(occt::analyse(iges[0]).area, 2 * (6 + 8 + 12), 1e-6);
+    {
+        std::ifstream in(dir / "box.igs");
+        const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        EXPECT_NE(text.find(",6,1HM,"), std::string::npos);  // unit flag 6 = metres
+        EXPECT_NE(text.find(",4.,"), std::string::npos);     // maximum coordinate 4 m, not 0.004
+    }
+    EXPECT_THROW(occt::readStep((dir / "missing.step").string()), occt::SolidError);
+    std::filesystem::remove_all(dir);
+}
+
+TEST(OcctSolid, ProjectSolidObjectsPersistAndUndo) {
+    const auto dir = tempDir();
+    auto pp = Project::createNew("Solids", Date::fromYmd(2026, 11, 2));
+    Project& p = *pp;
+    ProjectEditor ed(p);
+    const Uuid layer = ed.addLayer("Solids", 0x808080);
+    const Uuid a = occt::addSolidObject(p, occt::makeBox({0, 0, 0}, {10, 10, 10}), "A", layer);
+    const Uuid b = occt::addSolidObject(p, occt::makeBox({5, 0, 0}, {15, 10, 10}), "B", layer);
+    const std::size_t n = p.model().geometry.size();
+    const Uuid u = occt::booleanObjects(p, a, b, occt::BooleanOp::Union, true, "AB");
+    EXPECT_EQ(p.model().geometry.size(), n - 1);
+    EXPECT_NEAR(occt::analyse(occt::loadSolid(p, *p.model().geometry.find(u))).volume, 1500, 1e-6);
+    p.commands().undo(); // inputs back, union gone
+    EXPECT_EQ(p.model().geometry.size(), n);
+    EXPECT_FALSE(p.model().geometry.find(u));
+    p.commands().redo();
+    ASSERT_TRUE(p.model().geometry.find(u));
+
+    // Development excavation solid equals the core metrics (area × slope length) for a straight decline.
+    GeometryObject cl = cad::makeLine({0, 0, 0}, {100, 0, -12.5});
+    cl.layerId = layer;
+    const Uuid clId = ed.addGeometry(cl);
+    mine_design::NewDevelopment nd;
+    nd.headingId = "DEC01";
+    nd.profileId = p.model().profiles.all().front().id;
+    const Uuid dev = mine_design::createDevelopment(p, clId, nd);
+    const Uuid sol = occt::developmentSolid(p, dev, layer);
+    const auto metrics = mine_design::computeMetrics(p, *p.model().developments.find(dev));
+    EXPECT_NEAR(occt::analyse(occt::loadSolid(p, *p.model().geometry.find(sol))).volume, metrics.volume, 1e-6 * metrics.volume);
+    const auto sections = occt::sectionObject(p, sol, {50, 0, 0}, {1, 0, 0}, layer);
+    ASSERT_EQ(sections.size(), 1u);
+    EXPECT_TRUE(p.model().geometry.find(sections[0])->closed);
+
+    // Save, reload: the B-rep asset travels with the project.
+    const auto file = dir / "solids.openmine";
+    persistence::saveProject(p, file);
+    auto q = persistence::loadProject(file);
+    const auto* uq = q->model().geometry.find(u);
+    ASSERT_TRUE(uq);
+    EXPECT_NEAR(occt::analyse(occt::loadSolid(*q, *uq)).volume, 1500, 1e-6);
+    EXPECT_TRUE(persistence::checkProjectFile(file, true).ok);
+
+    // STEP export / import of project solids.
+    occt::exportSolids(*q, {u, sol}, dir / "out.step");
+    const auto imported = occt::importSolids(*q, dir / "out.step", layer);
+    EXPECT_EQ(imported.size(), 2u);
+    std::filesystem::remove_all(dir);
+}

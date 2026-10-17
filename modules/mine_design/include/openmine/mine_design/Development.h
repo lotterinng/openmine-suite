@@ -4,6 +4,7 @@
 // development quantities, and the geometry ↔ schedule link workflow
 // (detect change → flag → controlled recalculation).
 
+#include "openmine/geometry/Profile.h"
 #include "openmine/geometry/Sweep.h"
 #include "openmine/project/Project.h"
 
@@ -35,6 +36,8 @@ DevelopmentMetrics computeMetrics(const Project& p, const MineDevelopment& d);
 std::vector<Vec3> centrelinePoints(const Project& p, const MineDevelopment& d);
 /// Profile outline used for a development (assigned profile, else rectangle).
 geometry::Ring developmentProfile(const Project& p, const MineDevelopment& d);
+/// Exact profile (arcs as bulges) used for B-rep solids and exact areas.
+geometry::ProfileCurve developmentProfileCurve(const Project& p, const MineDevelopment& d);
 /// Watertight excavation envelope mesh.
 MeshData excavationEnvelope(const Project& p, const MineDevelopment& d,
                             geometry::SectionOrientation o = geometry::SectionOrientation::PerpendicularToAxis);

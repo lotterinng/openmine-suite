@@ -19,7 +19,7 @@ gtest_discover_tests(openmine_unit_tests DISCOVERY_TIMEOUT 60)
 
 if(TARGET openmine_occt)
     add_executable(openmine_occt_tests unit/test_occt.cpp)
-    target_link_libraries(openmine_occt_tests PRIVATE openmine_occt GTest::gtest_main)
+    target_link_libraries(openmine_occt_tests PRIVATE openmine_occt openmine_cad openmine_mine_design GTest::gtest_main)
     gtest_discover_tests(openmine_occt_tests DISCOVERY_TIMEOUT 60)
 endif()
 
