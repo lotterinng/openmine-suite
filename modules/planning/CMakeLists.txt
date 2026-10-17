@@ -1,0 +1,5 @@
+add_library(openmine_planning src/FourD.cpp)
+add_library(OpenMine::planning ALIAS openmine_planning)
+target_include_directories(openmine_planning PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_link_libraries(openmine_planning PUBLIC openmine_scheduling openmine_core PRIVATE openmine_mine_design)
+openmine_set_warnings(openmine_planning)
