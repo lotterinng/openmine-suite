@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <cstdio>
 #include <sstream>
 
 namespace openmine::survey {
@@ -305,6 +306,43 @@ ConformanceReport analyseAsBuilt(const Project& p, const Uuid& abId, const Uuid&
         }
     }
     return analyseConformance(cl, design, *g->mesh, o, progress);
+}
+
+AdvanceReconciliation reconcileAdvance(const Project& p, const Uuid& devId, const Uuid& actId, double face, const Date& date) {
+    const auto* d = p.model().developments.find(devId);
+    if (!d) throw PointCloudError("Development does not exist");
+    if (!p.model().activities.find(actId)) throw PointCloudError("Activity does not exist");
+    AdvanceReconciliation r;
+    r.previousFace = d->chainageFrom;
+    for (const auto* a : p.model().actualsForActivity(actId))
+        if (a->source == ActualSource::Survey && a->faceChainage && a->date < date && (!r.previousDate || a->date >= *r.previousDate)) {
+            r.previousDate = a->date;
+            r.previousFace = *a->faceChainage;
+        }
+    r.currentFace = face;
+    r.surveyedAdvance = face - r.previousFace;
+    for (const auto* a : p.model().actualsForActivity(actId))
+        if (a->source != ActualSource::Survey && a->date <= date && (!r.previousDate || a->date > *r.previousDate)) r.reportedAdvance += a->quantity;
+    r.correction = r.surveyedAdvance - r.reportedAdvance;
+    return r;
+}
+
+Uuid commitSurveyActual(Project& p, const AdvanceReconciliation& r, const Uuid& devId, const Uuid& actId, const Uuid& datasetId, const Date& date) {
+    ProductionActual a;
+    a.activityId = actId;
+    a.developmentId = devId;
+    a.date = date;
+    a.quantity = r.correction;
+    a.unit = "m";
+    a.source = ActualSource::Survey;
+    a.surveyDatasetId = datasetId;
+    a.faceChainage = r.currentFace;
+    char buf[200];
+    std::snprintf(buf, sizeof buf, "Survey reconciliation: surveyed advance %.2f m, reported %.2f m, correction %+.2f m", r.surveyedAdvance, r.reportedAdvance,
+                  r.correction);
+    a.note = buf;
+    a.enteredBy = p.userName();
+    return ProjectEditor(p).add(a, "Survey actual");
 }
 
 std::string conformanceCsv(const ConformanceReport& r) {

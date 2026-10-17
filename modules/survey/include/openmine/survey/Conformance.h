@@ -84,6 +84,22 @@ ConformanceReport analyseAsBuilt(const Project& project, const Uuid& asBuiltId, 
 /// Stores the per-station table (AnalysisResult) and the summary (DesignConformanceResult).
 Uuid commitConformance(Project& project, const Uuid& asBuiltId, const Uuid& developmentId, const ConformanceReport& report,
                        const ConformanceOptions& options);
+/// Face advance between surveys reconciled with reported (shift) actuals of the linked activity.
+struct AdvanceReconciliation {
+    double previousFace = 0;       ///< chainage of the previous survey (or the heading start)
+    std::optional<Date> previousDate;
+    double currentFace = 0;
+    double surveyedAdvance = 0;    ///< currentFace − previousFace
+    double reportedAdvance = 0;    ///< non-survey actuals after the previous survey up to the survey date
+    double correction = 0;         ///< surveyed − reported (what a survey actual must add)
+};
+AdvanceReconciliation reconcileAdvance(const Project& project, const Uuid& developmentId, const Uuid& activityId, double currentFaceChainage,
+                                       const Date& surveyDate);
+/// Stores the reconciliation as a survey-sourced ProductionActual carrying the face position and
+/// the correction quantity, so reported + survey actuals equal the surveyed advance (one undo step).
+Uuid commitSurveyActual(Project& project, const AdvanceReconciliation& r, const Uuid& developmentId, const Uuid& activityId,
+                        const Uuid& datasetId, const Date& surveyDate);
+
 /// CSV of the per-station table (chainage formatted as 1+234.500).
 std::string conformanceCsv(const ConformanceReport& report);
 

@@ -33,9 +33,9 @@ endif()
 
 # Layering (no cycles):  core  <-  modules/*  <-  integrations/*  <-  apps, scripting
 add_subdirectory(core)
+add_subdirectory(modules/cad)
 add_subdirectory(modules/scheduling)
 add_subdirectory(modules/mine_design)
-add_subdirectory(modules/cad)
 add_subdirectory(modules/survey)
 add_subdirectory(integrations/file_formats)
 

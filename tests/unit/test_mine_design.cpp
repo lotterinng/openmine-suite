@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+#include "openmine/cad/Edit.h"
 #include "openmine/geometry/Curves.h"
 #include "openmine/geometry/MeshOps.h"
 #include "openmine/geometry/Polyline.h"
@@ -12,6 +13,8 @@
 #include "openmine/scheduling/Cpm.h"
 
 #include <gtest/gtest.h>
+
+#include <set>
 
 #include <cmath>
 #include <numbers>
@@ -312,4 +315,160 @@ TEST(Profiles, ExactAreasAndPerimetersFromBulgedOutlines) {
     EXPECT_LT(coarse, fine);
     EXPECT_LT(fine, geometry::profileArea(p));
     EXPECT_NEAR(fine, geometry::profileArea(p), 2e-4); // two quarter arcs, 64 chords each: 2·64·θ³/12 with θ = π/128
+}
+
+// ---- Heading design tools -----------------------------------------------------------------------------
+#include "openmine/mine_design/Headings.h"
+
+TEST(Headings, GradientProfileRulesAndGrading) {
+    using namespace openmine::mine_design;
+    // 1:8 decline straight (−12.5 %), a 90° curve of radius 15 at −12.5 %, then a level stub.
+    std::vector<Vec3> v = {{0, 0, 0}, {80, 0, -10}, {95, 15, -10 - 0.125 * 15 * 3.14159265358979 / 2}, {95, 40, -10 - 0.125 * 15 * 3.14159265358979 / 2}};
+    std::vector<double> b = {0.0, std::tan(3.14159265358979 / 8), 0.0, 0.0};
+    const auto prof = gradientProfile(v, b);
+    ASSERT_EQ(prof.size(), 3u);
+    EXPECT_NEAR(prof[0].gradePercent, -12.5, 1e-12);
+    EXPECT_EQ(prof[0].oneIn(), "1 in 8.0");
+    EXPECT_NEAR(prof[1].radius, 15, 1e-9);
+    EXPECT_NEAR(prof[1].gradePercent, -12.5, 1e-6);
+    EXPECT_NEAR(prof[2].gradePercent, 0, 1e-12);
+    DesignRules r;
+    r.minRadius = 20;
+    r.maxGradeOnCurvesPercent = 10;
+    const auto viol = checkDesignRules(v, b, r);
+    std::set<std::string> kinds;
+    for (const auto& x : viol) kinds.insert(x.rule);
+    EXPECT_TRUE(kinds.count("Minimum curve radius"));
+    EXPECT_TRUE(kinds.count("Maximum grade on curves"));
+    EXPECT_TRUE(kinds.count("Grade change without vertical curve")); // −12.5 → 0
+    // Re-grade at 1:7 from RL 1000.
+    const auto g = applyGrade(v, b, 1000, -100.0 / 7);
+    const double planL = geometry::horizontalLengthBulged(v, b, false);
+    EXPECT_NEAR(g.back().z, 1000 - planL / 7, 1e-9);
+    const auto ge = gradeBetweenEnds(g, b);
+    EXPECT_NEAR(ge[1].z, g[1].z, 1e-9);
+}
+
+TEST(Headings, VerticalCurvesAreParabolicAndContinuous) {
+    using namespace openmine::mine_design;
+    const std::vector<Vec3> h = {{0, 0, 0}, {200, 0, 0}};
+    // −10 % to +2 % at chainage 100 with a 40 m vertical curve.
+    const std::vector<Vpi> vpis = {{0, 100, 0}, {100, 90, 40}, {200, 92, 0}};
+    EXPECT_NEAR(verticalElevation(vpis, 50), 95, 1e-12);
+    EXPECT_NEAR(verticalElevation(vpis, 150), 91, 1e-12);
+    // At the VPI, the curve is (g2 − g1)·L/8 above the tangent intersection.
+    EXPECT_NEAR(verticalElevation(vpis, 100), 90 + (0.02 + 0.10) * 40 / 8, 1e-12);
+    // Continuity at the curve ends.
+    EXPECT_NEAR(verticalElevation(vpis, 80), 92, 1e-12);
+    EXPECT_NEAR(verticalElevation(vpis, 120), 90.4, 1e-12);
+    const auto va = verticalAlignment(h, {}, vpis, 2.0);
+    EXPECT_NEAR(va.vertices.front().z, 100, 1e-12);
+    EXPECT_NEAR(va.vertices.back().z, 92, 1e-12);
+    EXPECT_GT(va.vertices.size(), 20u);
+    for (const auto& p : va.vertices) EXPECT_NEAR(p.z, verticalElevation(vpis, p.x), 1e-12);
+    EXPECT_THROW(verticalAlignment(h, {}, {{0, 100, 0}, {100, 90, 300}, {200, 92, 0}}), ValidationError); // overlaps the ends
+    // On an arc, splitting keeps the plan geometry exact.
+    const std::vector<Vec3> arc = {{0, 0, 0}, {20, 20, 0}};
+    const std::vector<double> ab = {std::tan(3.14159265358979 / 8), 0};
+    const double L = geometry::horizontalLengthBulged(arc, ab, false);
+    const auto va2 = verticalAlignment(arc, ab, {{0, 0, 0}, {L / 2, -2, 10}, {L, -1, 0}}, 1.0);
+    EXPECT_NEAR(geometry::horizontalLengthBulged(va2.vertices, va2.bulges, false), L, 1e-9);
+}
+
+TEST(Headings, CrosscutsOreDriveAccessDriveRamp) {
+    using namespace openmine::mine_design;
+    const std::vector<Vec3> drive = {{0, 0, -500}, {100, 0, -499}};
+    CrosscutSpec cs;
+    cs.interval = 25;
+    cs.firstChainage = 25;
+    cs.length = 20;
+    cs.side = Side::Both;
+    cs.startOffset = 2.5;
+    cs.gradePercent = 2;
+    const auto xcs = crosscutLayouts(drive, {}, cs);
+    ASSERT_EQ(xcs.size(), 8u); // 4 chainages × 2 sides
+    EXPECT_NEAR(xcs[0].vertices[0].y, -2.5, 1e-9); // right of +X travel is −Y
+    EXPECT_NEAR(xcs[0].vertices[1].y, -22.5, 1e-9);
+    EXPECT_NEAR(xcs[1].vertices[1].y, 22.5, 1e-9);
+    EXPECT_NEAR(xcs[0].vertices[1].z - xcs[0].vertices[0].z, 0.4, 1e-9);
+    EXPECT_THROW(crosscutLayouts(drive, {}, CrosscutSpec{{150}, 25, 10, 20, Side::Right, 90, 1, 0}), ValidationError);
+
+    // Ore drive 6 m into the footwall (right) of a contact, at +1 %.
+    const std::vector<Vec3> contact = {{0, 0, -500}, {50, 0, -500}, {100, 20, -500}};
+    OreDriveSpec od;
+    od.offset = 6;
+    od.side = Side::Right;
+    od.gradePercent = 1;
+    const auto ore = oreDriveLayout(contact, od);
+    EXPECT_NEAR(ore.vertices.front().y, -6, 1e-9);
+    EXPECT_NEAR(ore.vertices.back().z, -500 + 0.01 * ore.planLength, 1e-9);
+
+    // Access drive: from a decline stub heading east to a point north-east; arc then straight.
+    const Vec3 start{0, 0, -400}, target{60, 80, -405};
+    const auto acc = accessDriveLayout(start, 90, target, 20, 15);
+    ASSERT_EQ(acc.vertices.size(), 3u);
+    // The straight leaves the arc tangentially: direction at the tangent point equals Q → T.
+    const auto arc = geometry::bulgeArc(acc.vertices[0], acc.vertices[1], acc.bulges[0]);
+    ASSERT_TRUE(arc);
+    EXPECT_NEAR(arc->radius, 20, 1e-9);
+    const Vec2 radial = (xy(acc.vertices[1]) - arc->center).normalized();
+    const Vec2 out = (xy(acc.vertices[2]) - xy(acc.vertices[1])).normalized();
+    EXPECT_NEAR(dot(radial, out), 0, 1e-9);
+    // Constant grade end to end.
+    EXPECT_NEAR(acc.vertices.back().z, -405, 1e-12);
+    const auto prof = gradientProfile(acc.vertices, acc.bulges);
+    EXPECT_NEAR(prof[0].gradePercent, prof[1].gradePercent, 1e-9);
+    EXPECT_THROW(accessDriveLayout(start, 90, {0, 10, -400}, 20), ValidationError);   // inside the turning circle
+    EXPECT_THROW(accessDriveLayout(start, 90, {200, 0, -300}, 20), ValidationError);  // 50 % grade
+
+    // Ramp between levels reaches the target RL.
+    RampSpec rs;
+    rs.start = {0, 0, -400};
+    rs.targetElevation = -425;
+    rs.straightLength = 0; // spiral
+    const auto ramp = rampLayout(rs);
+    EXPECT_NEAR(ramp.vertices.back().z, -425, 1e-9);
+}
+
+TEST(Headings, ProjectCrosscutsAndLevels) {
+    using namespace openmine::mine_design;
+    auto pp = Project::createNew("H", Date::fromYmd(2026, 11, 2));
+    Project& p = *pp;
+    ProjectEditor ed(p);
+    const Uuid layer = ed.addLayer("Design", 0xFFFF00);
+    GeometryObject cl = cad::makeLine({0, 0, -675}, {200, 0, -674});
+    cl.layerId = layer;
+    NewDevelopment nd;
+    nd.headingId = "675_OD1";
+    nd.zone = "North";
+    nd.activityType = "Ore drive";
+    const Uuid od = createDevelopment(p, ed.addGeometry(cl), nd);
+    CrosscutSpec cs;
+    cs.interval = 50;
+    cs.firstChainage = 50;
+    cs.length = 15;
+    const std::size_t before = p.model().developments.size();
+    const auto xcs = createCrosscuts(p, od, cs, layer);
+    EXPECT_EQ(xcs.size(), 4u);
+    const auto* x1 = p.model().developments.find(xcs[0]);
+    EXPECT_EQ(x1->headingId, "675_OD1_XC01");
+    EXPECT_EQ(x1->activityType, "Crosscut");
+    EXPECT_EQ(x1->zone, "North");
+    p.commands().undo(); // one step removes all crosscuts and their centrelines
+    EXPECT_EQ(p.model().developments.size(), before);
+    p.commands().redo();
+    MineLevel l675;
+    l675.name = "675 Level";
+    l675.code = "675";
+    l675.elevation = -675;
+    const Uuid lid = ed.add(l675);
+    MineLevel l700;
+    l700.name = "700 Level";
+    l700.code = "700";
+    l700.elevation = -700;
+    ed.add(l700);
+    EXPECT_EQ(assignDevelopmentsToLevels(p, 5.0), 5);
+    EXPECT_EQ(p.model().developments.find(od)->levelId, lid);
+    EXPECT_EQ(p.model().developments.find(od)->level, "675");
+    EXPECT_EQ(assignDevelopmentsToLevels(p, 5.0), 0); // idempotent
 }

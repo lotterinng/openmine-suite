@@ -583,3 +583,41 @@ TEST(SurveyConformance, ProjectAsBuiltAndStoredResult) {
     EXPECT_EQ(nlohmann_json_count(a->payloadJson), 16u);
     fs::remove_all(dir);
 }
+
+TEST(SurveyConformance, AdvanceReconciliationWithShiftActuals) {
+    auto pp = Project::createNew("Adv", Date::fromYmd(2026, 11, 2));
+    Project& p = *pp;
+    ProjectEditor ed(p);
+    GeometryObject cl = cad::makeLine({0, 0, -100}, {100, 0, -100});
+    cl.layerId = ed.addLayer("D", 0xFFFFFF);
+    mine_design::NewDevelopment nd;
+    nd.headingId = "DEV1";
+    const Uuid dev = mine_design::createDevelopment(p, ed.addGeometry(cl), nd);
+    const Uuid act = mine_design::createLinkedActivity(p, dev, 4.0);
+    auto actual = [&](int day, double q) {
+        ProductionActual a;
+        a.activityId = act;
+        a.date = Date::fromYmd(2026, 11, day);
+        a.quantity = q;
+        ed.add(a);
+    };
+    actual(3, 10);
+    actual(4, 12);
+    auto r1 = reconcileAdvance(p, dev, act, 25.0, Date::fromYmd(2026, 11, 5));
+    EXPECT_DOUBLE_EQ(r1.previousFace, 0);
+    EXPECT_DOUBLE_EQ(r1.surveyedAdvance, 25);
+    EXPECT_DOUBLE_EQ(r1.reportedAdvance, 22);
+    EXPECT_DOUBLE_EQ(r1.correction, 3);
+    commitSurveyActual(p, r1, dev, act, {}, Date::fromYmd(2026, 11, 5));
+    actual(6, 14);
+    const auto r2 = reconcileAdvance(p, dev, act, 38.0, Date::fromYmd(2026, 11, 7));
+    ASSERT_TRUE(r2.previousDate);
+    EXPECT_DOUBLE_EQ(r2.previousFace, 25);
+    EXPECT_DOUBLE_EQ(r2.surveyedAdvance, 13);
+    EXPECT_DOUBLE_EQ(r2.reportedAdvance, 14);
+    EXPECT_DOUBLE_EQ(r2.correction, -1); // over-reported: a negative correcting actual with a note
+    EXPECT_NO_THROW(commitSurveyActual(p, r2, dev, act, {}, Date::fromYmd(2026, 11, 7)));
+    double total = 0;
+    for (const auto* a : p.model().actualsForActivity(act)) total += a->quantity;
+    EXPECT_DOUBLE_EQ(total, 38);
+}
