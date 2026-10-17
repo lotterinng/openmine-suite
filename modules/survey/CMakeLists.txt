@@ -17,6 +17,11 @@ add_library(openmine_survey
     src/TextFormats.cpp
     src/Octree.cpp
     src/PointCloudProject.cpp
+    src/KdTree.cpp
+    src/Processing.cpp
+    src/Registration.cpp
+    src/Meshing.cpp
+    src/Conformance.cpp
 )
 add_library(OpenMine::survey ALIAS openmine_survey)
 target_include_directories(openmine_survey PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)

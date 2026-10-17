@@ -13,6 +13,7 @@ add_executable(openmine_unit_tests
     unit/test_cad.cpp
     unit/test_dxf.cpp
     unit/test_survey_io.cpp
+    unit/test_survey_processing.cpp
 )
 target_link_libraries(openmine_unit_tests PRIVATE
     openmine_core openmine_scheduling openmine_mine_design openmine_cad openmine_formats openmine_survey SQLite::SQLite3 GTest::gtest_main)
