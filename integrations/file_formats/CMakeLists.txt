@@ -3,6 +3,7 @@ add_library(openmine_formats
     src/DxfReader.cpp
     src/DxfWriter.cpp
     src/DxfProject.cpp
+    src/MeshFormats.cpp
 )
 add_library(OpenMine::formats ALIAS openmine_formats)
 target_include_directories(openmine_formats PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)

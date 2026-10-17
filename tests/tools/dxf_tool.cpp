@@ -6,6 +6,8 @@
 #include "../support/DxfSample.h"
 #include "openmine/cad/Annotation.h"
 #include "openmine/formats/Dxf.h"
+#include "openmine/formats/MeshFormats.h"
+#include "openmine/geometry/Sweep.h"
 #include "openmine/geometry/Curves.h"
 #include "openmine/geometry/MeshOps.h"
 #include "openmine/objects/EnumNames.h"
@@ -80,6 +82,18 @@ int main(int argc, char** argv) {
             out["written"] = rep.written;
             out["warnings"] = rep.warnings;
             std::ofstream(argv[3]) << out.dump(2);
+            return 0;
+        }
+        if (cmd == "mesh-sample" && argc == 3) { // closed prism; prints its volume and area
+            const auto m = geometry::extrudeOutline(std::vector<Vec2>{{-25000.125, 2900000.5}, {-24990.0, 2900000.5}, {-24990.0, 2900010.25}, {-25000.125, 2900007.0}}, -812.3, -805.1);
+            formats::writeMesh(argv[2], m, "prism");
+            std::cout << json{{"volume", geometry::meshSignedVolume(m)}, {"area", geometry::meshArea(m)}, {"triangles", m.triangles.size()}}.dump() << "\n";
+            return 0;
+        }
+        if (cmd == "mesh-read" && argc == 3) {
+            const auto f = formats::readMesh(argv[2]);
+            std::cout << json{{"volume", geometry::meshSignedVolume(f.mesh)}, {"area", geometry::meshArea(f.mesh)}, {"triangles", f.mesh.triangles.size()},
+                              {"vertices", f.mesh.vertices.size()}, {"watertight", geometry::topology(f.mesh).watertight()}}.dump() << "\n";
             return 0;
         }
         if (cmd == "read" && (argc == 3 || argc == 4)) {
