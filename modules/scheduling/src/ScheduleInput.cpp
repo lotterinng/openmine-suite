@@ -106,6 +106,8 @@ ScheduleInput buildScheduleInput(const Project& project, const Scenario* scenari
                     if (auto v = parseDouble(value)) a.priority = static_cast<int>(*v);
                 } else if (field == "excluded") {
                     ia.excluded = value == "true" || value == "1";
+                } else if (field == "startNoEarlierThan") {
+                    if (auto t = DateTime::parse(value)) ia.releaseTime = toMinutes(*t);
                 } else if (field == "calendarId") {
                     if (auto id = Uuid::parse(value); id && m.calendars.contains(*id)) a.calendarId = *id;
                 }

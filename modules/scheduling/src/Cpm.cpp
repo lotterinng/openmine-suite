@@ -236,6 +236,7 @@ ScheduleResult calculateSchedule(const ScheduleInput& in) {
             }
             if (ia.a.constraint == ConstraintType::StartNoEarlierThan && ia.a.constraintDate)
                 logic = std::max(logic, toMinutes(*ia.a.constraintDate));
+            if (ia.releaseTime) logic = std::max(logic, *ia.releaseTime);
             if (ia.a.constraint == ConstraintType::MustStartOn && ia.a.constraintDate) {
                 const double mso = toMinutes(*ia.a.constraintDate);
                 if (logic > mso + kFloatTolMinutes)

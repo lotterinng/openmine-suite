@@ -30,6 +30,7 @@ struct InputActivity {
     std::optional<double> actualStart, actualFinish; ///< minutes
     std::vector<std::pair<Uuid, double>> resources;  ///< resource id, units
     bool excluded = false;
+    std::optional<double> releaseTime; ///< scenario "startNoEarlierThan" (minutes), e.g. an optimised sequence
 };
 
 struct InputResource {

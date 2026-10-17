@@ -533,7 +533,7 @@ template <> void ProjectEditor::validate(const Scenario& s) const {
     const auto& m = p_.model();
     require(!s.name.empty(), "Scenario name must not be empty");
     requireUnique(m.scenarios, s.id, s.name, [](const auto& x) { return x.name; }, "Scenario name");
-    static const std::set<std::string> activityFields{"rate", "durationHours", "priority", "excluded", "calendarId"};
+    static const std::set<std::string> activityFields{"rate", "durationHours", "priority", "excluded", "calendarId", "startNoEarlierThan"};
     static const std::set<std::string> resourceFields{"capacity", "productivityFactor"};
     for (const auto& o : s.overrides) {
         if (o.field == "areaLimit") {
@@ -541,7 +541,10 @@ template <> void ProjectEditor::validate(const Scenario& s) const {
             require(eq != std::string::npos && eq > 0, "Area limits are written as <work area>=<max concurrent activities>");
             continue;
         }
-        if (m.activities.contains(o.entityId)) require(activityFields.count(o.field) == 1, "Unsupported activity override '" + o.field + "'");
+        if (m.activities.contains(o.entityId)) {
+            require(activityFields.count(o.field) == 1, "Unsupported activity override '" + o.field + "'");
+            if (o.field == "startNoEarlierThan") require(DateTime::parse(o.value).has_value(), "startNoEarlierThan needs a date 'YYYY-MM-DD HH:MM'");
+        }
         else if (m.resources.contains(o.entityId)) require(resourceFields.count(o.field) == 1, "Unsupported resource override '" + o.field + "'");
         else fail("Scenario override refers to a missing activity or resource");
     }
