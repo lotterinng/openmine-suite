@@ -10,9 +10,10 @@ add_executable(openmine_unit_tests
     unit/test_persistence.cpp
     unit/test_scheduling.cpp
     unit/test_mine_design.cpp
+    unit/test_cad.cpp
 )
 target_link_libraries(openmine_unit_tests PRIVATE
-    openmine_core openmine_scheduling openmine_mine_design SQLite::SQLite3 GTest::gtest_main)
+    openmine_core openmine_scheduling openmine_mine_design openmine_cad SQLite::SQLite3 GTest::gtest_main)
 gtest_discover_tests(openmine_unit_tests DISCOVERY_TIMEOUT 60)
 
 if(TARGET openmine_occt)

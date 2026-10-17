@@ -35,6 +35,7 @@ endif()
 add_subdirectory(core)
 add_subdirectory(modules/scheduling)
 add_subdirectory(modules/mine_design)
+add_subdirectory(modules/cad)
 
 if(OPENMINE_WITH_OCCT)
     find_package(OpenCASCADE QUIET)
