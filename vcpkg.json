@@ -1,0 +1,14 @@
+{
+  "name": "openmine-suite",
+  "version-string": "0.1.0",
+  "description": "Open-source integrated mine survey, design and scheduling",
+  "license": "Apache-2.0",
+  "dependencies": [
+    "sqlite3",
+    { "name": "qtbase", "default-features": false, "features": ["widgets", "opengl", "gui"] },
+    { "name": "vtk", "default-features": false, "features": ["qt", "opengl"] },
+    { "name": "opencascade", "default-features": false },
+    "gtest",
+    "pybind11"
+  ]
+}

@@ -1,0 +1,61 @@
+cmake_minimum_required(VERSION 3.25)
+project(OpenMineSuite VERSION 0.1.0 DESCRIPTION "Open-source integrated mine survey, design and scheduling" LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON) # core is linked into the Python extension
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+option(OPENMINE_BUILD_APP     "Build the Qt desktop application"           ON)
+option(OPENMINE_BUILD_TESTS   "Build unit and integration tests"           ON)
+option(OPENMINE_BUILD_PYTHON  "Build the 'openmine' Python extension"      ON)
+option(OPENMINE_WITH_OCCT     "Use Open CASCADE for solid modelling"       ON)
+option(OPENMINE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"    OFF)
+
+function(openmine_set_warnings target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
+        if(OPENMINE_WARNINGS_AS_ERRORS)
+            target_compile_options(${target} PRIVATE /WX)
+        endif()
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor)
+        if(OPENMINE_WARNINGS_AS_ERRORS)
+            target_compile_options(${target} PRIVATE -Werror)
+        endif()
+    endif()
+endfunction()
+
+if(OPENMINE_BUILD_TESTS)
+    enable_testing()
+endif()
+
+# Layering (no cycles):  core  <-  modules/*  <-  integrations/*  <-  apps, scripting
+add_subdirectory(core)
+add_subdirectory(modules/scheduling)
+add_subdirectory(modules/mine_design)
+
+if(OPENMINE_WITH_OCCT)
+    find_package(OpenCASCADE QUIET)
+    if(OpenCASCADE_FOUND)
+        add_subdirectory(integrations/opencascade)
+    else()
+        message(WARNING "Open CASCADE not found: solid modelling features will be reported as unavailable")
+        set(OPENMINE_WITH_OCCT OFF)
+    endif()
+endif()
+
+if(OPENMINE_BUILD_APP)
+    add_subdirectory(apps/desktop)
+endif()
+
+if(OPENMINE_BUILD_PYTHON)
+    add_subdirectory(scripting/python)
+endif()
+
+if(OPENMINE_BUILD_TESTS)
+    add_subdirectory(tests)
+endif()
+
+message(STATUS "OpenMine: app=${OPENMINE_BUILD_APP} tests=${OPENMINE_BUILD_TESTS} python=${OPENMINE_BUILD_PYTHON} occt=${OPENMINE_WITH_OCCT}")

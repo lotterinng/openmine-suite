@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  linux-core:
+    name: Linux — core, modules, OCCT, Python (headless)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build libsqlite3-dev libgtest-dev \
+            libocct-modeling-algorithms-dev libocct-modeling-data-dev libocct-foundation-dev python3-dev python3-pip
+          python3 -m pip install --break-system-packages "pybind11>=2.13" pytest
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DOPENMINE_BUILD_APP=OFF -DOPENMINE_WARNINGS_AS_ERRORS=ON
+      - name: Build
+        run: cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  windows:
+    name: Windows — MSVC + vcpkg (full app)
+    runs-on: windows-2022
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Bootstrap vcpkg
+        run: |
+          git clone https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
+          & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
+      - name: Configure
+        run: cmake --preset windows-msvc -DOPENMINE_BUILD_PYTHON=OFF
+      - name: Build
+        run: cmake --build --preset windows-msvc
+      - name: Test (non-GUI)
+        run: ctest --preset windows-msvc -LE gui
+      - name: GUI smoke test
+        run: ctest --preset windows-msvc -L gui

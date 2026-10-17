@@ -1,0 +1,5 @@
+add_library(openmine_mine_design src/Development.cpp)
+add_library(OpenMine::mine_design ALIAS openmine_mine_design)
+target_include_directories(openmine_mine_design PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_link_libraries(openmine_mine_design PUBLIC openmine_core)
+openmine_set_warnings(openmine_mine_design)

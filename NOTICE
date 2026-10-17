@@ -1,0 +1,10 @@
+OpenMine Suite
+Copyright 2026 The OpenMine Suite contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+It uses third-party components under their own licences; see THIRD_PARTY_NOTICES.md
+and docs/licensing.md.
+
+OpenMine Suite is an independent implementation. It is not affiliated with, endorsed by,
+or derived from Maptek, Deswik, or their products. Product names are trademarks of their
+respective owners and are used only to describe interoperability goals.
