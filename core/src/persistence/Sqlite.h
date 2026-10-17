@@ -64,7 +64,12 @@ public:
     Stmt& bind(int i, bool v) { return bind(i, static_cast<std::int64_t>(v ? 1 : 0)); }
     Stmt& bindNull(int i) { check(sqlite3_bind_null(stmt_, i)); return *this; }
     Stmt& bindUuid(int i, const Uuid& id) { return id.isNil() ? bindNull(i) : bind(i, id.toString()); }
-    Stmt& bindBlob(int i, const void* data, int size) { check(sqlite3_bind_blob(stmt_, i, data, size, SQLITE_TRANSIENT)); return *this; }
+    Stmt& bindBlob(int i, const void* data, int size) {
+        // A null pointer would bind SQL NULL; an empty array must be an empty BLOB.
+        if (size == 0) check(sqlite3_bind_zeroblob(stmt_, i, 0));
+        else check(sqlite3_bind_blob(stmt_, i, data, size, SQLITE_TRANSIENT));
+        return *this;
+    }
 
     /// Returns true when a row is available.
     bool step() {

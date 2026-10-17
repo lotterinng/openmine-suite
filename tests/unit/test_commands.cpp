@@ -20,7 +20,7 @@ GeometryObject line(const Project& p, Vec3 a, Vec3 b) {
 TEST(Commands, NewProjectHasDefaults) {
     auto p = Project::createNew("Test", Date::fromYmd(2026, 11, 2));
     EXPECT_EQ(p->model().layers.size(), 2u);
-    EXPECT_EQ(p->model().calendars.size(), 2u);
+    EXPECT_EQ(p->model().calendars.size(), 3u);
     EXPECT_TRUE(p->model().calendars.contains(p->model().info.defaultCalendarId));
     EXPECT_FALSE(p->isModified());
 }

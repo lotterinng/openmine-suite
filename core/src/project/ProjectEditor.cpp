@@ -5,18 +5,95 @@
 
 #include <algorithm>
 #include <cmath>
-#include <functional>
 #include <set>
 
 namespace openmine {
 
 namespace {
-template <class T>
-std::unique_ptr<Command> setCmd(std::optional<T> before, std::optional<T> after, std::string text,
-                                std::optional<std::size_t> pos = std::nullopt) {
+template <class T> std::string displayName(const T& e) {
+    if constexpr (requires { e.headingId; }) {
+        if (!e.headingId.empty()) return e.headingId;
+    }
+    if constexpr (requires { e.holeId; }) {
+        if (!e.holeId.empty()) return e.holeId;
+    }
+    if constexpr (requires { e.name; }) {
+        if (!e.name.empty()) return e.name;
+    }
+    if constexpr (requires { e.key; }) return e.key;
+    return e.id.toString().substr(0, 8);
+}
+
+template <class T> std::unique_ptr<Command> setCmd(std::optional<T> before, std::optional<T> after, std::string text,
+                                                   std::optional<std::size_t> pos = std::nullopt) {
     return std::make_unique<SetEntityCommand<T>>(std::move(before), std::move(after), std::move(text), pos);
 }
-bool finite(double v) { return std::isfinite(v); }
+
+// ---- Defaults applied before validation on add/update ----------------------------------------
+template <class T> void normalize(const Project&, T&) {}
+
+void normalize(const Project& p, GeometryObject& g) {
+    if (g.name.empty()) g.name = std::string(toString(g.type)) + " " + std::to_string(p.model().geometry.size() + 1);
+    if (g.type == GeometryType::Circle) g.arc.endAngle = g.arc.startAngle + 2 * 3.14159265358979323846;
+}
+
+void normalize(const Project& p, ScheduleActivity& a) {
+    if (a.kind == ActivityKind::Milestone) {
+        a.durationHours = 0.0;
+        a.durationFromRate = false;
+        a.useCycleRate = false;
+    }
+    if (a.useCycleRate) a.durationFromRate = true;
+    if (a.sortOrder == 0) {
+        int maxOrder = 0;
+        for (const auto& x : p.model().activities.all()) maxOrder = std::max(maxOrder, x.sortOrder);
+        a.sortOrder = maxOrder + 10;
+    }
+}
+
+void normalize(const Project&, MineDevelopment& d) {
+    if (d.name.empty()) d.name = d.headingId;
+}
+
+void normalize(const Project&, ScheduleBaseline& b) {
+    if (b.capturedAt.empty()) b.capturedAt = utcTimestampNow();
+}
+
+void normalize(const Project& p, TransformationRecord& t) {
+    if (t.createdAt.empty()) t.createdAt = utcTimestampNow();
+    if (t.user.empty()) t.user = p.userName();
+}
+
+void normalize(const Project& p, AnalysisResult& a) {
+    if (a.createdAt.empty()) a.createdAt = utcTimestampNow();
+    if (a.user.empty()) a.user = p.userName();
+}
+
+void normalize(const Project&, Report& r) {
+    if (r.createdAt.empty()) r.createdAt = utcTimestampNow();
+}
+
+void normalize(const Project& p, DesignRevision& r) {
+    if (r.createdAt.empty()) r.createdAt = utcTimestampNow();
+    if (r.author.empty()) r.author = p.userName();
+    if (r.approved && r.approvedAt.empty()) {
+        r.approvedAt = utcTimestampNow();
+        if (r.approvedBy.empty()) r.approvedBy = p.userName();
+    }
+}
+
+void normalize(const Project&, AttributeDefinition& d) {
+    if (d.displayName.empty()) d.displayName = d.key;
+}
+
+void normalize(const Project& p, ProductionActual& a) {
+    if (a.enteredBy.empty()) a.enteredBy = p.userName();
+}
+
+void normalize(const Project&, Drillhole& h) {
+    std::sort(h.surveys.begin(), h.surveys.end(), [](auto& a, auto& b) { return a.depth < b.depth; });
+    std::sort(h.intervals.begin(), h.intervals.end(), [](auto& a, auto& b) { return a.from < b.from; });
+}
 } // namespace
 
 void ProjectEditor::stampNew(EntityMetadata& m) {
@@ -31,39 +108,72 @@ void ProjectEditor::stampModified(EntityMetadata& m) {
     ++m.revision;
 }
 
-// ---- Project ---------------------------------------------------------------
-void ProjectEditor::setProjectInfo(const ProjectInfo& info, const std::string& text) {
-    if (info.name.empty()) throw ValidationError("Project name must not be empty");
-    if (info.defaultCalendarId && !p_.model().calendars.contains(info.defaultCalendarId))
-        throw ValidationError("Default calendar does not exist");
-    ProjectInfo after = info;
-    after.id = p_.model().info.id;
-    stampModified(after.meta);
-    p_.commands().execute(std::make_unique<ProjectInfoCommand>(p_.model().info, after, text));
+const std::vector<std::string>& ProjectEditor::attributeEntityTypes() {
+    static const std::vector<std::string> v{"GeometryObject", "MineDevelopment", "Stope", "ScheduleActivity"};
+    return v;
 }
 
-// ---- Layers ----------------------------------------------------------------
+// ---- Generic operations ---------------------------------------------------------------------
+template <class T> Uuid ProjectEditor::add(T e, const std::string& text) {
+    auto& store = EntityTraits<T>::store(p_.mutableModel());
+    if (e.id.isNil()) e.id = Uuid::generate();
+    if (store.contains(e.id)) throw ValidationError(std::string("Duplicate ") + EntityTraits<T>::name + " id");
+    normalize(p_, e);
+    validate(e);
+    if constexpr (requires { e.meta; }) stampNew(e.meta);
+    const Uuid id = e.id;
+    const std::string label = text.empty() ? "Create " + displayName(e) : text;
+    p_.commands().execute(setCmd<T>(std::nullopt, std::move(e), label));
+    return id;
+}
+
+template <class T> void ProjectEditor::update(T e, const std::string& text) {
+    const auto& store = EntityTraits<T>::store(p_.model());
+    const T* old = store.find(e.id);
+    if (!old) throw ValidationError(std::string(EntityTraits<T>::name) + " does not exist");
+    normalize(p_, e);
+    validate(e);
+    if constexpr (requires { e.meta; }) {
+        e.meta.createdAt = old->meta.createdAt;
+        e.meta.revision = old->meta.revision;
+        stampModified(e.meta);
+    }
+    const std::string label = text.empty() ? "Edit " + displayName(e) : text;
+    p_.commands().execute(setCmd<T>(*old, std::move(e), label));
+}
+
+template <class T> void ProjectEditor::remove(const Uuid& id) { p_.commands().execute(removalCommand<T>(id)); }
+
+#define OPENMINE_INSTANTIATE_EDITOR(T, member, Kind)                                     \
+    template Uuid ProjectEditor::add<T>(T, const std::string&);                          \
+    template void ProjectEditor::update<T>(T, const std::string&);                       \
+    template void ProjectEditor::remove<T>(const Uuid&);
+OPENMINE_ENTITY_TYPES(OPENMINE_INSTANTIATE_EDITOR)
+#undef OPENMINE_INSTANTIATE_EDITOR
+
+// ---- Project ----------------------------------------------------------------------------------
+void ProjectEditor::setProjectInfo(const ProjectInfo& info, const std::string& text) {
+    const auto& m = p_.model();
+    if (info.name.empty()) throw ValidationError("Project name must not be empty");
+    if (info.defaultCalendarId && !m.calendars.contains(info.defaultCalendarId))
+        throw ValidationError("Default calendar does not exist");
+    if (info.projectCrsId && !m.crs.contains(info.projectCrsId)) throw ValidationError("Project CRS does not exist");
+    if (info.coordinateDisplayDecimals < 0 || info.coordinateDisplayDecimals > 6)
+        throw ValidationError("Coordinate display precision must be 0–6 decimals");
+    ProjectInfo after = info;
+    after.id = m.info.id;
+    after.meta.createdAt = m.info.meta.createdAt;
+    after.meta.revision = m.info.meta.revision;
+    stampModified(after.meta);
+    p_.commands().execute(std::make_unique<ProjectInfoCommand>(m.info, after, text));
+}
+
+// ---- Layers -----------------------------------------------------------------------------------
 Uuid ProjectEditor::addLayer(const std::string& name, std::uint32_t colorRgb) {
-    if (name.empty()) throw ValidationError("Layer name must not be empty");
-    if (findLayerByName(name)) throw ValidationError("Layer '" + name + "' already exists");
     CadLayer l;
-    l.id = Uuid::generate();
     l.name = name;
     l.colorRgb = colorRgb & 0xFFFFFF;
-    stampNew(l.meta);
-    p_.commands().execute(setCmd<CadLayer>(std::nullopt, l, "Create layer '" + name + "'"));
-    return l.id;
-}
-
-void ProjectEditor::updateLayer(const CadLayer& layer) {
-    const auto* old = p_.model().layers.find(layer.id);
-    if (!old) throw ValidationError("Layer does not exist");
-    if (layer.name.empty()) throw ValidationError("Layer name must not be empty");
-    if (const auto* other = findLayerByName(layer.name); other && other->id != layer.id)
-        throw ValidationError("Layer '" + layer.name + "' already exists");
-    CadLayer after = layer;
-    stampModified(after.meta);
-    p_.commands().execute(setCmd<CadLayer>(*old, after, "Edit layer '" + layer.name + "'"));
+    return add(l, "Create layer '" + name + "'");
 }
 
 const CadLayer* ProjectEditor::findLayerByName(const std::string& name) const {
@@ -72,278 +182,32 @@ const CadLayer* ProjectEditor::findLayerByName(const std::string& name) const {
     return nullptr;
 }
 
-// ---- Geometry ----------------------------------------------------------------
-void ProjectEditor::validateGeometry(const GeometryObject& g) const {
-    const auto* layer = p_.model().layers.find(g.layerId);
-    if (!layer) throw ValidationError("Geometry must be on an existing layer");
-    if (layer->locked) throw ValidationError("Layer '" + layer->name + "' is locked");
-    for (const auto& v : g.vertices)
-        if (!finite(v.x) || !finite(v.y) || !finite(v.z)) throw ValidationError("Vertex coordinates must be finite");
-    switch (g.type) {
-    case GeometryType::Point:
-        if (g.vertices.size() != 1) throw ValidationError("A point has exactly one vertex");
-        break;
-    case GeometryType::Line:
-        if (g.vertices.size() != 2) throw ValidationError("A line has exactly two vertices");
-        break;
-    case GeometryType::Polyline:
-        if (g.vertices.size() < 2) throw ValidationError("A polyline needs at least two vertices");
-        break;
-    }
-    auto errs = validateAttributes("GeometryObject", g.attributes);
-    if (!errs.empty()) throw ValidationError(errs.front());
-}
-
-Uuid ProjectEditor::addGeometry(GeometryObject g, const std::string& text) {
-    if (g.id.isNil()) g.id = Uuid::generate();
-    if (p_.model().geometry.contains(g.id)) throw ValidationError("Duplicate geometry id");
-    validateGeometry(g);
-    if (g.name.empty()) g.name = std::string(toString(g.type)) + " " + std::to_string(p_.model().geometry.size() + 1);
-    stampNew(g.meta);
-    const Uuid id = g.id;
-    p_.commands().execute(setCmd<GeometryObject>(std::nullopt, g, text.empty() ? "Create " + g.name : text));
-    return id;
-}
-
-void ProjectEditor::updateGeometry(GeometryObject g, const std::string& text) {
-    const auto* old = p_.model().geometry.find(g.id);
-    if (!old) throw ValidationError("Geometry does not exist");
-    validateGeometry(g);
-    stampModified(g.meta);
-    p_.commands().execute(setCmd<GeometryObject>(*old, g, text.empty() ? "Edit " + g.name : text));
-}
-
-void ProjectEditor::removeGeometry(const Uuid& id) {
-    const auto* old = p_.model().geometry.find(id);
-    if (!old) throw ValidationError("Geometry does not exist");
-    // Deletion policy: RESTRICT while a mine design object references the geometry.
-    if (!p_.model().developmentsUsingGeometry(id).empty())
-        throw ValidationError("'" + old->name + "' is the centreline of a development heading; delete the heading first");
-    p_.commands().execute(setCmd<GeometryObject>(*old, std::nullopt, "Delete " + old->name,
-                                                 p_.model().geometry.positionOf(id)));
-}
-
-// ---- Mine design ---------------------------------------------------------------
-void ProjectEditor::validateDevelopment(const MineDevelopment& d) const {
-    if (d.headingId.empty()) throw ValidationError("Heading ID must not be empty");
-    const auto* g = p_.model().geometry.find(d.geometryId);
-    if (!g) throw ValidationError("Development must reference existing centreline geometry");
-    if (g->type == GeometryType::Point) throw ValidationError("A development centreline cannot be a point");
-    if (!(d.designWidth > 0) || !(d.designHeight > 0) || !finite(d.designWidth) || !finite(d.designHeight))
-        throw ValidationError("Design width and height must be positive");
-    if (!finite(d.chainageFrom)) throw ValidationError("Chainage must be finite");
-    for (const auto& other : p_.model().developments.all()) {
-        if (other.id == d.id) continue;
-        if (other.headingId == d.headingId) throw ValidationError("Heading ID '" + d.headingId + "' is already used");
-        if (other.geometryId == d.geometryId)
-            throw ValidationError("That geometry is already the centreline of heading '" + other.headingId + "'");
-    }
-    auto errs = validateAttributes("MineDevelopment", d.attributes);
-    if (!errs.empty()) throw ValidationError(errs.front());
-}
-
-Uuid ProjectEditor::addDevelopment(MineDevelopment d) {
-    if (d.id.isNil()) d.id = Uuid::generate();
-    if (d.name.empty()) d.name = d.headingId;
-    validateDevelopment(d);
-    stampNew(d.meta);
-    const Uuid id = d.id;
-    p_.commands().execute(setCmd<MineDevelopment>(std::nullopt, d, "Create heading " + d.headingId));
-    return id;
-}
-
-void ProjectEditor::updateDevelopment(MineDevelopment d, const std::string& text) {
-    const auto* old = p_.model().developments.find(d.id);
-    if (!old) throw ValidationError("Development does not exist");
-    validateDevelopment(d);
-    stampModified(d.meta);
-    p_.commands().execute(setCmd<MineDevelopment>(*old, d, text.empty() ? "Edit heading " + d.headingId : text));
-}
-
-void ProjectEditor::removeDevelopment(const Uuid& id) {
-    const auto* old = p_.model().developments.find(id);
-    if (!old) throw ValidationError("Development does not exist");
-    auto macro = std::make_unique<MacroCommand>("Delete heading " + old->headingId);
-    // Deletion policy: links CASCADE; activities themselves are kept.
-    for (const auto& a : p_.model().activitiesForDevelopment(id))
-        macro->add(std::make_unique<DesignLinkCommand>(ActivityDesignLink{a, id}, false));
-    macro->add(setCmd<MineDevelopment>(*old, std::nullopt, "Delete heading " + old->headingId,
-                                       p_.model().developments.positionOf(id)));
-    p_.commands().execute(std::move(macro));
-}
-
-// ---- Calendars -------------------------------------------------------------------
-Uuid ProjectEditor::addCalendar(WorkCalendar c) {
-    if (c.id.isNil()) c.id = Uuid::generate();
-    if (c.name.empty()) throw ValidationError("Calendar name must not be empty");
-    if ((c.workingWeekdays & 0x7F) == 0) throw ValidationError("A calendar needs at least one working weekday");
-    stampNew(c.meta);
-    const Uuid id = c.id;
-    p_.commands().execute(setCmd<WorkCalendar>(std::nullopt, c, "Create calendar '" + c.name + "'"));
-    return id;
-}
-
-void ProjectEditor::updateCalendar(WorkCalendar c) {
-    const auto* old = p_.model().calendars.find(c.id);
-    if (!old) throw ValidationError("Calendar does not exist");
-    if ((c.workingWeekdays & 0x7F) == 0) throw ValidationError("A calendar needs at least one working weekday");
-    stampModified(c.meta);
-    p_.commands().execute(setCmd<WorkCalendar>(*old, c, "Edit calendar '" + c.name + "'"));
-}
-
-// ---- Scheduling --------------------------------------------------------------------
-void ProjectEditor::validateActivity(const ScheduleActivity& a) const {
-    if (a.name.empty()) throw ValidationError("Activity name must not be empty");
-    if (!finite(a.durationDays) || a.durationDays < 0) throw ValidationError("Duration must be zero or positive");
-    if (!finite(a.quantity) || a.quantity < 0) throw ValidationError("Quantity must be zero or positive");
-    if (!finite(a.actualQuantity) || a.actualQuantity < 0) throw ValidationError("Actual quantity must be zero or positive");
-    if (a.durationFromRate && (!finite(a.ratePerDay) || a.ratePerDay <= 0))
-        throw ValidationError("A rate-driven activity needs a production rate greater than zero");
-    if (a.calendarId && !p_.model().calendars.contains(a.calendarId)) throw ValidationError("Calendar does not exist");
-    if (a.parentId) {
-        if (a.parentId == a.id) throw ValidationError("An activity cannot be its own parent");
-        const auto* parent = p_.model().activities.find(a.parentId);
-        if (!parent || parent->kind != ActivityKind::Summary)
-            throw ValidationError("WBS parent must be an existing summary activity");
-        // Guard against WBS cycles.
-        Uuid cur = parent->parentId;
-        while (cur) {
-            if (cur == a.id) throw ValidationError("WBS hierarchy would contain a cycle");
-            const auto* x = p_.model().activities.find(cur);
-            cur = x ? x->parentId : Uuid{};
-        }
-    }
-}
-
-Uuid ProjectEditor::addActivity(ScheduleActivity a) {
-    if (a.id.isNil()) a.id = Uuid::generate();
-    if (a.kind == ActivityKind::Milestone) {
-        a.durationDays = 0.0;
-        a.durationFromRate = false;
-    }
-    validateActivity(a);
-    if (a.sortOrder == 0) {
-        int maxOrder = 0;
-        for (const auto& x : p_.model().activities.all()) maxOrder = std::max(maxOrder, x.sortOrder);
-        a.sortOrder = maxOrder + 10;
-    }
-    stampNew(a.meta);
-    const Uuid id = a.id;
-    p_.commands().execute(setCmd<ScheduleActivity>(std::nullopt, a, "Create activity '" + a.name + "'"));
-    return id;
-}
-
-void ProjectEditor::updateActivity(ScheduleActivity a, const std::string& text) {
-    const auto* old = p_.model().activities.find(a.id);
-    if (!old) throw ValidationError("Activity does not exist");
-    if (a.kind == ActivityKind::Milestone) {
-        a.durationDays = 0.0;
-        a.durationFromRate = false;
-    }
-    validateActivity(a);
-    if (old->kind == ActivityKind::Summary && a.kind != ActivityKind::Summary)
-        for (const auto& x : p_.model().activities.all())
-            if (x.parentId == a.id) throw ValidationError("Activity has WBS children and must remain a summary");
-    stampModified(a.meta);
-    p_.commands().execute(setCmd<ScheduleActivity>(*old, a, text.empty() ? "Edit activity '" + a.name + "'" : text));
-}
-
-void ProjectEditor::removeActivity(const Uuid& id) {
-    const auto* old = p_.model().activities.find(id);
-    if (!old) throw ValidationError("Activity does not exist");
-    for (const auto& x : p_.model().activities.all())
-        if (x.parentId == id) throw ValidationError("Delete or move the WBS children of '" + old->name + "' first");
-    auto macro = std::make_unique<MacroCommand>("Delete activity '" + old->name + "'");
-    for (const auto& d : p_.model().dependencies.all())
-        if (d.predecessorId == id || d.successorId == id)
-            macro->add(setCmd<ActivityDependency>(d, std::nullopt, "Delete dependency", p_.model().dependencies.positionOf(d.id)));
-    for (const auto& dev : p_.model().developmentsForActivity(id))
-        macro->add(std::make_unique<DesignLinkCommand>(ActivityDesignLink{id, dev}, false));
-    macro->add(setCmd<ScheduleActivity>(*old, std::nullopt, "Delete activity '" + old->name + "'",
-                                        p_.model().activities.positionOf(id)));
-    p_.commands().execute(std::move(macro));
-}
-
-Uuid ProjectEditor::addDependency(ActivityDependency d) {
+// ---- Links ------------------------------------------------------------------------------------
+void ProjectEditor::linkActivityToDesign(const Uuid& activityId, const Uuid& designId) {
     const auto& m = p_.model();
-    const auto* pred = m.activities.find(d.predecessorId);
-    const auto* succ = m.activities.find(d.successorId);
-    if (!pred || !succ) throw ValidationError("Both activities of a dependency must exist");
-    if (d.predecessorId == d.successorId) throw ValidationError("An activity cannot depend on itself");
-    if (pred->kind == ActivityKind::Summary || succ->kind == ActivityKind::Summary)
-        throw ValidationError("Dependencies on summary (WBS) activities are not supported yet");
-    if (!finite(d.lagDays)) throw ValidationError("Lag must be finite");
-    for (const auto& e : m.dependencies.all())
-        if (e.predecessorId == d.predecessorId && e.successorId == d.successorId)
-            throw ValidationError("A dependency between these activities already exists");
-    // Reject if successor already reaches predecessor (would close a cycle).
-    std::set<Uuid> seen;
-    std::function<bool(const Uuid&)> reaches = [&](const Uuid& from) {
-        if (from == d.predecessorId) return true;
-        if (!seen.insert(from).second) return false;
-        for (const auto& e : m.dependencies.all())
-            if (e.predecessorId == from && reaches(e.successorId)) return true;
-        return false;
-    };
-    if (reaches(d.successorId)) throw ValidationError("Dependency would create a circular logic loop");
-    if (d.id.isNil()) d.id = Uuid::generate();
-    stampNew(d.meta);
-    const Uuid id = d.id;
-    p_.commands().execute(setCmd<ActivityDependency>(std::nullopt, d,
-        std::string("Add ") + toString(d.type) + " dependency '" + pred->name + "' → '" + succ->name + "'"));
-    return id;
+    const auto* a = m.activities.find(activityId);
+    if (!a) throw ValidationError("Activity does not exist");
+    if (a->kind == ActivityKind::Summary) throw ValidationError("Link design objects to task activities, not WBS summaries");
+    std::string type;
+    if (m.developments.contains(designId)) type = "MineDevelopment";
+    else if (m.stopes.contains(designId)) type = "Stope";
+    else if (m.miningBlocks.contains(designId)) type = "MiningBlock";
+    else throw ValidationError("Design object does not exist");
+    for (const auto& l : m.designLinks)
+        if (l.activityId == activityId && l.designId == designId) throw ValidationError("Already linked");
+    p_.commands().execute(std::make_unique<DesignLinkCommand>(ActivityDesignLink{activityId, designId, type}, true));
 }
 
-void ProjectEditor::removeDependency(const Uuid& id) {
-    const auto* old = p_.model().dependencies.find(id);
-    if (!old) throw ValidationError("Dependency does not exist");
-    p_.commands().execute(setCmd<ActivityDependency>(*old, std::nullopt, "Delete dependency",
-                                                     p_.model().dependencies.positionOf(id)));
+void ProjectEditor::unlinkActivityFromDesign(const Uuid& activityId, const Uuid& designId) {
+    for (const auto& l : p_.model().designLinks)
+        if (l.activityId == activityId && l.designId == designId) {
+            p_.commands().execute(std::make_unique<DesignLinkCommand>(l, false));
+            return;
+        }
+    throw ValidationError("Not linked");
 }
 
-void ProjectEditor::linkActivityToDevelopment(const Uuid& activityId, const Uuid& developmentId) {
-    if (!p_.model().activities.contains(activityId)) throw ValidationError("Activity does not exist");
-    if (!p_.model().developments.contains(developmentId)) throw ValidationError("Development does not exist");
-    const ActivityDesignLink link{activityId, developmentId};
-    const auto& links = p_.model().designLinks;
-    if (std::find(links.begin(), links.end(), link) != links.end()) throw ValidationError("Already linked");
-    p_.commands().execute(std::make_unique<DesignLinkCommand>(link, true));
-}
-
-void ProjectEditor::unlinkActivityFromDevelopment(const Uuid& activityId, const Uuid& developmentId) {
-    const ActivityDesignLink link{activityId, developmentId};
-    const auto& links = p_.model().designLinks;
-    if (std::find(links.begin(), links.end(), link) == links.end()) throw ValidationError("Not linked");
-    p_.commands().execute(std::make_unique<DesignLinkCommand>(link, false));
-}
-
-void ProjectEditor::addBaseline(ScheduleBaseline b) {
-    if (b.name.empty()) throw ValidationError("Baseline name must not be empty");
-    for (const auto& x : p_.model().baselines)
-        if (x.name == b.name) throw ValidationError("A baseline named '" + b.name + "' already exists");
-    if (b.id.isNil()) b.id = Uuid::generate();
-    if (b.capturedAt.empty()) b.capturedAt = utcTimestampNow();
-    p_.commands().execute(std::make_unique<AddBaselineCommand>(std::move(b)));
-}
-
-// ---- Attribute schema ------------------------------------------------------------
-Uuid ProjectEditor::addAttributeDefinition(AttributeDefinition def) {
-    if (def.entityType != "GeometryObject" && def.entityType != "MineDevelopment")
-        throw ValidationError("Custom attributes are supported on GeometryObject and MineDevelopment");
-    if (!isValidAttributeKey(def.key)) throw ValidationError("Invalid attribute key '" + def.key + "'");
-    for (const auto& d : p_.model().attributeDefinitions.all())
-        if (d.entityType == def.entityType && d.key == def.key) throw ValidationError("Attribute '" + def.key + "' already defined");
-    if (def.displayName.empty()) def.displayName = def.key;
-    if (!def.defaultValue.empty()) {
-        auto err = validateAttributeValue(def, def.defaultValue);
-        if (!err.empty()) throw ValidationError("Default value: " + err);
-    }
-    if (def.id.isNil()) def.id = Uuid::generate();
-    const Uuid id = def.id;
-    p_.commands().execute(setCmd<AttributeDefinition>(std::nullopt, def, "Define attribute '" + def.key + "'"));
-    return id;
-}
-
+// ---- Attributes -------------------------------------------------------------------------------
 std::vector<std::string> ProjectEditor::validateAttributes(const std::string& entityType, const AttributeMap& attrs) const {
     std::vector<std::string> errors;
     for (const auto& def : p_.model().attributeDefinitions.all()) {
@@ -360,6 +224,368 @@ std::vector<std::string> ProjectEditor::validateAttributes(const std::string& en
         if (!known) errors.push_back("Attribute '" + key + "' is not defined in the project schema");
     }
     return errors;
+}
+
+// ======================================================================================================
+// Deletion policies. Each builds one MacroCommand (one undo step). Policies are documented in
+// docs/architecture/database-schema.md and mirrored by SQL foreign keys.
+// ======================================================================================================
+namespace {
+class RemovalBuilder {
+public:
+    RemovalBuilder(const Project& p, std::string text) : p_(p), macro_(std::make_unique<MacroCommand>(std::move(text))) {}
+
+    template <class T> void erase(const T& e) {
+        if (!erased_.insert(e.id).second) return;
+        const auto& store = EntityTraits<T>::store(p_.model());
+        macro_->add(setCmd<T>(e, std::nullopt, "Delete " + displayName(e), store.positionOf(e.id)));
+    }
+    /// Replaces an entity with a modified copy (set-null cascades).
+    template <class T, class F> void modify(const T& e, F&& f) {
+        T copy = e;
+        f(copy);
+        ProjectEditor::stampModified(copy.meta);
+        macro_->add(setCmd<T>(e, copy, "Update " + displayName(e)));
+    }
+    void unlink(const ActivityDesignLink& l) { macro_->add(std::make_unique<DesignLinkCommand>(l, false)); }
+    void unlinkAllFor(const Uuid& id) {
+        for (const auto& l : p_.model().designLinks)
+            if (l.activityId == id || l.designId == id) unlink(l);
+    }
+    std::unique_ptr<Command> take() { return std::move(macro_); }
+
+private:
+    const Project& p_;
+    std::unique_ptr<MacroCommand> macro_;
+    std::set<Uuid> erased_;
+};
+
+template <class T> const T& requireExisting(const Project& p, const Uuid& id) {
+    const auto* e = EntityTraits<T>::store(p.model()).find(id);
+    if (!e) throw ValidationError(std::string(EntityTraits<T>::name) + " does not exist");
+    return *e;
+}
+
+[[noreturn]] void restrict(const std::string& m) { throw ValidationError(m); }
+
+template <class T> std::unique_ptr<Command> simpleRemoval(const Project& p, const Uuid& id) {
+    const auto& e = requireExisting<T>(p, id);
+    RemovalBuilder b(p, "Delete " + displayName(e));
+    b.erase(e);
+    return b.take();
+}
+
+void requireAssetUnreferenced(const Project& p, const Uuid& id) {
+    const auto refs = p.model().referencedAssets();
+    if (std::binary_search(refs.begin(), refs.end(), id)) restrict("The asset is still used by a project object");
+}
+} // namespace
+
+#define OPENMINE_SIMPLE_REMOVAL(T)                                                                    \
+    template <> std::unique_ptr<Command> ProjectEditor::removalCommand<T>(const Uuid& id) const {   \
+        return simpleRemoval<T>(p_, id);                                                             \
+    }
+OPENMINE_SIMPLE_REMOVAL(Attachment)
+OPENMINE_SIMPLE_REMOVAL(Report)
+OPENMINE_SIMPLE_REMOVAL(ActivityDependency)
+OPENMINE_SIMPLE_REMOVAL(ActivityResourceAssignment)
+OPENMINE_SIMPLE_REMOVAL(ProductionActual)
+OPENMINE_SIMPLE_REMOVAL(ProductionTarget)
+OPENMINE_SIMPLE_REMOVAL(Scenario)
+OPENMINE_SIMPLE_REMOVAL(Drillhole)
+OPENMINE_SIMPLE_REMOVAL(GeologicalObject)
+OPENMINE_SIMPLE_REMOVAL(BlockModel)
+OPENMINE_SIMPLE_REMOVAL(StructuralMeasurement)
+OPENMINE_SIMPLE_REMOVAL(GeotechClassification)
+OPENMINE_SIMPLE_REMOVAL(DesignConformanceResult)
+#undef OPENMINE_SIMPLE_REMOVAL
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<CoordinateReferenceSystem>(const Uuid& id) const {
+    const auto& c = requireExisting<CoordinateReferenceSystem>(p_, id);
+    if (p_.model().info.projectCrsId == id) restrict("The project CRS cannot be deleted; declare another project CRS first");
+    return simpleRemoval<CoordinateReferenceSystem>(p_, c.id);
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<LocalGridDefinition>(const Uuid& id) const {
+    requireExisting<LocalGridDefinition>(p_, id);
+    for (const auto& c : p_.model().crs.all())
+        if (c.localGridId == id) restrict("The local grid is used by CRS '" + c.name + "'");
+    return simpleRemoval<LocalGridDefinition>(p_, id);
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<TransformationRecord>(const Uuid&) const {
+    restrict("Transformation records are part of the audit trail and cannot be deleted");
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<Asset>(const Uuid& id) const {
+    requireExisting<Asset>(p_, id);
+    requireAssetUnreferenced(p_, id);
+    return simpleRemoval<Asset>(p_, id);
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<Material>(const Uuid& id) const {
+    const auto& mat = requireExisting<Material>(p_, id);
+    RemovalBuilder b(p_, "Delete material " + mat.name);
+    const auto& m = p_.model();
+    for (const auto& g : m.geometry.all())
+        if (g.materialId == id) b.modify(g, [](GeometryObject& x) { x.materialId = {}; });
+    for (const auto& d : m.developments.all())
+        if (d.materialId == id) b.modify(d, [](MineDevelopment& x) { x.materialId = {}; });
+    for (const auto& s : m.stopes.all())
+        if (s.materialId == id) b.modify(s, [](Stope& x) { x.materialId = {}; });
+    for (const auto& g : m.geologicalObjects.all())
+        if (g.materialId == id) b.modify(g, [](GeologicalObject& x) { x.materialId = {}; });
+    b.erase(mat);
+    return b.take();
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<AnalysisResult>(const Uuid& id) const {
+    requireExisting<AnalysisResult>(p_, id);
+    for (const auto& c : p_.model().conformanceResults.all())
+        if (c.analysisResultId == id) restrict("The analysis result belongs to a design-conformance result; delete that instead");
+    return simpleRemoval<AnalysisResult>(p_, id);
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<AttributeDefinition>(const Uuid& id) const {
+    const auto& d = requireExisting<AttributeDefinition>(p_, id);
+    const auto& m = p_.model();
+    auto used = [&](const AttributeMap& a) { return a.count(d.key) != 0; };
+    bool inUse = false;
+    if (d.entityType == "GeometryObject")
+        for (const auto& g : m.geometry.all()) inUse = inUse || used(g.attributes);
+    if (d.entityType == "MineDevelopment")
+        for (const auto& g : m.developments.all()) inUse = inUse || used(g.attributes);
+    if (d.entityType == "Stope")
+        for (const auto& g : m.stopes.all()) inUse = inUse || used(g.attributes);
+    if (d.entityType == "ScheduleActivity")
+        for (const auto& g : m.activities.all()) inUse = inUse || used(g.attributes);
+    if (inUse) restrict("Attribute '" + d.key + "' still has values; clear them before deleting the definition");
+    return simpleRemoval<AttributeDefinition>(p_, id);
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<CadLayer>(const Uuid& id) const {
+    const auto& l = requireExisting<CadLayer>(p_, id);
+    if (p_.model().layers.size() <= 1) restrict("A project needs at least one layer");
+    for (const auto& g : p_.model().geometry.all())
+        if (g.layerId == id) restrict("Layer '" + l.name + "' still contains objects");
+    return simpleRemoval<CadLayer>(p_, id);
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<GeometryObject>(const Uuid& id) const {
+    const auto& g = requireExisting<GeometryObject>(p_, id);
+    const auto refs = p_.model().referencesToGeometry(id);
+    if (!refs.empty()) {
+        if (const auto* dev = p_.model().developmentForGeometry(id))
+            restrict("'" + g.name + "' is the centreline of a development heading (" + dev->headingId + "); delete the heading first");
+        restrict("'" + g.name + "' is used by " + refs.front().first + "; delete that object first");
+    }
+    return simpleRemoval<GeometryObject>(p_, id);
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<SurveyControlPoint>(const Uuid& id) const {
+    const auto& c = requireExisting<SurveyControlPoint>(p_, id);
+    RemovalBuilder b(p_, "Delete control point " + c.name);
+    // Registration pairs keep their copied target coordinates; only the reference is cleared.
+    for (const auto& r : p_.model().registrations.all()) {
+        bool refs = false;
+        for (const auto& pr : r.pairs) refs = refs || pr.targetControlId == id;
+        if (refs)
+            b.modify(r, [&](Registration& x) {
+                for (auto& pr : x.pairs)
+                    if (pr.targetControlId == id) pr.targetControlId = {};
+            });
+    }
+    b.erase(c);
+    return b.take();
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<PointCloudDataset>(const Uuid& id) const {
+    const auto& d = requireExisting<PointCloudDataset>(p_, id);
+    const auto& m = p_.model();
+    for (const auto& a : m.asBuiltModels.all())
+        if (a.sourceDatasetId == id) restrict("Dataset '" + d.name + "' is the source of as-built model '" + a.name + "'");
+    for (const auto& r : m.registrations.all())
+        if (r.targetDatasetId == id && r.datasetId != id) restrict("Dataset '" + d.name + "' is the ICP target of another dataset's registration");
+    RemovalBuilder b(p_, "Delete point cloud " + d.name);
+    for (const auto& r : m.registrations.all())
+        if (r.datasetId == id) b.erase(r); // transformation history of this dataset
+    for (const auto& c : m.pointClouds.all())
+        if (c.parentDatasetId == id) b.modify(c, [](PointCloudDataset& x) { x.parentDatasetId = {}; });
+    for (const auto& a : m.actuals.all())
+        if (a.surveyDatasetId == id) b.modify(a, [](ProductionActual& x) { x.surveyDatasetId = {}; });
+    b.erase(d);
+    return b.take();
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<Registration>(const Uuid& id) const {
+    const auto& r = requireExisting<Registration>(p_, id);
+    if (r.applied) restrict("Applied registrations are part of the dataset's transformation history and cannot be deleted");
+    for (const auto& a : p_.model().asBuiltModels.all())
+        if (a.registrationId == id) restrict("The registration is referenced by as-built model '" + a.name + "'");
+    return simpleRemoval<Registration>(p_, id);
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<AsBuiltModel>(const Uuid& id) const {
+    const auto& a = requireExisting<AsBuiltModel>(p_, id);
+    RemovalBuilder b(p_, "Delete as-built model " + a.name);
+    for (const auto& c : p_.model().conformanceResults.all())
+        if (c.asBuiltId == id) {
+            if (const auto* r = p_.model().analysisResults.find(c.analysisResultId)) b.erase(*r);
+            b.erase(c);
+        }
+    b.erase(a);
+    return b.take();
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<TunnelProfile>(const Uuid& id) const {
+    const auto& t = requireExisting<TunnelProfile>(p_, id);
+    for (const auto& d : p_.model().developments.all())
+        if (d.profileId == id) restrict("Profile '" + t.name + "' is used by heading " + d.headingId);
+    for (const auto& d : p_.model().declines.all())
+        if (d.profileId == id) restrict("Profile '" + t.name + "' is used by decline " + d.name);
+    return simpleRemoval<TunnelProfile>(p_, id);
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<MineLevel>(const Uuid& id) const {
+    const auto& l = requireExisting<MineLevel>(p_, id);
+    RemovalBuilder b(p_, "Delete level " + l.name);
+    for (const auto& d : p_.model().developments.all())
+        if (d.levelId == id) b.modify(d, [](MineDevelopment& x) { x.levelId = {}; });
+    for (const auto& s : p_.model().stopes.all())
+        if (s.levelId == id) b.modify(s, [](Stope& x) { x.levelId = {}; });
+    b.erase(l);
+    return b.take();
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<Decline>(const Uuid& id) const {
+    const auto& dc = requireExisting<Decline>(p_, id);
+    RemovalBuilder b(p_, "Delete decline " + dc.name);
+    for (const auto& d : p_.model().developments.all())
+        if (d.declineId == id) b.modify(d, [](MineDevelopment& x) { x.declineId = {}; });
+    b.erase(dc);
+    return b.take();
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<GroundSupportClass>(const Uuid& id) const {
+    const auto& s = requireExisting<GroundSupportClass>(p_, id);
+    RemovalBuilder b(p_, "Delete support class " + s.name);
+    for (const auto& d : p_.model().developments.all())
+        if (d.supportClassId == id) b.modify(d, [](MineDevelopment& x) { x.supportClassId = {}; });
+    b.erase(s);
+    return b.take();
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<MineDevelopment>(const Uuid& id) const {
+    const auto& d = requireExisting<MineDevelopment>(p_, id);
+    const auto& m = p_.model();
+    RemovalBuilder b(p_, "Delete heading " + d.headingId);
+    b.unlinkAllFor(id); // links CASCADE; activities are kept
+    for (const auto& a : m.actuals.all())
+        if (a.developmentId == id) b.modify(a, [](ProductionActual& x) { x.developmentId = {}; });
+    for (const auto& a : m.asBuiltModels.all())
+        if (a.developmentId == id) b.modify(a, [](AsBuiltModel& x) { x.developmentId = {}; });
+    for (const auto& c : m.conformanceResults.all())
+        if (c.developmentId == id) {
+            if (const auto* r = m.analysisResults.find(c.analysisResultId)) b.erase(*r);
+            b.erase(c);
+        }
+    for (const auto& s : m.structures.all())
+        if (s.developmentId == id) b.modify(s, [](StructuralMeasurement& x) { x.developmentId = {}; });
+    for (const auto& g : m.geotechClassifications.all())
+        if (g.developmentId == id) b.modify(g, [](GeotechClassification& x) { x.developmentId = {}; });
+    for (const auto& pc : m.pointClouds.all())
+        if (pc.developmentId == id) b.modify(pc, [](PointCloudDataset& x) { x.developmentId = {}; });
+    b.erase(d); // design revisions are history and are kept
+    return b.take();
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<Stope>(const Uuid& id) const {
+    const auto& s = requireExisting<Stope>(p_, id);
+    for (const auto& blk : p_.model().miningBlocks.all())
+        if (blk.stopeId == id) restrict("Stope '" + s.name + "' still has mining blocks; delete them first");
+    RemovalBuilder b(p_, "Delete stope " + s.name);
+    b.unlinkAllFor(id);
+    b.erase(s);
+    return b.take();
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<MiningBlock>(const Uuid& id) const {
+    const auto& blk = requireExisting<MiningBlock>(p_, id);
+    RemovalBuilder b(p_, "Delete mining block " + blk.name);
+    b.unlinkAllFor(id);
+    b.erase(blk);
+    return b.take();
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<DesignRevision>(const Uuid& id) const {
+    const auto& r = requireExisting<DesignRevision>(p_, id);
+    if (r.approved) restrict("Approved design revisions cannot be deleted");
+    return simpleRemoval<DesignRevision>(p_, id);
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<WorkCalendar>(const Uuid& id) const {
+    const auto& c = requireExisting<WorkCalendar>(p_, id);
+    const auto& m = p_.model();
+    if (m.info.defaultCalendarId == id) restrict("'" + c.name + "' is the project default calendar");
+    for (const auto& a : m.activities.all())
+        if (a.calendarId == id) restrict("'" + c.name + "' is used by activity '" + a.name + "'");
+    for (const auto& r : m.resources.all())
+        if (r.calendarId == id) restrict("'" + c.name + "' is used by resource '" + r.name + "'");
+    return simpleRemoval<WorkCalendar>(p_, id);
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<ScheduleActivity>(const Uuid& id) const {
+    const auto& a = requireExisting<ScheduleActivity>(p_, id);
+    const auto& m = p_.model();
+    for (const auto& x : m.activities.all())
+        if (x.parentId == id) restrict("Delete or move the WBS children of '" + a.name + "' first");
+    for (const auto& x : m.actuals.all())
+        if (x.activityId == id) restrict("'" + a.name + "' has recorded production actuals; they must be removed first");
+    RemovalBuilder b(p_, "Delete activity '" + a.name + "'");
+    for (const auto& d : m.dependencies.all())
+        if (d.predecessorId == id || d.successorId == id) b.erase(d);
+    for (const auto& r : m.assignments.all())
+        if (r.activityId == id) b.erase(r);
+    b.unlinkAllFor(id);
+    for (const auto& s : m.scenarios.all()) {
+        bool refs = false;
+        for (const auto& o : s.overrides) refs = refs || o.entityId == id;
+        if (refs) b.modify(s, [&](Scenario& x) { std::erase_if(x.overrides, [&](const auto& o) { return o.entityId == id; }); });
+    }
+    b.erase(a);
+    return b.take();
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<Resource>(const Uuid& id) const {
+    const auto& r = requireExisting<Resource>(p_, id);
+    RemovalBuilder b(p_, "Delete resource " + r.name);
+    for (const auto& a : p_.model().assignments.all())
+        if (a.resourceId == id) b.erase(a);
+    for (const auto& s : p_.model().scenarios.all()) {
+        bool refs = false;
+        for (const auto& o : s.overrides) refs = refs || o.entityId == id;
+        if (refs) b.modify(s, [&](Scenario& x) { std::erase_if(x.overrides, [&](const auto& o) { return o.entityId == id; }); });
+    }
+    b.erase(r);
+    return b.take();
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<DevelopmentCycle>(const Uuid& id) const {
+    const auto& c = requireExisting<DevelopmentCycle>(p_, id);
+    for (const auto& a : p_.model().activities.all())
+        if (a.productionModelId == id && a.useCycleRate)
+            restrict("Cycle '" + c.name + "' drives the rate of '" + a.name + "'");
+    RemovalBuilder b(p_, "Delete cycle " + c.name);
+    for (const auto& a : p_.model().activities.all())
+        if (a.productionModelId == id) b.modify(a, [](ScheduleActivity& x) { x.productionModelId = {}; });
+    b.erase(c);
+    return b.take();
+}
+
+template <> std::unique_ptr<Command> ProjectEditor::removalCommand<ScheduleBaseline>(const Uuid& id) const {
+    const auto& bl = requireExisting<ScheduleBaseline>(p_, id);
+    if (bl.approved) restrict("Approved baselines are preserved and cannot be deleted");
+    return simpleRemoval<ScheduleBaseline>(p_, id);
 }
 
 } // namespace openmine

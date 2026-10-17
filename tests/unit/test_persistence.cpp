@@ -19,158 +19,331 @@ fs::path tempDir() {
     return d;
 }
 
-std::unique_ptr<Project> richProject() {
-    auto p = Project::createNew("Jupiter Mine — Level 675 ✓", Date::fromYmd(2026, 11, 2));
-    ProjectEditor ed(*p);
-    ProjectInfo info = p->model().info;
-    info.crs.name = "Hartebeesthoek94 / Lo25";
-    info.crs.authorityCode = "EPSG:2051";
-    info.crs.southOrientatedAxes = true;
-    info.statusDate = Date::fromYmd(2026, 11, 20);
+struct Rich {
+    std::unique_ptr<Project> p = Project::createNew("Jupiter Mine — Level 675 ✓", Date::fromYmd(2026, 11, 2));
+    Uuid geom, arcGeom, meshGeom, dev, stope, block, sid, aid, bid, res, cyc, cloud, reg, ctrl, hole, crs, rev;
+};
+
+Rich richProject() {
+    Rich r;
+    auto& p = *r.p;
+    ProjectEditor ed(p);
+    CoordinateReferenceSystem crs;
+    crs.name = "Cape / Lo25";
+    crs.authorityCode = "EPSG:22285";
+    crs.kind = CrsKind::Projected;
+    crs.horizontalDatum = "Cape";
+    crs.axisDescription = "Y westing, X southing";
+    r.crs = ed.add(crs);
+    ProjectInfo info = p.model().info;
+    info.projectCrsId = r.crs;
+    info.southOrientatedAxes = true;
+    info.statusDate = DateTime::fromDate(Date::fromYmd(2026, 11, 20), 6 * 60);
     ed.setProjectInfo(info);
 
     AttributeDefinition def;
     def.entityType = "MineDevelopment";
     def.key = "ground_support";
     def.displayName = "Ground support class";
-    ed.addAttributeDefinition(def);
+    ed.add(def);
 
     GeometryObject g;
     g.name = "LEG2 centreline";
-    g.layerId = p->model().layers.all()[1].id;
+    g.layerId = p.model().layers.all()[1].id;
     g.vertices = {{-25000.125, 2900000.5, 1200.0}, {-25080.0, 2900060.25, 1190.0}, {-25120.75, 2900150.0, 1180.5}};
-    Uuid gid = ed.addGeometry(g);
+    g.bulges = {0.25, 0.0, 0.0};
+    r.geom = ed.add(g);
+
+    GeometryObject arc;
+    arc.type = GeometryType::Arc;
+    arc.layerId = p.model().layers.all()[0].id;
+    arc.arc = {{1, 2, 3}, 4.5, {0, 0, 1}, {1, 0, 0}, 0.25, 2.5};
+    arc.colorOverride = 0xFF8800;
+    arc.transparency = 0.3;
+    r.arcGeom = ed.add(arc);
+
+    GeometryObject mesh;
+    mesh.type = GeometryType::Mesh;
+    mesh.name = "Stope shape";
+    mesh.layerId = p.model().layers.all()[0].id;
+    auto md = std::make_shared<MeshData>();
+    md->vertices = {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    md->triangles = {{0, 2, 1}, {0, 1, 3}, {0, 3, 2}, {1, 2, 3}};
+    md->vertexScalars = {0.1f, 0.2f, 0.3f, 0.4f};
+    md->scalarName = "distance";
+    mesh.mesh = md;
+    r.meshGeom = ed.add(mesh);
+
+    GeometryObject text;
+    text.type = GeometryType::Text;
+    text.layerId = p.model().layers.all()[0].id;
+    text.vertices = {{5, 5, 0}};
+    text.text = {"LEG2 675", 2.5, 0.5, TextAlign::Center};
+    ed.add(text);
+
+    MineLevel lv;
+    lv.name = "675 Level";
+    lv.code = "675";
+    lv.elevation = 1190;
+    const Uuid lvId = ed.add(lv);
 
     MineDevelopment d;
     d.headingId = "LEG2_675_D3_DEC";
     d.level = "675";
+    d.levelId = lvId;
     d.zone = "Legadima 2";
-    d.geometryId = gid;
+    d.geometryId = r.geom;
+    d.profileId = p.model().profiles.all()[0].id;
+    d.materialId = p.model().materials.all()[0].id;
     d.designWidth = 5.5;
     d.designHeight = 5.5;
     d.attributes["ground_support"] = "Class B";
-    Uuid did = ed.addDevelopment(d);
+    r.dev = ed.add(d);
+
+    Stope st;
+    st.name = "S675-01";
+    st.geometryId = r.meshGeom;
+    st.levelId = lvId;
+    st.grade = 4.2;
+    r.stope = ed.add(st);
+    MiningBlock blk;
+    blk.name = "S675-01 B1";
+    blk.stopeId = r.stope;
+    blk.geometryId = r.meshGeom;
+    r.block = ed.add(blk);
 
     ScheduleActivity s;
     s.name = "Level 675";
     s.kind = ActivityKind::Summary;
     s.wbsCode = "675";
-    Uuid sid = ed.addActivity(s);
+    r.sid = ed.add(s);
     ScheduleActivity a;
     a.name = "Develop LEG2_675_D3_DEC";
-    a.parentId = sid;
+    a.parentId = r.sid;
     a.durationFromRate = true;
-    a.ratePerDay = 5.0;
+    a.rate = 2.5;
+    a.rateUnit = RateUnit::PerShift;
     a.quantity = 150.0;
-    a.actualQuantity = 12.5;
-    a.startNoEarlierThan = Date::fromYmd(2026, 11, 4);
+    a.actualStart = DateTime::fromDate(Date::fromYmd(2026, 11, 4), 6 * 60);
+    a.constraint = ConstraintType::StartNoEarlierThan;
+    a.constraintDate = DateTime::fromDate(Date::fromYmd(2026, 11, 4));
     a.designImpactFlag = true;
     a.designImpactNote = "note";
-    Uuid aid = ed.addActivity(a);
+    a.priority = 5;
+    a.workArea = "LEG2";
+    r.aid = ed.add(a);
     ScheduleActivity b;
     b.name = "Install services";
-    b.parentId = sid;
-    b.durationDays = 3;
-    b.calendarId = p->model().calendars.all()[1].id;
-    Uuid bid = ed.addActivity(b);
+    b.parentId = r.sid;
+    b.durationHours = 30;
+    b.calendarId = p.model().calendars.all()[1].id;
+    r.bid = ed.add(b);
     ActivityDependency dep;
-    dep.predecessorId = aid;
-    dep.successorId = bid;
+    dep.predecessorId = r.aid;
+    dep.successorId = r.bid;
     dep.type = DependencyType::StartToStart;
-    dep.lagDays = 2.5;
-    ed.addDependency(dep);
-    ed.linkActivityToDevelopment(aid, did);
+    dep.lagHours = 2.5;
+    ed.add(dep);
+    ed.linkActivityToDesign(r.aid, r.dev);
+    ed.linkActivityToDesign(r.aid, r.block);
 
-    WorkCalendar cal = *p->model().calendars.find(p->model().info.defaultCalendarId);
-    cal.nonWorkingDates = {Date::fromYmd(2026, 12, 16), Date::fromYmd(2026, 12, 25)};
+    Resource jumbo;
+    jumbo.name = "Jumbo 1";
+    jumbo.capacity = 1;
+    jumbo.productivityFactor = 1.1;
+    r.res = ed.add(jumbo);
+    ActivityResourceAssignment asg;
+    asg.activityId = r.aid;
+    asg.resourceId = r.res;
+    asg.drivesRate = true;
+    ed.add(asg);
+    DevelopmentCycle cyc;
+    cyc.name = "Twin boom";
+    r.cyc = ed.add(cyc);
+    ProductionActual act;
+    act.activityId = r.aid;
+    act.developmentId = r.dev;
+    act.date = Date::fromYmd(2026, 11, 5);
+    act.quantity = 7.5;
+    act.faceChainage = 7.5;
+    ed.add(act);
+    ProductionTarget tg;
+    tg.name = "Nov";
+    tg.periodStart = Date::fromYmd(2026, 11, 1);
+    tg.periodEnd = Date::fromYmd(2026, 11, 30);
+    tg.quantity = 120;
+    ed.add(tg);
+    Scenario sc;
+    sc.name = "Two jumbos";
+    sc.overrides = {{r.res, "capacity", "2"}, {Uuid{}, "areaLimit", "LEG2=1"}};
+    sc.levelling = LevellingMode::Heuristic;
+    ed.add(sc);
+
+    WorkCalendar cal = *p.model().calendars.find(p.model().info.defaultCalendarId);
+    cal.exceptions = {{Date::fromYmd(2026, 12, 16), {}, "Reconciliation Day"}, {Date::fromYmd(2026, 12, 24), {{0, 720}}, "Half day"}};
     ed.updateCalendar(cal);
 
     ScheduleBaseline bl;
     bl.name = "BL-2026-11";
-    bl.activities.push_back({aid, a.name, Date::fromYmd(2026, 11, 4), Date::fromYmd(2026, 12, 15), 30.0, 150.0});
-    ed.addBaseline(bl);
-    return p;
+    bl.activities.push_back({r.aid, a.name, DateTime::fromDate(Date::fromYmd(2026, 11, 4)), DateTime::fromDate(Date::fromYmd(2026, 12, 15)), 720, 150});
+    ed.add(bl);
+
+    // Survey
+    SurveyControlPoint cp;
+    cp.name = "SS675-01";
+    cp.position = {-25010.0, 2900005.0, 1201.5};
+    cp.horizontalSigma = 0.003;
+    cp.surveyDate = Date::fromYmd(2026, 10, 1);
+    r.ctrl = ed.add(cp);
+    const Asset asset = p.assets().writeBytes("octree placeholder", AssetKind::PointCloud, "bin");
+    ed.add(asset);
+    PointCloudDataset pc;
+    pc.name = "Scan 675";
+    pc.asset.id = asset.id;
+    pc.pointCount = 12345;
+    pc.storedBounds = {{0, 0, 0}, {10, 20, 30}};
+    pc.attributes.intensity = true;
+    pc.attributes.scalarFields = {"distance"};
+    pc.transform = Transform3::translation({1, 2, 3});
+    pc.sourceFormat = "LAZ";
+    pc.developmentId = r.dev;
+    r.cloud = ed.add(pc);
+    Registration reg;
+    reg.datasetId = r.cloud;
+    reg.method = RegistrationMethod::ControlPoints;
+    reg.transform = Transform3::rotation({0, 0, 1}, 0.01);
+    reg.pairs = {{"T1", {1, 2, 3}, {4, 5, 6}, r.ctrl, PairRole::Fit, {0.001, -0.002, 0.0}},
+                 {"T2", {7, 8, 9}, {10, 11, 12}, Uuid{}, PairRole::Check, {0.004, 0, 0.001}}};
+    reg.fitRms = 0.002;
+    reg.checkRms = 0.004;
+    reg.checkCount = 1;
+    r.reg = ed.add(reg);
+
+    // Geology
+    Drillhole h;
+    h.holeId = "DD001";
+    h.collar = {-25000, 2900000, 1250};
+    h.length = 200;
+    h.surveys = {{0, 90, -60}, {100, 92, -58}};
+    h.intervals = {{0, 1.5, {{"Au", 0.1}}, {{"lith", "QZ"}}}, {1.5, 3, {{"Au", 5.2}}, {{"lith", "BIF"}}}};
+    r.hole = ed.add(h);
+    StructuralMeasurement sm;
+    sm.setName = "J1";
+    sm.dip = 65;
+    sm.dipDirection = 120;
+    ed.add(sm);
+    GeotechClassification gc;
+    gc.method = GeotechMethod::QSystem;
+    gc.value = 4.2;
+    gc.rockClass = "Fair";
+    gc.developmentId = r.dev;
+    ed.add(gc);
+    r.rev = ed.add(DesignRevision{Uuid{}, r.dev, "MineDevelopment", "A", "{}", 150, 4000, false, "", "", "first", "", ""});
+    return r;
 }
 } // namespace
 
-TEST(Persistence, RoundTripPreservesEverything) {
+TEST(Persistence, RoundTripPreservesEveryEntityType) {
     auto dir = tempDir();
     auto file = dir / "jupiter.openmine";
-    auto p = richProject();
-    ASSERT_TRUE(p->isModified());
-    persistence::saveProject(*p, file);
-    EXPECT_FALSE(p->isModified());
+    auto r = richProject();
+    auto& p = *r.p;
+    persistence::saveProject(p, file);
+    EXPECT_FALSE(p.isModified());
+    EXPECT_TRUE(fs::exists(dir / "jupiter.openmine-assets"));
 
-    auto q = persistence::loadProject(file);
-    const auto& a = p->model();
+    persistence::LoadReport rep;
+    auto q = persistence::loadProject(file, &rep);
+    EXPECT_FALSE(rep.migrated);
+    EXPECT_TRUE(rep.warnings.empty()) << rep.warnings.front();
+    const auto& a = p.model();
     const auto& b = q->model();
-    EXPECT_EQ(b.info.id, a.info.id);
+#define OPENMINE_CHECK_COUNT(T, member, Kind) EXPECT_EQ(b.member.size(), a.member.size()) << #member;
+    OPENMINE_ENTITY_TYPES(OPENMINE_CHECK_COUNT)
+#undef OPENMINE_CHECK_COUNT
     EXPECT_EQ(b.info.name, a.info.name);
-    EXPECT_EQ(b.info.crs.authorityCode, "EPSG:2051");
-    EXPECT_TRUE(b.info.crs.southOrientatedAxes);
-    ASSERT_TRUE(b.info.statusDate);
-    EXPECT_EQ(*b.info.statusDate, *a.info.statusDate);
+    EXPECT_EQ(b.info.statusDate->toString(), "2026-11-20 06:00");
+    EXPECT_EQ(b.projectCrs()->authorityCode, "EPSG:22285");
+    EXPECT_TRUE(b.info.southOrientatedAxes);
 
-    ASSERT_EQ(b.geometry.size(), 1u);
-    const auto& ga = a.geometry.all()[0];
-    const auto& gb = b.geometry.all()[0];
-    EXPECT_EQ(gb.id, ga.id);
-    ASSERT_EQ(gb.vertices.size(), 3u);
-    for (std::size_t i = 0; i < 3; ++i) EXPECT_EQ(gb.vertices[i], ga.vertices[i]); // bit-exact doubles
-    EXPECT_EQ(gb.meta.createdAt, ga.meta.createdAt);
+    const auto* g = b.geometry.find(r.geom);
+    ASSERT_TRUE(g);
+    EXPECT_EQ(g->vertices, a.geometry.find(r.geom)->vertices); // bit-exact doubles
+    EXPECT_EQ(g->bulges, a.geometry.find(r.geom)->bulges);
+    const auto* arc = b.geometry.find(r.arcGeom);
+    EXPECT_EQ(arc->arc, a.geometry.find(r.arcGeom)->arc);
+    EXPECT_EQ(arc->colorOverride.value_or(0), 0xFF8800u);
+    EXPECT_DOUBLE_EQ(arc->transparency.value_or(0), 0.3);
+    const auto* mesh = b.geometry.find(r.meshGeom);
+    ASSERT_TRUE(mesh->mesh);
+    EXPECT_EQ(mesh->mesh->triangles, a.geometry.find(r.meshGeom)->mesh->triangles);
+    EXPECT_EQ(mesh->mesh->vertexScalars, a.geometry.find(r.meshGeom)->mesh->vertexScalars);
+    EXPECT_EQ(mesh->mesh->scalarName, "distance");
+    bool foundText = false;
+    for (const auto& x : b.geometry.all())
+        if (x.type == GeometryType::Text) {
+            foundText = true;
+            EXPECT_EQ(x.text.text, "LEG2 675");
+            EXPECT_EQ(x.text.align, TextAlign::Center);
+        }
+    EXPECT_TRUE(foundText);
 
-    const auto& da = a.developments.all()[0];
-    const auto& db = b.developments.all()[0];
-    EXPECT_EQ(db.id, da.id);
-    EXPECT_EQ(db.geometryId, ga.id);
-    EXPECT_EQ(db.attributes.at("ground_support"), "Class B");
-    EXPECT_DOUBLE_EQ(db.designWidth, 5.5);
-
-    ASSERT_EQ(b.activities.size(), 3u);
-    for (std::size_t i = 0; i < 3; ++i) {
-        const auto& x = a.activities.all()[i];
-        const auto& y = b.activities.all()[i];
-        EXPECT_EQ(y.id, x.id);
-        EXPECT_EQ(y.parentId, x.parentId);
-        EXPECT_EQ(y.name, x.name);
-        EXPECT_EQ(y.kind, x.kind);
-        EXPECT_EQ(y.durationFromRate, x.durationFromRate);
-        EXPECT_DOUBLE_EQ(y.quantity, x.quantity);
-        EXPECT_DOUBLE_EQ(y.actualQuantity, x.actualQuantity);
-        EXPECT_EQ(y.startNoEarlierThan, x.startNoEarlierThan);
-        EXPECT_EQ(y.calendarId, x.calendarId);
-        EXPECT_EQ(y.designImpactFlag, x.designImpactFlag);
-    }
-    ASSERT_EQ(b.dependencies.size(), 1u);
-    EXPECT_EQ(b.dependencies.all()[0].type, DependencyType::StartToStart);
-    EXPECT_DOUBLE_EQ(b.dependencies.all()[0].lagDays, 2.5);
-    ASSERT_EQ(b.designLinks.size(), 1u);
-    EXPECT_EQ(b.designLinks[0], a.designLinks[0]);
-    EXPECT_EQ(b.calendars.find(a.info.defaultCalendarId)->nonWorkingDates.size(), 2u);
-    ASSERT_EQ(b.baselines.size(), 1u);
-    EXPECT_EQ(b.baselines[0].activities[0].finish, Date::fromYmd(2026, 12, 15));
-    EXPECT_EQ(b.attributeDefinitions.size(), 1u);
+    const auto* d = b.developments.find(r.dev);
+    EXPECT_EQ(d->attributes.at("ground_support"), "Class B");
+    EXPECT_EQ(d->profileId, a.developments.find(r.dev)->profileId);
+    const auto* act = b.activities.find(r.aid);
+    EXPECT_EQ(act->rateUnit, RateUnit::PerShift);
+    EXPECT_EQ(act->actualStart->toString(), "2026-11-04 06:00");
+    EXPECT_EQ(act->constraint, ConstraintType::StartNoEarlierThan);
+    EXPECT_EQ(act->workArea, "LEG2");
+    EXPECT_EQ(b.designLinks.size(), 2u);
+    EXPECT_EQ(b.designLinks[1].designType, "MiningBlock");
+    EXPECT_DOUBLE_EQ(b.dependencies.all()[0].lagHours, 2.5);
+    EXPECT_EQ(b.calendars.find(a.info.defaultCalendarId)->exceptions, a.calendars.find(a.info.defaultCalendarId)->exceptions);
+    EXPECT_EQ(b.scenarios.all()[0].overrides, a.scenarios.all()[0].overrides);
+    EXPECT_EQ(b.baselines.all()[0].activities, a.baselines.all()[0].activities);
+    EXPECT_EQ(b.actuals.all()[0].faceChainage.value_or(0), 7.5);
+    const auto* reg = b.registrations.find(r.reg);
+    ASSERT_EQ(reg->pairs.size(), 2u);
+    EXPECT_EQ(reg->pairs, a.registrations.find(r.reg)->pairs);
+    EXPECT_EQ(reg->transform, a.registrations.find(r.reg)->transform);
+    EXPECT_EQ(b.pointClouds.find(r.cloud)->attributes, a.pointClouds.find(r.cloud)->attributes);
+    EXPECT_EQ(b.pointClouds.find(r.cloud)->storedBounds, a.pointClouds.find(r.cloud)->storedBounds);
+    EXPECT_EQ(b.drillholes.find(r.hole)->surveys, a.drillholes.find(r.hole)->surveys);
+    EXPECT_EQ(b.drillholes.find(r.hole)->intervals, a.drillholes.find(r.hole)->intervals);
     EXPECT_EQ(b.audit.size(), a.audit.size());
-    EXPECT_FALSE(q->isModified());
+    EXPECT_EQ(q->assets().readBytes(*b.assets.all().begin()), "octree placeholder");
 
     // Save → load → save again is stable.
     persistence::saveProject(*q, file);
     EXPECT_TRUE(fs::exists(dir / "jupiter.openmine.bak"));
-    auto r = persistence::loadProject(file);
-    EXPECT_EQ(r->model().activities.size(), 3u);
+    EXPECT_TRUE(persistence::checkProjectFile(file, true).ok);
+    fs::remove_all(dir);
+}
+
+TEST(Persistence, SaveAsCopiesSidecarAssets) {
+    auto dir = tempDir();
+    auto r = richProject();
+    persistence::saveProject(*r.p, dir / "a.openmine");
+    persistence::saveProject(*r.p, dir / "sub" / "b.openmine");
+    fs::remove_all(dir / "a.openmine-assets");
+    auto q = persistence::loadProject(dir / "sub" / "b.openmine");
+    EXPECT_EQ(q->assets().readBytes(q->model().assets.all()[0]), "octree placeholder");
+    // Missing sidecar is reported, not fatal.
+    persistence::LoadReport rep;
+    auto a = persistence::loadProject(dir / "a.openmine", &rep);
+    EXPECT_FALSE(rep.warnings.empty());
     fs::remove_all(dir);
 }
 
 TEST(Persistence, FailedSaveLeavesExistingFileUntouched) {
     auto dir = tempDir();
     auto file = dir / "p.openmine";
-    auto p = richProject();
-    persistence::saveProject(*p, file);
+    auto r = richProject();
+    persistence::saveProject(*r.p, file);
     const auto sizeBefore = fs::file_size(file);
-
-    // Corrupt the in-memory model so the FK verification fails during save.
-    p->mutableModel().designLinks.push_back({Uuid::generate(), Uuid::generate()});
-    EXPECT_THROW(persistence::saveProject(*p, file), persistence::PersistenceError);
+    r.p->mutableModel().designLinks.push_back({Uuid::generate(), Uuid::generate(), "MineDevelopment"});
+    EXPECT_THROW(persistence::saveProject(*r.p, file), persistence::PersistenceError);
     EXPECT_EQ(fs::file_size(file), sizeBefore);
     EXPECT_FALSE(fs::exists(dir / "p.openmine.saving"));
     EXPECT_NO_THROW(persistence::loadProject(file));
@@ -179,10 +352,8 @@ TEST(Persistence, FailedSaveLeavesExistingFileUntouched) {
 
 TEST(Persistence, RejectsForeignAndNewerFiles) {
     auto dir = tempDir();
-    {
-        std::ofstream(dir / "x.openmine") << "this is not sqlite";
-        EXPECT_THROW(persistence::loadProject(dir / "x.openmine"), persistence::PersistenceError);
-    }
+    std::ofstream(dir / "x.openmine") << "this is not sqlite";
+    EXPECT_THROW(persistence::loadProject(dir / "x.openmine"), persistence::PersistenceError);
     auto file = dir / "p.openmine";
     auto p = Project::createNew("P", Date::fromYmd(2026, 1, 1));
     persistence::saveProject(*p, file);
@@ -200,12 +371,75 @@ TEST(Persistence, RejectsForeignAndNewerFiles) {
     fs::remove_all(dir);
 }
 
-TEST(Persistence, IntegrityCheckReportsCleanFile) {
+TEST(Persistence, MigratesSchemaVersion1Projects) {
     auto dir = tempDir();
-    auto p = richProject();
-    persistence::saveProject(*p, dir / "p.openmine");
-    auto rep = persistence::checkProjectFile(dir / "p.openmine");
-    EXPECT_TRUE(rep.ok);
-    EXPECT_EQ(rep.schemaVersion, persistence::kCurrentSchemaVersion);
+    const auto file = dir / "v1.openmine";
+    sqlite3* db = nullptr;
+    ASSERT_EQ(sqlite3_open(file.string().c_str(), &db), SQLITE_OK);
+    std::string sql = "PRAGMA application_id = " + std::to_string(persistence::kApplicationId) + ";" + persistence::legacySchemaV1Sql() + R"SQL(
+INSERT INTO schema_migrations VALUES (1, '2026-10-17T09:00:00Z', 'Initial OpenMine schema');
+INSERT INTO work_calendar VALUES ('11111111-1111-4111-8111-111111111111', 0, 'Standard 5-day', 31, 24.0, 't', 't', 1);
+INSERT INTO calendar_exception VALUES ('11111111-1111-4111-8111-111111111111', '2026-12-16');
+INSERT INTO project_info VALUES (1, '22222222-2222-4222-8222-222222222222', 'Old project', '', '2026-11-02', '2026-11-16',
+  'Hartebeesthoek94 / Lo25', 'EPSG:2051', 'MSL', 'metre', 0, 1, '11111111-1111-4111-8111-111111111111', 't', 't', 3, 'OpenMine Suite 0.1.0');
+INSERT INTO cad_layer VALUES ('33333333-3333-4333-8333-333333333333', 0, '0', 13684944, 1, 0, 't', 't', 1);
+INSERT INTO geometry_object VALUES ('44444444-4444-4444-8444-444444444444', 0, 'CL', 'Polyline', '33333333-3333-4333-8333-333333333333', 0, 2,
+  X'000000000000000000000000000000000000000000000000000000000000594000000000000000000000000000000000', 't', 't', 1);
+INSERT INTO mine_development VALUES ('55555555-5555-4555-8555-555555555555', 0, 'H1', 'H1', '', '', '675', 'Development', 0, 5, 5,
+  'Planned', '44444444-4444-4444-8444-444444444444', 100.0, 'A', 't', 't', 1);
+INSERT INTO schedule_activity VALUES ('66666666-6666-4666-8666-666666666666', 0, NULL, '', 'Develop H1', 'Task', 1, 1, 100, 'm', 5, 20,
+  '2026-11-04', NULL, 10, 0, '', 't', 't', 1);
+INSERT INTO schedule_activity VALUES ('77777777-7777-4777-8777-777777777777', 1, NULL, '', 'Next', 'Task', 3, 0, 0, 'm', 0, 0,
+  NULL, NULL, 20, 0, '', 't', 't', 1);
+INSERT INTO activity_dependency VALUES ('88888888-8888-4888-8888-888888888888', 0, '66666666-6666-4666-8666-666666666666',
+  '77777777-7777-4777-8777-777777777777', 'FS', 2, 't', 't', 1);
+INSERT INTO activity_design_link VALUES ('66666666-6666-4666-8666-666666666666', '55555555-5555-4555-8555-555555555555', 0);
+INSERT INTO schedule_baseline VALUES ('99999999-9999-4999-8999-999999999999', 0, 'BL1', 't', 1);
+INSERT INTO baseline_activity VALUES ('99999999-9999-4999-8999-999999999999', '66666666-6666-4666-8666-666666666666', 0, 'Develop H1',
+  '2026-11-04', '2026-12-01', 20, 100);
+INSERT INTO audit_log(timestamp, user, action, entity_type, entity_uuid, detail) VALUES ('t', 'u', 'Create', 'Project', NULL, 'x');
+PRAGMA user_version = 1;
+)SQL";
+    char* err = nullptr;
+    ASSERT_EQ(sqlite3_exec(db, sql.c_str(), nullptr, nullptr, &err), SQLITE_OK) << (err ? err : "");
+    sqlite3_close(db);
+
+    persistence::LoadReport rep;
+    auto p = persistence::loadProject(file, &rep);
+    EXPECT_EQ(rep.fileSchemaVersion, 1);
+    EXPECT_TRUE(rep.migrated);
+    const auto& m = p->model();
+    EXPECT_EQ(m.projectCrs()->authorityCode, "EPSG:2051");
+    EXPECT_TRUE(m.info.southOrientatedAxes);
+    EXPECT_EQ(m.info.statusDate->toString(), "2026-11-16 00:00");
+    const auto* cal = m.calendars.all().data();
+    ASSERT_EQ(cal->shifts.size(), 1u);
+    EXPECT_EQ(cal->shifts[0].weekdays, 31);
+    ASSERT_EQ(cal->exceptions.size(), 1u);
+    const auto* a = m.activities.find(*Uuid::parse("66666666-6666-4666-8666-666666666666"));
+    EXPECT_DOUBLE_EQ(a->rate, 5);
+    EXPECT_EQ(a->rateUnit, RateUnit::PerDay);
+    EXPECT_EQ(a->constraint, ConstraintType::StartNoEarlierThan);
+    EXPECT_DOUBLE_EQ(m.dependencies.all()[0].lagHours, 48);
+    EXPECT_DOUBLE_EQ(m.activities.find(*Uuid::parse("77777777-7777-4777-8777-777777777777"))->durationHours, 72);
+    EXPECT_EQ(m.baselines.all()[0].activities[0].finish.toString(), "2026-12-02 00:00");
+    EXPECT_DOUBLE_EQ(m.geometry.all()[0].vertices[1].x, 100.0);
+    ASSERT_EQ(m.designLinks.size(), 1u);
+    EXPECT_EQ(m.audit.back().action, "Migrate");
+    // Saving writes schema 2; the result reloads as current.
+    persistence::saveProject(*p, dir / "v2.openmine");
+    persistence::LoadReport rep2;
+    auto q = persistence::loadProject(dir / "v2.openmine", &rep2);
+    EXPECT_EQ(rep2.fileSchemaVersion, persistence::kCurrentSchemaVersion);
+    EXPECT_FALSE(rep2.migrated);
     fs::remove_all(dir);
+}
+
+TEST(Persistence, SchemaHasExplicitRelationships) {
+    const auto& ddl = persistence::schemaSql();
+    for (const char* s : {"REFERENCES mine_development(uuid)", "REFERENCES geometry_object(uuid) ON DELETE RESTRICT",
+                          "REFERENCES schedule_activity(uuid) ON DELETE CASCADE", "REFERENCES resource(uuid) ON DELETE CASCADE",
+                          "REFERENCES point_cloud_dataset(uuid) ON DELETE CASCADE", "REFERENCES survey_control_point(uuid) ON DELETE SET NULL",
+                          "CREATE TABLE production_actual", "CREATE TABLE design_revision", "CREATE TABLE activity_resource_assignment"})
+        EXPECT_NE(ddl.find(s), std::string::npos) << s;
 }

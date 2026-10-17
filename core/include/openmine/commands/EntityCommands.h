@@ -12,21 +12,14 @@ namespace openmine {
 
 template <class T> struct EntityTraits;
 
-#define OPENMINE_ENTITY_TRAITS(Type, Kind, Member)                                         \
-    template <> struct EntityTraits<Type> {                                                 \
+#define OPENMINE_ENTITY_TRAITS(T, member, Kind)                                            \
+    template <> struct EntityTraits<T> {                                                    \
         static constexpr EntityKind kind = EntityKind::Kind;                                \
-        static constexpr const char* name = #Type;                                          \
-        static EntityStore<Type>& store(ProjectModel& m) { return m.Member; }               \
-        static const EntityStore<Type>& store(const ProjectModel& m) { return m.Member; }   \
+        static constexpr const char* name = #T;                                             \
+        static EntityStore<T>& store(ProjectModel& m) { return m.member; }                  \
+        static const EntityStore<T>& store(const ProjectModel& m) { return m.member; }      \
     };
-
-OPENMINE_ENTITY_TRAITS(CadLayer, Layer, layers)
-OPENMINE_ENTITY_TRAITS(GeometryObject, Geometry, geometry)
-OPENMINE_ENTITY_TRAITS(MineDevelopment, Development, developments)
-OPENMINE_ENTITY_TRAITS(WorkCalendar, Calendar, calendars)
-OPENMINE_ENTITY_TRAITS(ScheduleActivity, Activity, activities)
-OPENMINE_ENTITY_TRAITS(ActivityDependency, Dependency, dependencies)
-OPENMINE_ENTITY_TRAITS(AttributeDefinition, AttributeDefinition, attributeDefinitions)
+OPENMINE_ENTITY_TYPES(OPENMINE_ENTITY_TRAITS)
 #undef OPENMINE_ENTITY_TRAITS
 
 /// Sets an entity from `before` to `after`. nullopt before ⇒ create; nullopt after ⇒ delete.
@@ -35,8 +28,7 @@ class SetEntityCommand : public Command {
 public:
     SetEntityCommand(std::optional<T> before, std::optional<T> after, std::string text,
                      std::optional<std::size_t> originalPosition = std::nullopt)
-        : before_(std::move(before)), after_(std::move(after)), text_(std::move(text)),
-          position_(originalPosition) {}
+        : before_(std::move(before)), after_(std::move(after)), text_(std::move(text)), position_(originalPosition) {}
 
     void redo(Project& p) override { apply(p, before_, after_); }
     void undo(Project& p) override { apply(p, after_, before_); }
@@ -69,7 +61,7 @@ private:
 
 class DesignLinkCommand : public Command {
 public:
-    DesignLinkCommand(ActivityDesignLink link, bool add) : link_(link), add_(add) {}
+    DesignLinkCommand(ActivityDesignLink link, bool add) : link_(std::move(link)), add_(add) {}
     void redo(Project& p) override { set(p, add_); }
     void undo(Project& p) override { set(p, !add_); }
     std::string text() const override { return add_ ? "Link activity to design" : "Unlink activity from design"; }
@@ -93,18 +85,6 @@ public:
 private:
     ProjectInfo before_, after_;
     std::string text_;
-};
-
-class AddBaselineCommand : public Command {
-public:
-    explicit AddBaselineCommand(ScheduleBaseline b) : baseline_(std::move(b)) {}
-    void redo(Project& p) override;
-    void undo(Project& p) override;
-    std::string text() const override { return "Capture baseline '" + baseline_.name + "'"; }
-    void audit(Project& p) const override;
-
-private:
-    ScheduleBaseline baseline_;
 };
 
 } // namespace openmine

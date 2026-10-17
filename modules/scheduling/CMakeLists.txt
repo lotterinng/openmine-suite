@@ -1,6 +1,11 @@
 add_library(openmine_scheduling
-    src/WorkingTime.cpp
+    src/CalendarTime.cpp
+    src/Production.cpp
+    src/ScheduleInput.cpp
     src/Cpm.cpp
+    src/Levelling.cpp
+    src/Periods.cpp
+    src/ScheduleTable.cpp
 )
 add_library(OpenMine::scheduling ALIAS openmine_scheduling)
 target_include_directories(openmine_scheduling PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)

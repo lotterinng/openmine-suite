@@ -84,6 +84,27 @@ int Date::isoWeekday() const {
     return static_cast<int>(w) + 1;
 }
 
+std::optional<DateTime> DateTime::parse(std::string_view s) {
+    if (s.size() < 10) return std::nullopt;
+    auto d = Date::parse(s.substr(0, 10));
+    if (!d) return std::nullopt;
+    if (s.size() == 10) return DateTime::fromDate(*d);
+    if (s.size() != 16 || (s[10] != ' ' && s[10] != 'T') || s[13] != ':') return std::nullopt;
+    auto dig = [&](std::size_t i) { return s[i] >= '0' && s[i] <= '9'; };
+    if (!dig(11) || !dig(12) || !dig(14) || !dig(15)) return std::nullopt;
+    const int h = (s[11] - '0') * 10 + (s[12] - '0');
+    const int m = (s[14] - '0') * 10 + (s[15] - '0');
+    if (h > 24 || m > 59 || (h == 24 && m != 0)) return std::nullopt;
+    return DateTime::fromDate(*d, h * 60 + m);
+}
+
+std::string DateTime::toString() const {
+    const int mod = minuteOfDay();
+    char buf[16];
+    std::snprintf(buf, sizeof buf, " %02d:%02d", mod / 60, mod % 60);
+    return date().toString() + buf;
+}
+
 std::string utcTimestampNow() {
     std::time_t t = std::time(nullptr);
     std::tm tm{};

@@ -3,24 +3,20 @@
 // Synchronous change notifications from the project model to observers (UI, scripting).
 
 #include "openmine/objects/Uuid.h"
+#include "openmine/project/EntityTypes.h"
 
 #include <functional>
 #include <map>
 
 namespace openmine {
 
+#define OPENMINE_ENTITY_KIND_ENUM(T, member, Kind) Kind,
 enum class EntityKind {
     ProjectInfo,
-    Layer,
-    Geometry,
-    Development,
-    Calendar,
-    Activity,
-    Dependency,
     DesignLink,
-    Baseline,
-    AttributeDefinition,
+    OPENMINE_ENTITY_TYPES(OPENMINE_ENTITY_KIND_ENUM)
 };
+#undef OPENMINE_ENTITY_KIND_ENUM
 
 enum class ChangeType { Added, Modified, Removed, Reset };
 

@@ -4,6 +4,8 @@ include(GoogleTest)
 
 add_executable(openmine_unit_tests
     unit/test_core.cpp
+    unit/test_geometry.cpp
+    unit/test_infrastructure.cpp
     unit/test_commands.cpp
     unit/test_persistence.cpp
     unit/test_scheduling.cpp

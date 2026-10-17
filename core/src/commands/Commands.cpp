@@ -112,7 +112,7 @@ void DesignLinkCommand::set(Project& p, bool present) {
 }
 void DesignLinkCommand::audit(Project& p) const {
     p.appendAudit(add_ ? "Link" : "Unlink", "ActivityDesignLink", link_.activityId,
-                  "activity " + link_.activityId.toString() + " <-> development " + link_.developmentId.toString());
+                  "activity " + link_.activityId.toString() + " <-> " + link_.designType + " " + link_.designId.toString());
 }
 
 // ---- ProjectInfoCommand --------------------------------------------------
@@ -125,20 +125,5 @@ void ProjectInfoCommand::undo(Project& p) {
     p.events().publish({EntityKind::ProjectInfo, ChangeType::Modified, before_.id});
 }
 void ProjectInfoCommand::audit(Project& p) const { p.appendAudit("Modify", "Project", after_.id, text_); }
-
-// ---- AddBaselineCommand --------------------------------------------------
-void AddBaselineCommand::redo(Project& p) {
-    p.mutableModel().baselines.push_back(baseline_);
-    p.events().publish({EntityKind::Baseline, ChangeType::Added, baseline_.id});
-}
-void AddBaselineCommand::undo(Project& p) {
-    auto& v = p.mutableModel().baselines;
-    v.erase(std::remove_if(v.begin(), v.end(), [&](const auto& b) { return b.id == baseline_.id; }), v.end());
-    p.events().publish({EntityKind::Baseline, ChangeType::Removed, baseline_.id});
-}
-void AddBaselineCommand::audit(Project& p) const {
-    p.appendAudit("Create", "ScheduleBaseline", baseline_.id,
-                  text() + " (" + std::to_string(baseline_.activities.size()) + " activities)");
-}
 
 } // namespace openmine
