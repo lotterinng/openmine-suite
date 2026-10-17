@@ -40,6 +40,7 @@ add_subdirectory(modules/survey)
 add_subdirectory(modules/reporting)
 add_subdirectory(modules/planning)
 add_subdirectory(modules/geology)
+add_subdirectory(modules/geotechnical)
 add_subdirectory(integrations/file_formats)
 add_subdirectory(integrations/omf)
 

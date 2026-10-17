@@ -1,0 +1,7 @@
+find_package(Eigen3 3.3 REQUIRED NO_MODULE)
+find_package(nlohmann_json 3.10 REQUIRED)
+add_library(openmine_geotechnical src/RockMass.cpp src/Stereonet.cpp)
+add_library(OpenMine::geotechnical ALIAS openmine_geotechnical)
+target_include_directories(openmine_geotechnical PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_link_libraries(openmine_geotechnical PUBLIC openmine_core PRIVATE Eigen3::Eigen nlohmann_json::nlohmann_json)
+openmine_set_warnings(openmine_geotechnical)

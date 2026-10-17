@@ -18,9 +18,10 @@ add_executable(openmine_unit_tests
     unit/test_planning.cpp
     unit/test_geology.cpp
     unit/test_omf.cpp
+    unit/test_geotechnical.cpp
 )
 target_link_libraries(openmine_unit_tests PRIVATE
-    openmine_core openmine_scheduling openmine_mine_design openmine_cad openmine_formats openmine_survey openmine_planning openmine_geology openmine_omf SQLite::SQLite3 GTest::gtest_main)
+    openmine_core openmine_scheduling openmine_mine_design openmine_cad openmine_formats openmine_survey openmine_planning openmine_geology openmine_geotechnical openmine_omf SQLite::SQLite3 GTest::gtest_main)
 gtest_discover_tests(openmine_unit_tests DISCOVERY_TIMEOUT 60)
 
 if(TARGET openmine_occt)
@@ -75,6 +76,14 @@ target_link_libraries(omf_tool PRIVATE openmine_omf openmine_geology openmine_su
 if(Python3_EXECUTABLE)
     add_test(NAME omf_reference_validation COMMAND ${Python3_EXECUTABLE} -m pytest -q ${CMAKE_CURRENT_SOURCE_DIR}/integration/test_omf.py)
     set_tests_properties(omf_reference_validation PROPERTIES ENVIRONMENT "OPENMINE_OMF_TOOL=$<TARGET_FILE:omf_tool>" LABELS integration)
+endif()
+
+# Stereonet statistics validation against mplstereonet (independent). Skipped by pytest if missing.
+add_executable(geotech_tool tools/geotech_tool.cpp)
+target_link_libraries(geotech_tool PRIVATE openmine_geotechnical nlohmann_json::nlohmann_json)
+if(Python3_EXECUTABLE)
+    add_test(NAME stereonet_mplstereonet_validation COMMAND ${Python3_EXECUTABLE} -m pytest -q ${CMAKE_CURRENT_SOURCE_DIR}/integration/test_stereonet.py)
+    set_tests_properties(stereonet_mplstereonet_validation PROPERTIES ENVIRONMENT "OPENMINE_GEOTECH_TOOL=$<TARGET_FILE:geotech_tool>" LABELS integration)
 endif()
 
 add_executable(report_tool tools/report_tool.cpp)
