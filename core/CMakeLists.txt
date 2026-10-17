@@ -16,6 +16,7 @@ add_library(openmine_core
     src/geometry/Sweep.cpp
     src/geometry/LocalGrid.cpp
     src/util/Sha256.cpp
+    src/util/Csv.cpp
     src/diagnostics/Log.cpp
     src/jobs/Job.cpp
     src/assets/AssetStore.cpp

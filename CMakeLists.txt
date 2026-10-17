@@ -39,6 +39,7 @@ add_subdirectory(modules/mine_design)
 add_subdirectory(modules/survey)
 add_subdirectory(modules/reporting)
 add_subdirectory(modules/planning)
+add_subdirectory(modules/geology)
 add_subdirectory(integrations/file_formats)
 
 option(OPENMINE_WITH_PROJ "Build the PROJ coordinate integration" ON)

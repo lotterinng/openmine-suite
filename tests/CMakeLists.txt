@@ -16,9 +16,10 @@ add_executable(openmine_unit_tests
     unit/test_survey_io.cpp
     unit/test_survey_processing.cpp
     unit/test_planning.cpp
+    unit/test_geology.cpp
 )
 target_link_libraries(openmine_unit_tests PRIVATE
-    openmine_core openmine_scheduling openmine_mine_design openmine_cad openmine_formats openmine_survey openmine_planning SQLite::SQLite3 GTest::gtest_main)
+    openmine_core openmine_scheduling openmine_mine_design openmine_cad openmine_formats openmine_survey openmine_planning openmine_geology SQLite::SQLite3 GTest::gtest_main)
 gtest_discover_tests(openmine_unit_tests DISCOVERY_TIMEOUT 60)
 
 if(TARGET openmine_occt)
