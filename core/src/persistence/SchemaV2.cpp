@@ -6,6 +6,8 @@
 #include "TableMapping.h"
 #include "openmine/project/Project.h"
 
+#include <cmath>
+#include <limits>
 #include <set>
 
 namespace openmine::persistence::detail {
@@ -714,6 +716,230 @@ template <class T> const Table<T>& tableFor() {
     return t;
 }
 
+// ---- Entity documents ---------------------------------------------------------------------------------
+Db& codecDb() {
+    thread_local Db db(":memory:", SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE);
+    return db;
+}
+
+std::string base64(const std::vector<unsigned char>& b) {
+    static const char* tbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    std::size_t i = 0;
+    for (; i + 2 < b.size(); i += 3) {
+        const unsigned v = (b[i] << 16) | (b[i + 1] << 8) | b[i + 2];
+        out += tbl[(v >> 18) & 63];
+        out += tbl[(v >> 12) & 63];
+        out += tbl[(v >> 6) & 63];
+        out += tbl[v & 63];
+    }
+    if (i + 1 == b.size()) {
+        const unsigned v = b[i] << 16;
+        out += tbl[(v >> 18) & 63];
+        out += tbl[(v >> 12) & 63];
+        out += "==";
+    } else if (i + 2 == b.size()) {
+        const unsigned v = (b[i] << 16) | (b[i + 1] << 8);
+        out += tbl[(v >> 18) & 63];
+        out += tbl[(v >> 12) & 63];
+        out += tbl[(v >> 6) & 63];
+        out += '=';
+    }
+    return out;
+}
+
+std::vector<unsigned char> unbase64(const std::string& s) {
+    auto val = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;
+    };
+    std::vector<unsigned char> out;
+    unsigned buf = 0;
+    int bits = 0;
+    for (char c : s) {
+        if (c == '=') break;
+        const int v = val(c);
+        if (v < 0) throw PersistenceError("Corrupt base64 in entity document");
+        buf = (buf << 6) | static_cast<unsigned>(v);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<unsigned char>((buf >> bits) & 0xFF));
+        }
+    }
+    return out;
+}
+
+json realJson(double v) {
+    if (std::isfinite(v)) return v;
+    return json{{"$f", std::isnan(v) ? "nan" : (v > 0 ? "inf" : "-inf")}};
+}
+double realFromJson(const json& j) {
+    if (j.is_object()) {
+        const std::string f = j.at("$f");
+        if (f == "nan") return std::numeric_limits<double>::quiet_NaN();
+        return f == "inf" ? std::numeric_limits<double>::infinity() : -std::numeric_limits<double>::infinity();
+    }
+    return j.get<double>();
+}
+
+template <class T> json encodeChildren(const T& e) {
+    json c = json::object();
+    if constexpr (std::is_same_v<T, GeometryObject> || std::is_same_v<T, MineDevelopment> || std::is_same_v<T, Stope> ||
+                  std::is_same_v<T, ScheduleActivity>)
+        c["attributes"] = e.attributes;
+    if constexpr (std::is_same_v<T, Registration>) {
+        json a = json::array();
+        for (const auto& p : e.pairs)
+            a.push_back({{"name", p.name}, {"source", toJson(p.source)}, {"target", toJson(p.target)},
+                         {"target_control", p.targetControlId.isNil() ? json(nullptr) : json(p.targetControlId.toString())},
+                         {"role", toString(p.role)}, {"residual", toJson(p.residual)}});
+        c["pairs"] = a;
+    }
+    if constexpr (std::is_same_v<T, ScheduleBaseline>) {
+        json a = json::array();
+        for (const auto& b : e.activities)
+            a.push_back({{"activity", b.activityId.toString()}, {"name", b.name}, {"start", b.start.toString()}, {"finish", b.finish.toString()},
+                         {"duration_hours", realJson(b.durationHours)}, {"quantity", realJson(b.quantity)}});
+        c["activities"] = a;
+    }
+    if constexpr (std::is_same_v<T, Scenario>) {
+        json a = json::array();
+        for (const auto& o : e.overrides)
+            a.push_back({{"entity", o.entityId.isNil() ? json(nullptr) : json(o.entityId.toString())}, {"field", o.field}, {"value", o.value}});
+        c["overrides"] = a;
+    }
+    if constexpr (std::is_same_v<T, Drillhole>) {
+        json sv = json::array(), iv = json::array();
+        for (const auto& s : e.surveys) sv.push_back({realJson(s.depth), realJson(s.azimuth), realJson(s.dip)});
+        for (const auto& i : e.intervals) {
+            json vals = json::object();
+            for (const auto& [k, v] : i.values) vals[k] = realJson(v);
+            iv.push_back({{"from", realJson(i.from)}, {"to", realJson(i.to)}, {"values", vals}, {"codes", i.codes}});
+        }
+        c["surveys"] = sv;
+        c["intervals"] = iv;
+    }
+    return c;
+}
+
+Uuid uuidOrNil(const json& j) {
+    if (j.is_null()) return {};
+    auto u = Uuid::parse(j.get<std::string>());
+    if (!u) throw PersistenceError("Corrupt identifier in entity document");
+    return *u;
+}
+
+template <class T> void decodeChildren(const json& c, T& e) {
+    if constexpr (std::is_same_v<T, GeometryObject> || std::is_same_v<T, MineDevelopment> || std::is_same_v<T, Stope> ||
+                  std::is_same_v<T, ScheduleActivity>) {
+        if (c.contains("attributes")) e.attributes = c.at("attributes").get<AttributeMap>();
+    }
+    if constexpr (std::is_same_v<T, Registration>) {
+        e.pairs.clear();
+        for (const auto& p : c.at("pairs")) {
+            RegistrationPair r;
+            r.name = p.at("name");
+            r.source = vec3FromJson(p.at("source"));
+            r.target = vec3FromJson(p.at("target"));
+            r.targetControlId = uuidOrNil(p.at("target_control"));
+            r.role = enumFromString<PairRole>(p.at("role").get<std::string>()).value_or(PairRole::Fit);
+            r.residual = vec3FromJson(p.at("residual"));
+            e.pairs.push_back(r);
+        }
+    }
+    if constexpr (std::is_same_v<T, ScheduleBaseline>) {
+        e.activities.clear();
+        for (const auto& b : c.at("activities")) {
+            auto st = DateTime::parse(b.at("start").get<std::string>()), fi = DateTime::parse(b.at("finish").get<std::string>());
+            if (!st || !fi) throw PersistenceError("Corrupt baseline date in entity document");
+            e.activities.push_back({uuidOrNil(b.at("activity")), b.at("name"), *st, *fi, realFromJson(b.at("duration_hours")), realFromJson(b.at("quantity"))});
+        }
+    }
+    if constexpr (std::is_same_v<T, Scenario>) {
+        e.overrides.clear();
+        for (const auto& o : c.at("overrides")) e.overrides.push_back({uuidOrNil(o.at("entity")), o.at("field"), o.at("value")});
+    }
+    if constexpr (std::is_same_v<T, Drillhole>) {
+        e.surveys.clear();
+        e.intervals.clear();
+        for (const auto& s : c.at("surveys")) e.surveys.push_back({realFromJson(s.at(0)), realFromJson(s.at(1)), realFromJson(s.at(2))});
+        for (const auto& i : c.at("intervals")) {
+            DrillholeInterval d;
+            d.from = realFromJson(i.at("from"));
+            d.to = realFromJson(i.at("to"));
+            for (const auto& [k, v] : i.at("values").items()) d.values[k] = realFromJson(v);
+            d.codes = i.at("codes").get<std::map<std::string, std::string>>();
+            e.intervals.push_back(std::move(d));
+        }
+    }
+}
+} // namespace
+
+template <class T> std::string encodeEntityV2(const T& e) {
+    const auto& t = tableFor<T>();
+    std::string sql = "SELECT ";
+    for (std::size_t i = 0; i < t.columns.size(); ++i) sql += (i ? ", ?" : "?") + std::to_string(i + 1);
+    Stmt st(codecDb(), sql);
+    for (std::size_t i = 0; i < t.columns.size(); ++i) t.columns[i].bind(st, static_cast<int>(i) + 1, e);
+    if (!st.step()) throw PersistenceError("Entity encoding failed");
+    json cols = json::object();
+    for (std::size_t i = 0; i < t.columns.size(); ++i) {
+        const int c = static_cast<int>(i);
+        switch (st.type(c)) {
+        case SQLITE_NULL: cols[t.columns[i].name] = nullptr; break;
+        case SQLITE_INTEGER: cols[t.columns[i].name] = st.integer(c); break;
+        case SQLITE_FLOAT: cols[t.columns[i].name] = realJson(st.real(c)); break;
+        case SQLITE_TEXT: cols[t.columns[i].name] = st.text(c); break;
+        default: cols[t.columns[i].name] = json{{"$b64", base64(st.blob(c))}}; break;
+        }
+    }
+    json doc{{"uuid", e.id.toString()}, {"columns", cols}, {"children", encodeChildren(e)}};
+    return doc.dump();
+}
+
+template <class T> T decodeEntityV2(const std::string& text) {
+    const json doc = parseJson(text, "entity document");
+    const auto& t = tableFor<T>();
+    const auto& cols = doc.at("columns");
+    std::string sql = "SELECT ";
+    for (std::size_t i = 0; i < t.columns.size(); ++i) sql += (i ? ", ?" : "?") + std::to_string(i + 1);
+    Stmt st(codecDb(), sql);
+    std::vector<std::vector<unsigned char>> blobs(t.columns.size());
+    for (std::size_t i = 0; i < t.columns.size(); ++i) {
+        const int k = static_cast<int>(i) + 1;
+        const auto it = cols.find(t.columns[i].name);
+        if (it == cols.end()) throw PersistenceError("Entity document lacks column " + t.columns[i].name);
+        const json& v = *it;
+        if (v.is_null()) st.bindNull(k);
+        else if (v.is_number_integer() || v.is_number_unsigned()) st.bind(k, v.get<std::int64_t>());
+        else if (v.is_number_float()) st.bind(k, v.get<double>());
+        else if (v.is_string()) st.bind(k, v.get<std::string>());
+        else if (v.is_object() && v.contains("$b64")) {
+            blobs[i] = unbase64(v.at("$b64").get<std::string>());
+            st.bindBlob(k, blobs[i].data(), static_cast<int>(blobs[i].size()));
+        } else if (v.is_object() && v.contains("$f")) st.bind(k, realFromJson(v));
+        else throw PersistenceError("Unsupported value in entity document column " + t.columns[i].name);
+    }
+    if (!st.step()) throw PersistenceError("Entity decoding failed");
+    T e;
+    e.id = uuidOrNil(doc.at("uuid"));
+    for (std::size_t i = 0; i < t.columns.size(); ++i) t.columns[i].read(st, static_cast<int>(i), e);
+    decodeChildren(doc.at("children"), e);
+    return e;
+}
+
+#define OPENMINE_INSTANTIATE_CODEC(T, member, Kind)                     \
+    template std::string encodeEntityV2<T>(const T&);                   \
+    template T decodeEntityV2<T>(const std::string&);
+OPENMINE_ENTITY_TYPES(OPENMINE_INSTANTIATE_CODEC)
+#undef OPENMINE_INSTANTIATE_CODEC
+
+namespace {
 // ---- Child tables (explicit relationships of nested collections) -------------------------------------------
 constexpr const char* kChildTables = R"SQL(
 CREATE TABLE project_info (

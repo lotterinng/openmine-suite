@@ -55,6 +55,24 @@ public:
         return removed;
     }
 
+    /// Reorders the items: those listed in `order` first (in that order), then the others in their
+    /// current relative order. Unknown ids in `order` are ignored.
+    void reorder(const std::vector<Uuid>& order) {
+        std::vector<T> out;
+        out.reserve(items_.size());
+        std::unordered_map<Uuid, bool> used;
+        for (const auto& id : order) {
+            auto it = index_.find(id);
+            if (it == index_.end() || used[id]) continue;
+            used[id] = true;
+            out.push_back(items_[it->second]);
+        }
+        for (const auto& e : items_)
+            if (!used[e.id]) out.push_back(e);
+        items_ = std::move(out);
+        reindex();
+    }
+
     void clear() {
         items_.clear();
         index_.clear();

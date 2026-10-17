@@ -14,6 +14,11 @@ struct ProjectModel;
 namespace openmine::persistence::detail {
 
 const std::string& schemaDdlV2();
+
+/// Entity documents for repositories (JSON text): every column of the entity's table plus its
+/// child rows, encoded through the same mapping as the project file.
+template <class T> std::string encodeEntityV2(const T& e);
+template <class T> T decodeEntityV2(const std::string& doc);
 void writeModelV2(Db& db, const ProjectModel& m, const std::string& appVersion);
 void readModelV2(Db& db, ProjectModel& m);
 std::vector<std::string> verifyV2(Db& db);

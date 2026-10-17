@@ -37,7 +37,7 @@ target_link_libraries(dxf_tool PRIVATE openmine_formats openmine_cad nlohmann_js
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME dxf_ezdxf_validation
-             COMMAND ${Python3_EXECUTABLE} -m pytest -q ${CMAKE_CURRENT_SOURCE_DIR}/integration/test_dxf_ezdxf.py)
+             COMMAND ${Python3_EXECUTABLE} -m pytest -q -p no:cacheprovider --basetemp=${CMAKE_CURRENT_BINARY_DIR}/pytest-test_dxf_ezdxf ${CMAKE_CURRENT_SOURCE_DIR}/integration/test_dxf_ezdxf.py)
     set_tests_properties(dxf_ezdxf_validation PROPERTIES ENVIRONMENT "OPENMINE_DXF_TOOL=$<TARGET_FILE:dxf_tool>" LABELS integration)
 endif()
 
@@ -48,7 +48,7 @@ if(TARGET openmine_pdal)
 endif()
 if(Python3_Interpreter_FOUND)
     add_test(NAME mesh_trimesh_validation
-             COMMAND ${Python3_EXECUTABLE} -m pytest -q ${CMAKE_CURRENT_SOURCE_DIR}/integration/test_mesh_trimesh.py)
+             COMMAND ${Python3_EXECUTABLE} -m pytest -q -p no:cacheprovider --basetemp=${CMAKE_CURRENT_BINARY_DIR}/pytest-test_mesh_trimesh ${CMAKE_CURRENT_SOURCE_DIR}/integration/test_mesh_trimesh.py)
     set_tests_properties(mesh_trimesh_validation PROPERTIES ENVIRONMENT "OPENMINE_DXF_TOOL=$<TARGET_FILE:dxf_tool>" LABELS integration)
 endif()
 
@@ -70,11 +70,19 @@ if(TARGET openmine_optimisation)
     gtest_discover_tests(openmine_optimisation_tests DISCOVERY_TIMEOUT 60)
 endif()
 
+# PostgreSQL/PostGIS repository (needs a database: -DOPENMINE_TEST_PG_DSN="host=… dbname=… user=…").
+if(TARGET openmine_repository)
+    set(OPENMINE_TEST_PG_DSN "" CACHE STRING "libpq connection string of a scratch database with PostGIS for repository tests")
+    add_executable(openmine_pg_repository_tests unit/test_pg_repository.cpp)
+    target_link_libraries(openmine_pg_repository_tests PRIVATE openmine_repository openmine_core GTest::gtest_main)
+    gtest_discover_tests(openmine_pg_repository_tests DISCOVERY_TIMEOUT 60 PROPERTIES ENVIRONMENT "OPENMINE_PG_DSN=${OPENMINE_TEST_PG_DSN}" LABELS database)
+endif()
+
 # OMF v1 validation against the GMG reference library (omf 1.0.x). Skipped by pytest if missing.
 add_executable(omf_tool tools/omf_tool.cpp)
 target_link_libraries(omf_tool PRIVATE openmine_omf openmine_geology openmine_survey nlohmann_json::nlohmann_json)
 if(Python3_EXECUTABLE)
-    add_test(NAME omf_reference_validation COMMAND ${Python3_EXECUTABLE} -m pytest -q ${CMAKE_CURRENT_SOURCE_DIR}/integration/test_omf.py)
+    add_test(NAME omf_reference_validation COMMAND ${Python3_EXECUTABLE} -m pytest -q -p no:cacheprovider --basetemp=${CMAKE_CURRENT_BINARY_DIR}/pytest-test_omf ${CMAKE_CURRENT_SOURCE_DIR}/integration/test_omf.py)
     set_tests_properties(omf_reference_validation PROPERTIES ENVIRONMENT "OPENMINE_OMF_TOOL=$<TARGET_FILE:omf_tool>" LABELS integration)
 endif()
 
@@ -82,13 +90,13 @@ endif()
 add_executable(geotech_tool tools/geotech_tool.cpp)
 target_link_libraries(geotech_tool PRIVATE openmine_geotechnical nlohmann_json::nlohmann_json)
 if(Python3_EXECUTABLE)
-    add_test(NAME stereonet_mplstereonet_validation COMMAND ${Python3_EXECUTABLE} -m pytest -q ${CMAKE_CURRENT_SOURCE_DIR}/integration/test_stereonet.py)
+    add_test(NAME stereonet_mplstereonet_validation COMMAND ${Python3_EXECUTABLE} -m pytest -q -p no:cacheprovider --basetemp=${CMAKE_CURRENT_BINARY_DIR}/pytest-test_stereonet ${CMAKE_CURRENT_SOURCE_DIR}/integration/test_stereonet.py)
     set_tests_properties(stereonet_mplstereonet_validation PROPERTIES ENVIRONMENT "OPENMINE_GEOTECH_TOOL=$<TARGET_FILE:geotech_tool>" LABELS integration)
 endif()
 
 add_executable(report_tool tools/report_tool.cpp)
 target_link_libraries(report_tool PRIVATE openmine_reporting nlohmann_json::nlohmann_json)
 if(Python3_Interpreter_FOUND)
-    add_test(NAME report_validation COMMAND ${Python3_EXECUTABLE} -m pytest -q ${CMAKE_CURRENT_SOURCE_DIR}/integration/test_reports.py)
+    add_test(NAME report_validation COMMAND ${Python3_EXECUTABLE} -m pytest -q -p no:cacheprovider --basetemp=${CMAKE_CURRENT_BINARY_DIR}/pytest-test_reports ${CMAKE_CURRENT_SOURCE_DIR}/integration/test_reports.py)
     set_tests_properties(report_validation PROPERTIES ENVIRONMENT "OPENMINE_REPORT_TOOL=$<TARGET_FILE:report_tool>" LABELS integration)
 endif()

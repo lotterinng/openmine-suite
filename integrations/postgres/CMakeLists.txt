@@ -1,0 +1,7 @@
+find_package(PostgreSQL REQUIRED)
+find_package(nlohmann_json 3.10 REQUIRED)
+add_library(openmine_repository src/PgRepository.cpp)
+add_library(OpenMine::repository ALIAS openmine_repository)
+target_include_directories(openmine_repository PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_link_libraries(openmine_repository PUBLIC openmine_core PRIVATE PostgreSQL::PostgreSQL nlohmann_json::nlohmann_json)
+openmine_set_warnings(openmine_repository)

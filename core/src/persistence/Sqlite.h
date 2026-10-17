@@ -85,6 +85,7 @@ public:
     }
 
     bool isNull(int c) const { return sqlite3_column_type(stmt_, c) == SQLITE_NULL; }
+    int type(int c) const { return sqlite3_column_type(stmt_, c); }
     std::string text(int c) const {
         auto p = reinterpret_cast<const char*>(sqlite3_column_text(stmt_, c));
         return p ? std::string(p, static_cast<std::size_t>(sqlite3_column_bytes(stmt_, c))) : std::string();

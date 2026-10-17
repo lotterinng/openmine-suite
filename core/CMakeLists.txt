@@ -27,6 +27,7 @@ add_library(openmine_core
     src/persistence/SchemaV2.cpp
     src/persistence/LegacyV1.cpp
     src/persistence/ProjectFile.cpp
+    src/persistence/EntityCodec.cpp
 )
 add_library(OpenMine::core ALIAS openmine_core)
 target_include_directories(openmine_core PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)

@@ -6,7 +6,10 @@
 
 #include <sqlite3.h>
 
+#include <cmath>
 #include <filesystem>
+#include <limits>
+#include <set>
 #include <fstream>
 
 using namespace openmine;
@@ -442,4 +445,62 @@ TEST(Persistence, SchemaHasExplicitRelationships) {
                           "REFERENCES point_cloud_dataset(uuid) ON DELETE CASCADE", "REFERENCES survey_control_point(uuid) ON DELETE SET NULL",
                           "CREATE TABLE production_actual", "CREATE TABLE design_revision", "CREATE TABLE activity_resource_assignment"})
         EXPECT_NE(ddl.find(s), std::string::npos) << s;
+}
+
+// ---- entity documents (repositories) --------------------------------------------------------------
+#include "openmine/persistence/EntityCodec.h"
+
+TEST(EntityCodec, DocumentsRoundTripLosslesslyAndDeterministically) {
+    auto r = richProject();
+    auto& p = *r.p;
+    {
+        ProjectEditor ed(p);
+        auto h = *p.model().drillholes.find(r.hole);
+        h.intervals.push_back({90, 91, {{"au", std::numeric_limits<double>::quiet_NaN()}, {"cu", 1e-300}}, {{"lith", "Ünïcødé ✓"}}});
+        h.length = std::max(h.length, 91.0);
+        ed.update(h);
+    }
+    const auto docs = persistence::encodeModel(p.model());
+    std::set<std::string> types;
+    for (const auto& d : docs) types.insert(d.type);
+    EXPECT_GE(types.size(), 30u);
+    EXPECT_TRUE(types.count("ProjectInfo") && types.count("ActivityDesignLink") && types.count("Drillhole") && types.count("Registration"));
+    // Same model → identical documents.
+    const auto again = persistence::encodeModel(p.model());
+    ASSERT_EQ(docs.size(), again.size());
+    for (std::size_t i = 0; i < docs.size(); ++i) EXPECT_EQ(docs[i].json, again[i].json);
+    // Decode into an empty model and re-encode: byte-identical.
+    Project q;
+    for (const auto& d : docs) persistence::insertDocument(q.mutableModel(), d.type, d.key, d.json);
+    const auto back = persistence::encodeModel(q.model());
+    ASSERT_EQ(back.size(), docs.size());
+    for (std::size_t i = 0; i < docs.size(); ++i) {
+        EXPECT_EQ(back[i].type, docs[i].type);
+        EXPECT_EQ(back[i].json, docs[i].json) << docs[i].type;
+    }
+    EXPECT_TRUE(persistence::checkModel(q).empty());
+    const auto& hole = *q.model().drillholes.find(r.hole);
+    EXPECT_TRUE(std::isnan(hole.intervals.back().values.at("au")));
+    EXPECT_EQ(hole.intervals.back().values.at("cu"), 1e-300);
+    EXPECT_EQ(persistence::documentHash(docs[0].json).size(), 64u);
+}
+
+TEST(EntityCodec, SetCommandsAreUndoableAndIntegrityIsChecked) {
+    auto r = richProject();
+    auto& p = *r.p;
+    auto g = *p.model().geometry.find(r.geom);
+    g.name = "renamed remotely";
+    const auto doc = persistence::encodeEntity(g);
+    p.commands().execute(persistence::setDocumentCommand(p.model(), "GeometryObject", g.id.toString(), doc, "Pull"));
+    EXPECT_EQ(p.model().geometry.find(r.geom)->name, "renamed remotely");
+    p.commands().undo();
+    EXPECT_NE(p.model().geometry.find(r.geom)->name, "renamed remotely");
+    // Deleting a layer still referenced by geometry is detected by checkModel.
+    const Uuid layer = g.layerId;
+    p.commands().execute(persistence::setDocumentCommand(p.model(), "CadLayer", layer.toString(), std::nullopt, "Pull"));
+    EXPECT_FALSE(persistence::checkModel(p).empty());
+    p.commands().undo();
+    EXPECT_TRUE(persistence::checkModel(p).empty());
+    EXPECT_THROW(persistence::encodeDocument(p.model(), "NoSuchType", "x"), persistence::PersistenceError);
+    EXPECT_FALSE(persistence::encodeDocument(p.model(), "GeometryObject", Uuid::generate().toString()));
 }
