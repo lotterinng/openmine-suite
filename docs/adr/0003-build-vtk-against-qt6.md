@@ -17,5 +17,5 @@ Build VTK 9.3.1 from source with only the modules the viewport needs (see `DEVEL
 On Windows, vcpkg's `vtk[qt]` already builds against Qt 6.
 
 ## Consequences
-One-off ~1.5 h build on Linux dev machines/CI (cacheable). Same VTK major version on both
+One-off ~45 min build on Linux dev machines/CI (cacheable). Same VTK major version on both
 platforms.

@@ -83,29 +83,30 @@ int runSmokeTest(MainWindow& w, const QString& outDir) {
     s.check(w.properties()->setProperty("crs.name", "Hartebeesthoek94 / Lo25"), "CRS name edited through Properties");
     s.check(w.properties()->setProperty("crs.code", "EPSG:2051"), "CRS code edited through Properties");
 
-    // 2a. Draw a polyline interactively in the viewport (simulated clicks on the work plane).
-    w.viewport()->setView("top");
-    s.pump(100);
-    w.viewport()->setTool(Viewport3D::Tool::DrawPolyline);
-    const QSize vs = w.viewport()->vtkWidget()->size();
-    for (QPoint p : {QPoint(vs.width() / 3, vs.height() / 2), QPoint(vs.width() / 2, vs.height() / 3),
-                     QPoint(2 * vs.width() / 3, vs.height() / 2)})
-        w.viewport()->simulateClick(p);
-    w.viewport()->finishDrawing();
-    s.pump();
-    s.check(ctx.project().model().geometry.size() == 1, "polyline drawn interactively in the viewport");
-    if (ctx.project().model().geometry.size() == 1)
-        s.check(ctx.project().model().geometry.all()[0].vertices.size() == 3, "drawn polyline has 3 picked vertices");
-    w.viewport()->setTool(Viewport3D::Tool::Select);
-
     // 2b. Create a decline centreline from the console in Lo-style coordinates (1:8).
     s.check(s.run("POLYLINE -25000,2900000,1200 @-90,0,-11.25 @0,-60,-7.5"), "POLYLINE command");
-    s.check(ctx.project().model().geometry.size() == 2, "console polyline exists");
-    const Uuid geomId = ctx.project().model().geometry.all().back().id;
+    s.check(ctx.project().model().geometry.size() == 1, "console polyline exists");
+    const Uuid geomId = ctx.project().model().geometry.all().front().id;
     s.check(!geomId.isNil(), "geometry has persistent UUID " + qstr(geomId.toString()));
     const double expectedLen = std::hypot(90.0, 11.25) + std::hypot(60.0, 7.5);
     s.check(std::abs(geometry::length3d(ctx.project().model().geometry.find(geomId)->vertices) - expectedLen) < 1e-9,
             "centreline length = " + formatNumber(expectedLen));
+
+    // 2a. Draw a polyline interactively in the viewport (simulated clicks on the work plane).
+    s.run("LAYER Sketch #9AD06B");
+    w.viewport()->setView("top");
+    s.pump(100);
+    w.viewport()->setTool(Viewport3D::Tool::DrawPolyline);
+    const QSize vs = w.viewport()->vtkWidget()->size();
+    for (QPoint p : {QPoint(vs.width() / 8, vs.height() * 7 / 8), QPoint(vs.width() / 5, vs.height() * 3 / 4),
+                     QPoint(vs.width() * 2 / 7, vs.height() * 7 / 8)})
+        w.viewport()->simulateClick(p);
+    w.viewport()->finishDrawing();
+    s.pump();
+    s.check(ctx.project().model().geometry.size() == 2, "polyline drawn interactively in the viewport");
+    if (ctx.project().model().geometry.size() == 2)
+        s.check(ctx.project().model().geometry.all()[1].vertices.size() == 3, "drawn polyline has 3 picked vertices");
+    w.viewport()->setTool(Viewport3D::Tool::Select);
 
     // 3. View it and select it by picking in the viewport.
     ctx.clearSelection();

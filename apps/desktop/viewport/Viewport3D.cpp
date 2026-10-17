@@ -100,7 +100,7 @@ double niceStep(double span) {
 class ViewportInteractorStyle : public vtkInteractorStyleTrackballCamera {
 public:
     static ViewportInteractorStyle* New();
-    vtkTypeMacro(ViewportInteractorStyle, vtkInteractorStyleTrackballCamera);
+    vtkTypeMacro(ViewportInteractorStyle, vtkInteractorStyleTrackballCamera)
     Viewport3D* view = nullptr;
 
     void OnLeftButtonDown() override {
@@ -364,6 +364,7 @@ void Viewport3D::buildGrid() {
     setColor(d_->grid, Theme::colors().grid);
     d_->grid->GetProperty()->SetOpacity(0.45);
     d_->grid->PickableOff();
+    d_->grid->UseBoundsOff(); // fit-to-view frames the model, not the grid
     d_->renderer->AddActor(d_->grid);
 }
 

@@ -146,24 +146,28 @@ void MainWindow::createActions() {
         snapLabel_->setText(QStringLiteral("Grid %1 · Endpoint %2").arg(on ? "1 m" : "off", viewport_->endpointSnap() ? "on" : "off"));
     });
     A.gridSnap->setCheckable(true);
+    A.gridSnap->setIconText("Grid");
     A.gridSnap->setChecked(true);
     A.endSnap = mk("Endpoint Snap", "polyline", [this](bool on) {
         viewport_->setEndpointSnap(on);
         snapLabel_->setText(QStringLiteral("Grid %1 · Endpoint %2").arg(viewport_->gridSnap() > 0 ? "1 m" : "off", on ? "on" : "off"));
     });
     A.endSnap->setCheckable(true);
+    A.endSnap->setIconText("Endpoint");
     A.endSnap->setChecked(true);
     A.workPlane = mk("Work Plane Z…", "top", [this] {
         bool ok = false;
         const double z = QInputDialog::getDouble(this, "Work plane", "Drawing elevation Z (m):", viewport_->workPlaneZ(), -1e7, 1e7, 3, &ok);
         if (ok) console_->execute(QStringLiteral("ELEV %1").arg(z, 0, 'f', 3));
     });
+    A.workPlane->setIconText("Plane Z");
     A.newLayer = mk("New Layer…", "new", [this] {
         bool ok = false;
         const QString n = QInputDialog::getText(this, "New layer", "Layer name:", QLineEdit::Normal, {}, &ok);
         if (ok && !n.isEmpty()) console_->execute("LAYER " + n);
     });
 
+    A.newLayer->setIconText("Layer");
     A.fit = mk("Fit", "fit", [this] { viewport_->fitAll(); }, QKeySequence(Qt::Key_F));
     A.top = mk("Top", "top", [this] { viewport_->setView("top"); });
     A.front = mk("Front", "front", [this] { viewport_->setView("front"); });
@@ -414,6 +418,8 @@ void MainWindow::updateActions() {
 void MainWindow::setTheme(bool dark) {
     Theme::apply(*qApp, dark ? ThemeKind::Dark : ThemeKind::Light);
     viewport_->refreshTheme();
+    properties_->refresh();
+    scheduler_->update();
     // Icons are drawn from theme colours; re-create them.
     for (auto* act : findChildren<QAction*>())
         if (const QString n = act->property("iconName").toString(); !n.isEmpty()) act->setIcon(toolIcon(n));

@@ -1,0 +1,73 @@
+      > NEW Jupiter Smoke Mine 2026-11-02  →  New project 'Jupiter Smoke Mine' created (schedule start 2026-11-02).
+PASS  project created
+PASS  schedule start parsed
+PASS  CRS name edited through Properties
+PASS  CRS code edited through Properties
+      > POLYLINE -25000,2900000,1200 @-90,0,-11.25 @0,-60,-7.5  →  Polyline 4798ad8d-7e5d-4f6b-a339-4352b0fb903c created: 3 vertices, 3D length 151.167 m
+PASS  POLYLINE command
+PASS  console polyline exists
+PASS  geometry has persistent UUID 4798ad8d-7e5d-4f6b-a339-4352b0fb903c
+PASS  centreline length = 151.167
+      > LAYER Sketch #9AD06B  →  Current layer: Sketch
+PASS  polyline drawn interactively in the viewport
+PASS  drawn polyline has 3 picked vertices
+PASS  viewport pick at (529,128) selected the centreline
+PASS  rename via Properties
+PASS  name stored in model
+PASS  invalid coordinate rejected
+PASS  rejected edit left model unchanged
+PASS  layer changed via Properties
+      > HEADING LEG2_675_D3_DEC 5.5 5.5 675  →  Heading LEG2_675_D3_DEC created: 151.167 m, 5.5 × 5.5 m
+PASS  HEADING command
+PASS  development heading exists
+      > ACTIVITY 5  →  Linked activity created: 30.2 working days at 5.00 m/day, 2026-11-02 → 2026-12-14
+PASS  ACTIVITY command
+PASS  linked activity exists
+PASS  activity ↔ heading link stored
+PASS  CPM duration = length / rate = 30.233 d
+PASS  activity row present in Gantt grid
+PASS  Gantt row shows start 2026-11-02 finish 2026-12-14
+PASS  screenshot 01_vertical_slice_gantt.png
+PASS  screenshot 02_heading_properties_3d.png
+      > BASELINE Approved Nov-2026  →  Baseline 'Approved Nov-2026' captured
+PASS  baseline captured
+      > ACTUAL 40  →  Actual recorded: 26.5% complete, 111.17 m remaining
+PASS  actual advance recorded
+      > STATUSDATE 2026-11-16  →  Status date 2026-11-16 — remaining work reforecast
+PASS  status date set
+PASS  centreline vertex edited (design change)
+PASS  linked activity flagged: Design length of LEG2_675_D3_DEC changed from 151.167 m to 161.101 m; schedule quantity (151.167 m) not yet updated
+PASS  activity quantity NOT silently changed
+PASS  screenshot 03_design_change_flagged.png
+      > APPLYDESIGN  →  Activity quantity recalculated from current design (audited; baselines unchanged).
+PASS  controlled recalculation applied
+PASS  quantity updated to 161.101
+PASS  approved baseline preserved
+      > SAVE /home/claude/openmine-suite/build/linux-debug/smoke/JupiterSmoke.openmine  →  Saved JupiterSmoke.openmine
+PASS  SAVE command
+PASS  project clean after save
+      > CLOSE  →  Saved JupiterSmoke.openmine
+PASS  CLOSE command
+PASS  project closed
+      > OPEN /home/claude/openmine-suite/build/linux-debug/smoke/JupiterSmoke.openmine  →  Opened JupiterSmoke.openmine
+PASS  OPEN command
+PASS  project reopened
+PASS  geometry UUID persisted
+PASS  vertex coordinates bit-identical after reopen
+PASS  edited name persisted
+PASS  heading → geometry link persisted
+PASS  activity persisted
+PASS  activity → heading link persisted
+PASS  baseline persisted
+PASS  CRS persisted
+PASS  audit log persisted (19 entries)
+PASS  Gantt shows the reopened activity
+      > EXPORTCSV /home/claude/openmine-suite/build/linux-debug/smoke/schedule.csv  →  Schedule exported to /home/claude/openmine-suite/build/linux-debug/smoke/schedule.csv
+PASS  schedule CSV exported
+PASS  screenshot 04_reopened.png
+      > THEME LIGHT  →  Light theme
+PASS  screenshot 05_light_theme.png
+      > THEME DARK  →  Dark theme
+PASS  planned command reports unavailable instead of pretending
+
+SMOKE TEST PASSED

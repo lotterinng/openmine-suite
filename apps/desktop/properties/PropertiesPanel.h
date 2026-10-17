@@ -21,6 +21,8 @@ public:
     /// Current displayed value for a key (empty if absent).
     QString value(const QString& key) const;
     QStringList keys() const;
+    /// Re-read the selection and theme colours.
+    void refresh() { rebuild(); }
 
 private:
     enum class Kind { ReadOnly, Text, Number, Bool, Choice, Date };

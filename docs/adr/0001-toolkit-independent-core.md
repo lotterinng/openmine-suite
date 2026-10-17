@@ -15,6 +15,6 @@ through `ProjectEditor`, which validates and executes snapshot-based `Command`s 
 
 ## Consequences
 * Undo/redo, auditing and validation are uniform across UI, console and Python.
-* Headless tests cover the engine (34 C++ tests + Python tests run without a display).
+* Headless tests cover the engine (34 C++ tests + 7 Python tests run without a display).
 * Snapshot commands copy whole entities; for very large point clouds, commands will reference
   immutable assets instead of copying data (Phase 3).

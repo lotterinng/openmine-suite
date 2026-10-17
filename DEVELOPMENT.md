@@ -51,7 +51,7 @@ sudo apt-get install ninja-build qt6-base-dev libqt6opengl6-dev libsqlite3-dev l
 python3 -m pip install "pybind11>=2.13" pytest
 
 # Ubuntu's libvtk9-qt-dev is linked against Qt 5 and cannot be mixed with Qt 6.
-# Build VTK against Qt 6 once (~1.5 h on 2 cores):
+# Build VTK against Qt 6 once (~45 min on 2 cores):
 git clone --depth 1 --branch v9.3.1 https://github.com/Kitware/VTK.git vtk-src
 cmake -S vtk-src -B vtk-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/vtk-qt6 \
   -DVTK_BUILD_TESTING=OFF -DVTK_WRAP_PYTHON=OFF -DVTK_QT_VERSION=6 \

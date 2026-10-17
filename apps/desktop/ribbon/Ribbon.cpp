@@ -17,7 +17,7 @@ QToolButton* makeButton(QWidget* parent) {
     b->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
     b->setIconSize(QSize(28, 28));
     b->setAutoRaise(true);
-    b->setMinimumWidth(58);
+    b->setMinimumWidth(52);
     return b;
 }
 } // namespace
