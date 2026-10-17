@@ -12,9 +12,10 @@ add_executable(openmine_unit_tests
     unit/test_mine_design.cpp
     unit/test_cad.cpp
     unit/test_dxf.cpp
+    unit/test_survey_io.cpp
 )
 target_link_libraries(openmine_unit_tests PRIVATE
-    openmine_core openmine_scheduling openmine_mine_design openmine_cad openmine_formats SQLite::SQLite3 GTest::gtest_main)
+    openmine_core openmine_scheduling openmine_mine_design openmine_cad openmine_formats openmine_survey SQLite::SQLite3 GTest::gtest_main)
 gtest_discover_tests(openmine_unit_tests DISCOVERY_TIMEOUT 60)
 
 if(TARGET openmine_occt)
@@ -32,4 +33,10 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME dxf_ezdxf_validation
              COMMAND ${Python3_EXECUTABLE} -m pytest -q ${CMAKE_CURRENT_SOURCE_DIR}/integration/test_dxf_ezdxf.py)
     set_tests_properties(dxf_ezdxf_validation PROPERTIES ENVIRONMENT "OPENMINE_DXF_TOOL=$<TARGET_FILE:dxf_tool>" LABELS integration)
+endif()
+
+if(TARGET openmine_pdal)
+    add_executable(openmine_pdal_tests unit/test_pdal.cpp)
+    target_link_libraries(openmine_pdal_tests PRIVATE openmine_pdal openmine_survey GTest::gtest_main)
+    gtest_discover_tests(openmine_pdal_tests DISCOVERY_TIMEOUT 60 PROPERTIES ENVIRONMENT "LD_LIBRARY_PATH=/opt/pdal/lib")
 endif()
