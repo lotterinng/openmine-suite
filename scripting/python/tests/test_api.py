@@ -8,7 +8,7 @@ from openmine import Project, ValidationError, PersistenceError
 
 def make_project():
     p = Project.new("Jupiter Mine", start="2026-11-02")
-    p.set_crs("Hartebeesthoek94 / Lo25", "EPSG:2050")
+    p.set_crs("Hartebeesthoek94 / Lo25", "EPSG:2051")
     return p
 
 
@@ -31,7 +31,7 @@ def test_spec_workflow_round_trip(tmp_path):
     assert not p.is_modified
     q = Project.open(f)
     assert q.name == "Jupiter Mine"
-    assert q._native.crs() == ("Hartebeesthoek94 / Lo25", "EPSG:2050")
+    assert q._native.crs() == ("Hartebeesthoek94 / Lo25", "EPSG:2051")
     d2 = q._native.development(design.id)
     assert d2["heading_id"] == "LEG2_675_D3_DEC"
     assert q._native.activity(act.id)["linked_developments"] == [design.id]

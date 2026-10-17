@@ -143,7 +143,7 @@ void PropertiesPanel::rebuild() {
         row("project.calendar", "Default calendar", current, Kind::Choice, cals);
         section("Coordinate reference system (declared)");
         row("crs.name", "CRS name", qstr(i.crs.name), Kind::Text, {}, "Declared by the user; never inferred from coordinates");
-        row("crs.code", "Authority code", qstr(i.crs.authorityCode), Kind::Text, {}, "e.g. EPSG:2050 (Hartebeesthoek94 / Lo25)");
+        row("crs.code", "Authority code", qstr(i.crs.authorityCode), Kind::Text, {}, "e.g. EPSG:2051 (Hartebeesthoek94 / Lo25)");
         row("crs.vertical", "Vertical datum", qstr(i.crs.verticalDatum), Kind::Text);
         readOnly("Linear unit", qstr(i.crs.linearUnit));
         row("crs.localGrid", "Local mine grid", yesNo(i.crs.isLocalMineGrid), Kind::Bool);

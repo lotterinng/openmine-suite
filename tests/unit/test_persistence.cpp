@@ -24,7 +24,7 @@ std::unique_ptr<Project> richProject() {
     ProjectEditor ed(*p);
     ProjectInfo info = p->model().info;
     info.crs.name = "Hartebeesthoek94 / Lo25";
-    info.crs.authorityCode = "EPSG:2050";
+    info.crs.authorityCode = "EPSG:2051";
     info.crs.southOrientatedAxes = true;
     info.statusDate = Date::fromYmd(2026, 11, 20);
     ed.setProjectInfo(info);
@@ -106,7 +106,7 @@ TEST(Persistence, RoundTripPreservesEverything) {
     const auto& b = q->model();
     EXPECT_EQ(b.info.id, a.info.id);
     EXPECT_EQ(b.info.name, a.info.name);
-    EXPECT_EQ(b.info.crs.authorityCode, "EPSG:2050");
+    EXPECT_EQ(b.info.crs.authorityCode, "EPSG:2051");
     EXPECT_TRUE(b.info.crs.southOrientatedAxes);
     ASSERT_TRUE(b.info.statusDate);
     EXPECT_EQ(*b.info.statusDate, *a.info.statusDate);

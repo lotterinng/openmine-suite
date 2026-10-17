@@ -10,7 +10,7 @@ from openmine import Project
 
 def main(path: str) -> None:
     p = Project.new("Demo Decline — Level 675", start="2026-11-02")
-    p.set_crs("Hartebeesthoek94 / Lo25", "EPSG:2050")
+    p.set_crs("Hartebeesthoek94 / Lo25", "EPSG:2051")
     x0, y0, z0 = -25000.0, 2900000.0, 1200.0
 
     decline = p.cad.create_development(

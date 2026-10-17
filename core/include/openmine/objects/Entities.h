@@ -35,7 +35,7 @@ struct EntityMetadata {
 /// coordinate magnitudes or file extensions.
 struct CoordinateReferenceSystem {
     std::string name = "Unspecified";       ///< e.g. "Hartebeesthoek94 / Lo25" (user-declared)
-    std::string authorityCode;              ///< e.g. "EPSG:2050" or empty when unknown/local grid
+    std::string authorityCode;              ///< e.g. "EPSG:2051" or empty when unknown/local grid
     std::string verticalDatum = "Unspecified";
     std::string linearUnit = "metre";       ///< Only metres are supported in v0.1.
     bool isLocalMineGrid = false;

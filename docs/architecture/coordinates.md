@@ -2,7 +2,7 @@
 
 ## Implemented (v0.1)
 
-* **Declared CRS.** `ProjectInfo.crs` stores name, authority code (e.g. `EPSG:2050`
+* **Declared CRS.** `ProjectInfo.crs` stores name, authority code (e.g. `EPSG:2051`
   Hartebeesthoek94 / Lo25), vertical datum, linear unit (metre only), local-mine-grid flag and a
   south-orientated-axes flag. These are *declarations*; the software never infers a CRS from
   coordinate magnitudes or file extensions.

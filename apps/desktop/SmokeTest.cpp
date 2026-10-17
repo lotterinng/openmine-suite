@@ -81,7 +81,7 @@ int runSmokeTest(MainWindow& w, const QString& outDir) {
     s.check(ctx.hasProject() && ctx.project().model().info.name == "Jupiter Smoke Mine", "project created");
     s.check(ctx.project().model().info.scheduleStart == Date::fromYmd(2026, 11, 2), "schedule start parsed");
     s.check(w.properties()->setProperty("crs.name", "Hartebeesthoek94 / Lo25"), "CRS name edited through Properties");
-    s.check(w.properties()->setProperty("crs.code", "EPSG:2050"), "CRS code edited through Properties");
+    s.check(w.properties()->setProperty("crs.code", "EPSG:2051"), "CRS code edited through Properties");
 
     // 2a. Draw a polyline interactively in the viewport (simulated clicks on the work plane).
     w.viewport()->setView("top");
@@ -191,7 +191,7 @@ int runSmokeTest(MainWindow& w, const QString& outDir) {
         s.check(m.activities.contains(actId) && std::abs(m.activities.find(actId)->quantity - qtyBefore) < 1e-12, "activity persisted");
         s.check(m.developmentsForActivity(actId) == std::vector<Uuid>{devId}, "activity → heading link persisted");
         s.check(m.baselines.size() == 1, "baseline persisted");
-        s.check(m.info.crs.authorityCode == "EPSG:2050", "CRS persisted");
+        s.check(m.info.crs.authorityCode == "EPSG:2051", "CRS persisted");
         s.check(m.audit.size() >= auditBefore, "audit log persisted (" + QString::number(m.audit.size()) + " entries)");
         s.pump(150);
         s.check(w.scheduler()->itemFor(actId) != nullptr, "Gantt shows the reopened activity");
