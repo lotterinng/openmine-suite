@@ -13,6 +13,7 @@
 #include <ortools/util/time_limit.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -136,7 +137,35 @@ OptimisationResult optimise(const ScheduleInput& in, const ScheduleResult& cpm, 
         const auto [mn, mx] = std::minmax_element(a.table.begin(), a.table.end());
         a.dur = cp.NewIntVar(operations_research::Domain(*mn, *mx));
         a.end = cp.NewIntVar(operations_research::Domain(0, 2 * H + *mx));
-        cp.AddElement(a.start, a.table, a.dur);
+        // Duration as a function of the start slot. The table is piecewise constant over long runs
+        // (constant on continuous calendars, weekly patterns otherwise), so it is encoded per
+        // distinct duration: one literal and the union of start runs having that duration. This is
+        // far smaller than an element constraint over every slot (which CP-SAT expands to one
+        // literal per slot) and exactly equivalent.
+        {
+            std::map<std::int64_t, std::vector<std::int64_t>> runs; // duration → flat [a0,b0,a1,b1,...]
+            for (std::int64_t sl = lo; sl <= hi; ++sl) {
+                const auto d = a.table[static_cast<std::size_t>(sl)];
+                auto& v = runs[d];
+                if (!v.empty() && v.back() == sl - 1) v.back() = sl;
+                else {
+                    v.push_back(sl);
+                    v.push_back(sl);
+                }
+            }
+            if (runs.size() == 1) cp.AddEquality(a.dur, runs.begin()->first);
+            else {
+                std::vector<sat::BoolVar> lits;
+                for (const auto& [d, v] : runs) {
+                    const auto b = cp.NewBoolVar();
+                    lits.push_back(b);
+                    cp.AddLinearConstraint(a.start, operations_research::Domain::FromFlatIntervals(v))
+                        .OnlyEnforceIf(b);
+                    cp.AddEquality(a.dur, d).OnlyEnforceIf(b);
+                }
+                cp.AddExactlyOne(lits);
+            }
+        }
         cp.AddEquality(a.end, a.start + a.dur);
         a.interval = cp.NewIntervalVar(a.start, a.dur, a.end);
         ends.push_back(a.end);
@@ -232,6 +261,7 @@ OptimisationResult optimise(const ScheduleInput& in, const ScheduleResult& cpm, 
         params.set_max_time_in_seconds(o.timeLimitSeconds);
         params.set_num_workers(workers);
         params.set_random_seed(o.seed);
+        if (std::getenv("OPENMINE_CPSAT_LOG")) params.set_log_search_progress(true); // diagnostics to stderr
         model.Add(sat::NewSatParameters(params));
         std::atomic<bool> stop{false};
         model.GetOrCreate<operations_research::TimeLimit>()->RegisterExternalBooleanAsLimit(&stop);

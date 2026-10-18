@@ -872,6 +872,10 @@ void defineBindings(py::module_& m) {
         d["status_text"] = r.statusText;
         d["makespan_hours"] = r.makespanHours;
         d["cpm_makespan_hours"] = r.cpmMakespanHours;
+        d["solve_seconds"] = r.solveSeconds;
+        d["variables"] = r.variables;
+        d["constraints"] = r.constraints;
+        d["notes"] = r.notes;
         py::list conflicts;
         for (const auto& c : r.conflicts) conflicts.append(py::make_tuple(c.kind, c.description));
         d["conflicts"] = conflicts;
