@@ -126,11 +126,15 @@ void backwardPass(const ScheduleInput& in, const std::vector<std::size_t>& topo,
         if (ia.a.constraint == ConstraintType::FinishNoLaterThan && ia.a.constraintDate) lf = std::min(lf, toMinutes(*ia.a.constraintDate));
         if (ia.a.constraint == ConstraintType::MustStartOn && ia.a.constraintDate)
             lf = std::min(lf, cal.addWork(toMinutes(*ia.a.constraintDate), x.d));
+        // An activity in progress at the status date has started: relationships that constrain its
+        // start (SS, SF from it) are already satisfied and cannot move its late finish.
+        const bool inProgress = ia.started && in.statusDate;
         for (const auto* dep : succ[i]) {
             const auto s = in.index.at(dep->successorId);
             const auto& scal = *in.activities[s].cal;
             const auto& y = w[s];
             const double lag = dep->lagHours * 60.0;
+            if (inProgress && (dep->type == DependencyType::StartToStart || dep->type == DependencyType::StartToFinish)) continue;
             switch (dep->type) {
             case DependencyType::FinishToStart: lf = std::min(lf, scal.shift(y.lrs, -lag)); break;
             case DependencyType::StartToStart: lf = std::min(lf, cal.addWork(scal.shift(y.lrs, -lag), x.d)); break;
@@ -141,6 +145,9 @@ void backwardPass(const ScheduleInput& in, const std::vector<std::size_t>& topo,
         if (x.d > 0) lf = cal.prevWorkEnd(lf);
         x.lf = lf;
         x.lrs = cal.subtractWork(lf, x.d);
+        // The latest start is the first working instant with that much work left (not the end of
+        // the previous working period, which is the same work-time position).
+        if (x.d > 0) x.lrs = std::min(cal.nextWorkStart(x.lrs), lf);
         x.ls = ia.started && in.statusDate ? x.es : x.lrs;
     }
     // Floats.

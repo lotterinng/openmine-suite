@@ -388,3 +388,58 @@ TEST(Scenario, OverridesChangeRatesAndCapacity) {
     EXPECT_NEAR(fast.timings.at(id).totalHours, 10 * 24, 1e-9);
     EXPECT_NEAR(p->model().activities.find(id)->rate, 5, 0); // base data untouched
 }
+
+// Regression: an in-progress activity's start-based relationships (SS) must not move its late
+// finish (it had negative float), and latest starts must not fall on non-working time before the
+// project start (Monday start on a Mon–Fri calendar gave a Saturday latest start).
+TEST(Cpm, InProgressStartToStartAndWorkingTimeLatestStarts) {
+    auto p = Project::createNew("Regression", Date::fromYmd(2026, 11, 2));
+    ProjectEditor ed(*p);
+    ScheduleActivity dec;
+    dec.name = "Decline";
+    dec.durationFromRate = true;
+    dec.quantity = 100;
+    dec.rate = 5;
+    const Uuid a = ed.addActivity(dec);
+    ScheduleActivity xc;
+    xc.name = "Crosscut";
+    xc.durationHours = 5 * 24;
+    const Uuid b = ed.addActivity(xc);
+    ScheduleActivity after;
+    after.name = "After decline";
+    after.durationHours = 2 * 24;
+    const Uuid c = ed.addActivity(after);
+    ActivityDependency ss;
+    ss.predecessorId = a;
+    ss.successorId = b;
+    ss.type = DependencyType::StartToStart;
+    ss.lagHours = 10 * 24;
+    ed.addDependency(ss);
+    ActivityDependency fs;
+    fs.predecessorId = a;
+    fs.successorId = c;
+    ed.addDependency(fs);
+    // Planning mode: the critical decline starts on Monday 2 Nov and its latest start is the same instant.
+    auto r = calculateSchedule(*p);
+    ASSERT_TRUE(r.ok);
+    EXPECT_DOUBLE_EQ(r.timings.at(a).ls, r.timings.at(a).es);
+    EXPECT_DOUBLE_EQ(r.timings.at(a).totalFloatHours, 0.0);
+    // Progress: 25 m by the status date; the decline stays critical with zero (not negative) float.
+    auto act = *p->model().activities.find(a);
+    act.actualStart = DateTime::fromDate(Date::fromYmd(2026, 11, 2));
+    ed.updateActivity(act);
+    ProductionActual pa;
+    pa.activityId = a;
+    pa.date = Date::fromYmd(2026, 11, 6);
+    pa.quantity = 25;
+    ed.add(pa);
+    ProjectInfo info = p->model().info;
+    info.statusDate = DateTime::fromDate(Date::fromYmd(2026, 11, 10));
+    ed.setProjectInfo(info);
+    r = calculateSchedule(*p);
+    ASSERT_TRUE(r.ok);
+    EXPECT_DOUBLE_EQ(r.timings.at(a).totalFloatHours, 0.0);
+    EXPECT_DOUBLE_EQ(r.timings.at(a).lf, r.timings.at(a).ef);
+    EXPECT_TRUE(r.timings.at(a).critical);
+    EXPECT_GE(r.timings.at(b).totalFloatHours, 0.0);
+}
