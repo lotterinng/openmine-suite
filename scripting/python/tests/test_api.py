@@ -180,6 +180,11 @@ def test_survey_algorithms_and_point_clouds():
     back = p.survey.points(ds)["xyz"]
     assert back.shape == pts.shape
     assert np.allclose(np.sort(back[:, 0]), np.sort(pts[:, 0]))
+    rep = p.reports.point_cloud(ds, format="pdf", spacing_statistics=True)
+    assert rep["title"] == "Point cloud — synthetic"
+    stored = p.reports.list()
+    assert stored[0]["format"] == "pdf"
+    assert p.reports.content(stored[0]["id"]).startswith(b"%PDF-1.7")
 
 
 def test_omf_round_trip(tmp_path):

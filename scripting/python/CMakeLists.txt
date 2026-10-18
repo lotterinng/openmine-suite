@@ -10,7 +10,7 @@ find_package(nlohmann_json 3.10 REQUIRED)
 
 # Shared binding code (object library so the extension and the embedded interpreter compile it once each with -fPIC).
 set(_bind_libs openmine_core openmine_cad openmine_scheduling openmine_mine_design openmine_survey openmine_formats openmine_reporting
-               openmine_planning openmine_geology openmine_geotechnical openmine_omf openmine_plugin_host nlohmann_json::nlohmann_json)
+               openmine_planning openmine_geology openmine_geotechnical openmine_omf openmine_plugin_host openmine_survey_reports nlohmann_json::nlohmann_json)
 set(_bind_defs "")
 foreach(pair "openmine_optimisation;OPTIMISER" "openmine_crs;CRS" "openmine_gis;GIS" "openmine_repository;REPOSITORY" "openmine_occt;OCCT")
     list(GET pair 0 tgt)

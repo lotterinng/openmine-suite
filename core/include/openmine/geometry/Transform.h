@@ -44,7 +44,7 @@ public:
     double& operator()(int r, int c) { return m_[static_cast<std::size_t>(r * 4 + c)]; }
     const std::array<double, 16>& data() const { return m_; }
 
-    /// Rotation angles (radians) for reporting: about Z (yaw/heading), Y (pitch), X (roll), ZYX convention.
+    /// Rotation angles (radians), ZYX convention, returned as {x: roll about X, y: pitch about Y, z: yaw about Z}.
     Vec3 eulerZYX() const;
     Vec3 translationPart() const { return {m_[3], m_[7], m_[11]}; }
 

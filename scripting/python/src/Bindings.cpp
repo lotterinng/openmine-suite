@@ -27,6 +27,7 @@
 #include "openmine/plugins/PluginManager.h"
 #include "openmine/project/ProjectEditor.h"
 #include "openmine/reporting/ScheduleExport.h"
+#include "openmine/reporting/SurveyReports.h"
 #include "openmine/scheduling/Cpm.h"
 #include "openmine/scheduling/ScheduleTable.h"
 #include "openmine/survey/Conformance.h"
@@ -1504,6 +1505,48 @@ void defineBindings(py::module_& m) {
         return occt::solidFromMeshObject(s.get(), uuidArg(meshId), requireClosed).toString();
     }, py::arg("mesh"), py::arg("require_closed") = true);
 #endif
+
+    // ---- reports ----------------------------------------------------------------------------------------
+    // kind: "conformance" (id = DesignConformanceResult), "registration", "point_cloud".
+    // Returns the stored Report id when `store`, and writes `file` when given.
+    P.def("survey_report", [](PyProject& s, const std::string& kind, const std::string& id, const std::string& format, bool store, const std::optional<fs::path>& file,
+                              bool spacing) {
+         reporting::ReportDocument doc;
+         if (kind == "conformance") doc = reporting::conformanceReport(s.get(), uuidArg(id));
+         else if (kind == "registration") doc = reporting::registrationReport(s.get(), uuidArg(id));
+         else if (kind == "point_cloud") doc = reporting::pointCloudReport(s.get(), uuidArg(id), spacing);
+         else throw py::value_error("kind must be conformance, registration or point_cloud");
+         if (format != "html" && format != "pdf") throw py::value_error("format must be html or pdf");
+         py::dict d;
+         d["title"] = doc.title;
+         if (file) {
+             std::ofstream o(*file, std::ios::binary);
+             o << (format == "html" ? reporting::renderHtml(doc) : reporting::renderPdf(doc));
+             if (!o) throw py::value_error("Cannot write " + file->string());
+         }
+         if (store) d["report"] = reporting::storeReport(s.get(), doc, "Survey", format).toString();
+         return d;
+     }, py::arg("kind"), py::arg("id"), py::arg("format") = "html", py::arg("store") = true, py::arg("file") = py::none(), py::arg("spacing_statistics") = false)
+        .def("reports", [](PyProject& s) {
+            py::list l;
+            for (const auto& r : s.get().model().reports.all()) {
+                py::dict d;
+                d["id"] = r.id.toString();
+                d["name"] = r.name;
+                d["kind"] = r.kind;
+                d["format"] = r.format;
+                d["created_at"] = r.createdAt;
+                l.append(d);
+            }
+            return l;
+        })
+        .def("report_bytes", [](PyProject& s, const std::string& id) {
+            const auto* r = s.get().model().reports.find(uuidArg(id));
+            if (!r) throw py::key_error("No report " + id);
+            const auto* a = s.get().model().assets.find(r->asset.id);
+            if (!a) throw py::key_error("The report's file is missing");
+            return py::bytes(s.get().assets().readBytes(*a));
+        });
 
     // ---- plugins -----------------------------------------------------------------------------------------
     py::class_<plugins::PluginManager>(m, "PluginManager")

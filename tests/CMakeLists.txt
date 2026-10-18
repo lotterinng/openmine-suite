@@ -107,7 +107,7 @@ if(Python3_EXECUTABLE)
 endif()
 
 add_executable(report_tool tools/report_tool.cpp)
-target_link_libraries(report_tool PRIVATE openmine_reporting nlohmann_json::nlohmann_json)
+target_link_libraries(report_tool PRIVATE openmine_reporting openmine_survey_reports openmine_survey openmine_mine_design openmine_cad nlohmann_json::nlohmann_json)
 if(Python3_Interpreter_FOUND)
     add_test(NAME report_validation COMMAND ${Python3_EXECUTABLE} -m pytest -q -p no:cacheprovider --basetemp=${CMAKE_CURRENT_BINARY_DIR}/pytest-test_reports ${CMAKE_CURRENT_SOURCE_DIR}/integration/test_reports.py)
     set_tests_properties(report_validation PROPERTIES ENVIRONMENT "OPENMINE_REPORT_TOOL=$<TARGET_FILE:report_tool>" LABELS integration)

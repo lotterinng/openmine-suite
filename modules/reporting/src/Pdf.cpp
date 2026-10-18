@@ -101,10 +101,37 @@ std::string toWinAnsi(const std::string& s) {
             out += static_cast<char>(cp);
             continue;
         }
-        char mapped = '?';
+        char mapped = 0;
         for (std::size_t k = 0; k < kCp1252High.size(); ++k)
             if (kCp1252High[k] == cp && cp != 0) mapped = static_cast<char>(0x80 + k);
-        out += mapped;
+        if (mapped) {
+            out += mapped;
+            continue;
+        }
+        // Transliterations of common technical characters outside Windows-1252.
+        switch (cp) {
+        case 0x2212: out += '-'; break;          // minus sign
+        case 0x2192: out += "->"; break;         // rightwards arrow
+        case 0x2190: out += "<-"; break;
+        case 0x2264: out += "<="; break;
+        case 0x2265: out += ">="; break;
+        case 0x2248: out += "~"; break;
+        case 0x2260: out += "!="; break;
+        case 0x221E: out += "inf"; break;
+        case 0x2032: out += '\''; break;        // prime (RMR89′)
+        case 0x2033: out += '"'; break;
+        case 0x2713: out += "v"; break;          // check mark
+        case 0x2715:
+        case 0x2717: out += "x"; break;
+        case 0x2009:
+        case 0x202F:
+        case 0x2002:
+        case 0x2003: out += ' '; break;          // thin / en / em spaces
+        case 0x03C3: out += "sigma"; break;
+        case 0x03B1: out += "alpha"; break;
+        case 0x03C6: out += "phi"; break;
+        default: out += '?';
+        }
     }
     return out;
 }

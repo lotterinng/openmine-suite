@@ -307,6 +307,26 @@ class Survey(_Namespace):
         return self._n.conformance(as_built, _id(development), interval, commit)
 
 
+class Reports(_Namespace):
+    """Survey reports (HTML or PDF), stored in the project as Report entities with their file."""
+
+    def conformance(self, result_id: str, format: str = "html", store: bool = True, file: Optional[PathType] = None) -> dict:
+        return self._n.survey_report("conformance", result_id, format, store, str(file) if file else None, False)
+
+    def registration(self, registration_id: str, format: str = "html", store: bool = True, file: Optional[PathType] = None) -> dict:
+        return self._n.survey_report("registration", registration_id, format, store, str(file) if file else None, False)
+
+    def point_cloud(self, dataset_id: str, format: str = "html", store: bool = True, file: Optional[PathType] = None,
+                    spacing_statistics: bool = False) -> dict:
+        return self._n.survey_report("point_cloud", dataset_id, format, store, str(file) if file else None, spacing_statistics)
+
+    def list(self) -> List[dict]:
+        return self._n.reports()
+
+    def content(self, report_id: str) -> bytes:
+        return self._n.report_bytes(report_id)
+
+
 class Geology(_Namespace):
     def import_drillholes(self, collars: Union[str, PathType], surveys: Union[str, PathType] = "",
                           intervals: Optional[Dict[str, Union[str, PathType]]] = None, **options) -> dict:
@@ -389,6 +409,7 @@ class Project:
         self.geology = Geology(self)
         self.geotech = Geotech(self)
         self.formats = Formats(self)
+        self.reports = Reports(self)
 
     # lifecycle
     @classmethod
