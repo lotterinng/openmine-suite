@@ -397,7 +397,7 @@ void Smoke::cad() {
 void Smoke::design() {
     section("Mine design");
     ctx_.select(EntityKind::Geometry, headingGeom_);
-    check(cmd("HEADING DEV_675_A 5 5"), "HEADING makes the centreline a 5 × 5 m heading");
+    check(cmd("HEADING DEV_675_A 5 5 675"), "HEADING makes the centreline a 5 × 5 m heading on level 675");
     heading_ = m().developments.empty() ? Uuid{} : m().developments.all().back().id;
     if (!check(!heading_.isNil(), "development created")) return;
     const auto mt = mine_design::computeMetrics(ctx_.project(), *m().developments.find(heading_));
@@ -812,6 +812,26 @@ void Smoke::scripting() {
         skip("Python console (built without Python)");
     }
     check(cmd("PLUGIN"), "plugin command listing");
+    const auto pluginCmds = ctx_.pluginCommands();
+    auto hasCommand = [&](const char* name, bool python) {
+        return std::any_of(pluginCmds.begin(), pluginCmds.end(), [&](const PluginCommandInfo& c) { return c.name == name && c.python == python; });
+    };
+    if (check(hasCommand("stations.summary", false), "native sample plugin loaded from the plugin path")) {
+        const auto r = ctx_.runPluginCommand("stations.summary");
+        check(r.ok && qstr(r.text).contains("count"), QStringLiteral("native plugin command runs: %1").arg(qstr(r.ok ? r.text : r.error).left(120)));
+    }
+    if (PythonConsolePanel::available()) {
+        if (check(hasCommand("levels.summary", true) && hasCommand("levels.layers", true), "Python sample plugin discovered in the plugin folder")) {
+            const auto s = ctx_.runPluginCommand("levels.summary");
+            check(s.ok && qstr(s.text).contains("\"675\""), QStringLiteral("Python plugin reads the project: %1").arg(qstr(s.ok ? s.text : s.error).left(160)));
+            const std::size_t n = m().layers.size();
+            check(cmd("PLUGIN levels.layers {\"prefix\": \"Smoke level \"}") && m().layers.size() > n, "Python plugin edits the project through the API");
+            check(cmd("UNDO") && m().layers.size() == n, "a Python plugin command is one undo step");
+            const auto bad = ctx_.runPluginCommand("levels.layers", "{\"prefix\": \" \"}");
+            check(!bad.ok && bad.rolledBack && m().layers.size() == n && qstr(bad.error).contains("prefix"),
+                  QStringLiteral("a failing Python plugin command is reported and rolled back: %1").arg(qstr(bad.error)));
+        }
+    }
     check(cmd("HELP") && w_.console()->commandNames().size() > 60, QStringLiteral("%1 console commands").arg(w_.console()->commandNames().size()));
 }
 

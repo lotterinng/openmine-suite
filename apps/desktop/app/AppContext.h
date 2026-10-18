@@ -54,6 +54,30 @@ struct ScheduleState {
 
 enum class MessageLevel { Info, Warning, Error };
 
+/// Commands of script (Python) plugins, provided by the embedded interpreter when the build has
+/// one (PythonConsolePanel).
+class ScriptPluginHost {
+public:
+    struct Command {
+        std::string name, help, plugin;
+    };
+    struct Result {
+        bool ok = false;
+        std::string text, error;
+        bool rolledBack = false;
+        std::vector<std::string> log; ///< other output of the command
+    };
+    virtual ~ScriptPluginHost() = default;
+    virtual std::vector<Command> scriptCommands() const = 0;
+    virtual Result runScriptCommand(const std::string& name, const std::string& argumentsJson) = 0;
+};
+
+/// A plugin command of either kind.
+struct PluginCommandInfo {
+    std::string name, description, plugin;
+    bool python = false;
+};
+
 class AppContext : public QObject {
     Q_OBJECT
 public:
@@ -127,6 +151,15 @@ public:
     // ---- services ------------------------------------------------------------------------------
     JobManager& jobs() { return jobs_; }
     plugins::PluginManager& plugins() { return *plugins_; }
+    void setScriptPlugins(ScriptPluginHost* host) { scriptPlugins_ = host; }
+    /// Asks the main window to reload native plugins and rediscover Python plugins.
+    void requestPluginRescan() { emit pluginRescanRequested(); }
+    /// Native and Python plugin commands, sorted by name. A native command shadows a Python
+    /// command of the same name (reported once by the main window when plugins are loaded).
+    std::vector<PluginCommandInfo> pluginCommands() const;
+    /// Runs a plugin command of either kind on the project (one undo step; an edit left open or
+    /// a failing Python command is rolled back).
+    plugins::PluginCallResult runPluginCommand(const std::string& name, const std::string& argumentsJson = "{}");
     /// Plugin folders searched at start-up (application dir, user dir, OPENMINE_PLUGIN_PATH).
     std::vector<std::filesystem::path> pluginDirectories() const;
     QSettings& settings() { return settings_; }
@@ -151,6 +184,7 @@ signals:
     void scenarioChanged();
     void playbackChanged();
     void message(QString text, int level);
+    void pluginRescanRequested();
 
 private:
     void attach();
@@ -172,6 +206,7 @@ private:
     bool changePending_ = false;
     JobManager jobs_;
     std::unique_ptr<plugins::PluginManager> plugins_;
+    ScriptPluginHost* scriptPlugins_ = nullptr;
     QSettings settings_;
 };
 

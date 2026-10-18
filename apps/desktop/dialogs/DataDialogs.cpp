@@ -31,6 +31,9 @@
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
+#include <algorithm>
+#include <map>
+
 namespace openmine::app {
 
 // ---- CRS -------------------------------------------------------------------------------------------
@@ -393,7 +396,11 @@ PluginsDialog::PluginsDialog(AppContext& ctx, QWidget* parent) : QDialog(parent)
     auto* lay = new QVBoxLayout(this);
     QStringList dirs;
     for (const auto& d : ctx_.pluginDirectories()) dirs << QString::fromStdU16String(d.u16string());
-    auto* info = new QLabel(tr("Native plugins (C ABI v%1) are loaded from: %2").arg(plugins::PluginManager::apiVersion()).arg(dirs.join("; ")), this);
+    auto* info = new QLabel(tr("Native plugins (C ABI v%1) are loaded from: %2. Python plugins are installed distributions "
+                               "(entry-point group openmine.plugins) and packages in the \"python\" subfolder of these folders.")
+                                .arg(plugins::PluginManager::apiVersion())
+                                .arg(dirs.join("; ")),
+                            this);
     info->setWordWrap(true);
     lay->addWidget(info);
     list_ = new QTreeWidget(this);
@@ -428,14 +435,22 @@ PluginsDialog::PluginsDialog(AppContext& ctx, QWidget* parent) : QDialog(parent)
     connect(reload, &QPushButton::clicked, this, [this] {
         std::vector<std::string> problems;
         ctx_.plugins().discover(ctx_.pluginDirectories(), &problems);
-        const int n = ctx_.plugins().loadAll(ctx_.pluginDirectories(), {});
-        log_->appendPlainText(tr("%1 plugins loaded").arg(n));
         for (const auto& p : problems) log_->appendPlainText(qstr(p));
+        // The main window reloads native plugins, rediscovers Python plugins and rebuilds its menu.
+        ctx_.requestPluginRescan();
+        log_->appendPlainText(tr("%1 native plugin(s) loaded, %2 plugin command(s) available")
+                                  .arg(std::count_if(ctx_.plugins().plugins().begin(), ctx_.plugins().plugins().end(), [](const auto& st) { return st.loaded; }))
+                                  .arg(ctx_.pluginCommands().size()));
         refresh();
     });
     connect(unload, &QPushButton::clicked, this, [this] {
         if (auto* it = list_->currentItem()) {
+            if (it->data(1, Qt::UserRole).toBool()) {
+                log_->appendPlainText(tr("Python plugins stay loaded for the session; disable them in Settings ▸ Preferences or uninstall them"));
+                return;
+            }
             ctx_.plugins().unload(sstr(it->data(0, Qt::UserRole).toString()));
+            ctx_.requestPluginRescan();
             refresh();
         }
     });
@@ -460,12 +475,29 @@ void PluginsDialog::refresh() {
         it->setText(3, prov.join(", "));
         it->setText(4, QString::fromStdU16String(s.manifest.folder.u16string()));
     }
-    for (const auto& c : ctx_.plugins().commands()) command_->addItem(qstr(c.name));
+    // Python plugins (one row per plugin, from the commands it registered).
+    std::map<std::string, QStringList> python;
+    for (const auto& c : ctx_.pluginCommands())
+        if (c.python) python[c.plugin] << tr("command %1").arg(qstr(c.name));
+    for (const auto& [plugin, provides] : python) {
+        auto* it = new QTreeWidgetItem(list_);
+        it->setText(0, qstr(plugin.empty() ? std::string("python") : plugin));
+        it->setData(0, Qt::UserRole, qstr(plugin));
+        it->setData(1, Qt::UserRole, true);
+        it->setText(1, tr("Python"));
+        it->setText(2, tr("Loaded"));
+        it->setText(3, provides.join(", "));
+    }
+    for (const auto& c : ctx_.pluginCommands()) command_->addItem(qstr(c.name));
 }
 
 bool PluginsDialog::runCommand(const QString& name, const QString& args) {
     if (name.isEmpty()) return false;
-    const auto r = ctx_.plugins().runCommand(ctx_.project(), sstr(name), sstr(args));
+    if (!ctx_.hasProject()) {
+        log_->appendPlainText(tr("Open or create a project first"));
+        return false;
+    }
+    const auto r = ctx_.runPluginCommand(sstr(name), sstr(args));
     for (const auto& l : r.log) log_->appendPlainText(qstr(l));
     if (r.ok) log_->appendPlainText(tr("%1: %2").arg(name, qstr(r.text)));
     else log_->appendPlainText(tr("%1 failed (%2): %3%4").arg(name).arg(r.code).arg(qstr(r.error), r.rolledBack ? tr(" — its open edit was rolled back") : QString()));

@@ -14,10 +14,18 @@
   Commands receive a :class:`openmine.Project` and keyword arguments and return JSON-compatible
   data. They change the project only through the public API (validated and undoable); each run is
   wrapped in one undo step and rolled back if the command raises.
+
+  The desktop application discovers Python plugins at start-up — installed distributions, and
+  packages placed in a ``python`` subfolder of any plugin folder (next to the executable, the
+  user's plugin folder, ``OPENMINE_PLUGIN_PATH``) — and offers their commands in the Plugins menu
+  and through the ``PLUGIN`` console command, next to native plugin commands.
 """
 from __future__ import annotations
 
+import importlib
 import importlib.metadata as _md
+import json
+import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -75,6 +83,42 @@ def discover(registry: Optional[Registry] = None, group: str = ENTRY_POINT_GROUP
             registry.errors.append(f"{ep.name}: {e}")
     registry._current = ""
     return registry
+
+
+# ---- desktop host -----------------------------------------------------------------------------------
+# The application calls these through the embedded interpreter (JSON strings in and out).
+_desktop_registry: Optional[Registry] = None
+
+
+def _desktop_discover(paths_json: str = "[]") -> str:
+    """Adds plugin folders to ``sys.path``, (re)discovers the plugins and describes them."""
+    global _desktop_registry
+    for p in json.loads(paths_json):
+        if p not in sys.path:
+            sys.path.append(p)
+    importlib.invalidate_caches()
+    _desktop_registry = discover()
+    return json.dumps({"commands": [{"name": c.name, "help": c.help, "plugin": c.plugin} for c in _desktop_registry.commands.values()],
+                       "errors": list(_desktop_registry.errors)})
+
+
+def _desktop_run(name: str, arguments_json: str = "{}") -> str:
+    """Runs a discovered command on the application's project (one undo step, rolled back on error)."""
+    from ._project import current_project
+    if _desktop_registry is None or name not in _desktop_registry.commands:
+        return json.dumps({"ok": False, "error": f"Unknown Python plugin command {name!r}", "rolled_back": False})
+    project = current_project()
+    if project is None:
+        return json.dumps({"ok": False, "error": "No project is open", "rolled_back": False})
+    try:
+        arguments = json.loads(arguments_json or "{}")
+        if not isinstance(arguments, dict):
+            raise TypeError("The arguments must be a JSON object")
+        result = _desktop_registry.run(project, name, **arguments)
+    except Exception as e:  # reported to the user; the edit was rolled back by Project.edit
+        return json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}", "rolled_back": True})
+    text = result if isinstance(result, str) else json.dumps(result, default=str)
+    return json.dumps({"ok": True, "text": text})
 
 
 class NativePlugins:

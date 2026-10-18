@@ -11,7 +11,9 @@
 
 #include <QWidget>
 
+#include <filesystem>
 #include <memory>
+#include <vector>
 
 class QLabel;
 class QLineEdit;
@@ -25,7 +27,7 @@ class PythonConsole;
 
 namespace openmine::app {
 
-class PythonConsolePanel : public QWidget {
+class PythonConsolePanel : public QWidget, public ScriptPluginHost {
     Q_OBJECT
 public:
     explicit PythonConsolePanel(AppContext& ctx, QWidget* parent = nullptr);
@@ -40,6 +42,12 @@ public:
     QString transcript() const;
     bool busy() const { return running_; }
 
+    /// Discovers Python plugins (installed distributions and the `python` subfolder of each
+    /// plugin folder). Returns the number of commands; failures go to `problems`.
+    int discoverPlugins(const std::vector<std::filesystem::path>& pluginFolders, QStringList* problems = nullptr);
+    std::vector<Command> scriptCommands() const override { return commands_; }
+    Result runScriptCommand(const std::string& name, const std::string& argumentsJson) override;
+
 protected:
     bool eventFilter(QObject* o, QEvent* e) override;
 
@@ -50,6 +58,8 @@ private:
     void beginRun(const QString& what);
     void endRun();
     void complete();
+    /// Runs internal Python source without echoing it in the transcript; stdout is returned.
+    bool runQuiet(const QString& source, QString* output, QString* error);
 
     AppContext& ctx_;
 #ifdef OPENMINE_APP_HAVE_PYTHON
@@ -64,6 +74,8 @@ private:
     int historyPos_ = 0;
     bool running_ = false;
     bool more_ = false;
+    bool quiet_ = false;
+    std::vector<Command> commands_;
     qint64 runStart_ = 0;
 };
 

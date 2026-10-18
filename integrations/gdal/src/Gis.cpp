@@ -39,6 +39,12 @@ using DsPtr = std::unique_ptr<GDALDataset, DsDeleter>;
 DsPtr open(const fs::path& f, unsigned flags) {
     init();
     if (!fs::exists(f)) throw GisError("File not found: " + f.string());
+    if (flags & GDAL_OF_RASTER) {
+        // ESRI ASCII grids are read as Float32 unless asked: keep the written decimals.
+        static const char* const aai[] = {"AAIGrid", nullptr};
+        static const char* const f64[] = {"DATATYPE=Float64", nullptr};
+        if (DsPtr g{static_cast<GDALDataset*>(GDALOpenEx(f.string().c_str(), flags, aai, f64, nullptr))}) return g;
+    }
     DsPtr ds(static_cast<GDALDataset*>(GDALOpenEx(f.string().c_str(), flags | GDAL_OF_VERBOSE_ERROR, nullptr, nullptr, nullptr)));
     if (!ds) throw GisError("GDAL cannot open " + f.filename().string() + ": " + CPLGetLastErrorMsg());
     return ds;
@@ -52,7 +58,24 @@ void crsOf(const OGRSpatialReference* sr, std::string& wkt, std::string& auth) {
     CPLFree(w);
     const char* an = sr->GetAuthorityName(nullptr);
     const char* ac = sr->GetAuthorityCode(nullptr);
-    if (an && ac) auth = std::string(an) + ":" + ac;
+    if (an && ac) {
+        auth = std::string(an) + ":" + ac;
+        return;
+    }
+    // Formats such as Shapefile (.prj in ESRI WKT) carry no authority: identify it from the PROJ
+    // database, accepting only an equivalent definition (confidence ≥ 90 — same CRS, possibly
+    // different names).
+    int n = 0;
+    int* confidence = nullptr;
+    OGRSpatialReferenceH* matches = sr->FindMatches(nullptr, &n, &confidence);
+    if (matches && n > 0 && confidence && confidence[0] >= 90) {
+        const auto* m = OGRSpatialReference::FromHandle(matches[0]);
+        const char* man = m->GetAuthorityName(nullptr);
+        const char* mac = m->GetAuthorityCode(nullptr);
+        if (man && mac) auth = std::string(man) + ":" + mac;
+    }
+    if (matches) OSRFreeSRSArray(matches);
+    CPLFree(confidence);
 }
 
 std::string lowerExt(const fs::path& f) {
@@ -170,7 +193,13 @@ RasterInfo exportDem(const MeshData& s, const fs::path& file, const DemExportOpt
     const int H = std::max(1, static_cast<int>(std::ceil((b.max.y - b.min.y) / o.cellSize)));
     GDALDriver* drv = GetGDALDriverManager()->GetDriverByName(o.driver.c_str());
     if (!drv) throw GisError("GDAL driver " + o.driver + " is not available");
-    DsPtr ds(drv->Create(file.string().c_str(), W, H, 1, GDT_Float64, nullptr));
+    // Drivers such as AAIGrid (ESRI ASCII grid) only copy a complete dataset: build it in memory first.
+    const bool direct = drv->GetMetadataItem(GDAL_DCAP_CREATE) != nullptr;
+    if (!direct && !drv->GetMetadataItem(GDAL_DCAP_CREATECOPY)) throw GisError("GDAL driver " + o.driver + " cannot write rasters");
+    GDALDriver* mem = direct ? drv : GetGDALDriverManager()->GetDriverByName("MEM");
+    if (!mem) throw GisError("GDAL MEM driver is not available");
+    if (fs::exists(file)) fs::remove(file);
+    DsPtr ds(mem->Create(direct ? file.string().c_str() : "", W, H, 1, GDT_Float64, nullptr));
     if (!ds) throw GisError("Cannot create " + file.string() + ": " + CPLGetLastErrorMsg());
     double gt[6] = {b.min.x, o.cellSize, 0, b.min.y + H * o.cellSize, 0, -o.cellSize};
     ds->SetGeoTransform(gt);
@@ -191,6 +220,10 @@ RasterInfo exportDem(const MeshData& s, const fs::path& file, const DemExportOpt
             row[static_cast<std::size_t>(i)] = h ? h->point.z : o.noData;
         }
         if (band->RasterIO(GF_Write, 0, j, W, 1, row.data(), W, 1, GDT_Float64, 0, 0) != CE_None) throw GisError("Cannot write raster row");
+    }
+    if (!direct) {
+        DsPtr copy(drv->CreateCopy(file.string().c_str(), ds.get(), FALSE, nullptr, nullptr, nullptr));
+        if (!copy) throw GisError("Cannot write " + file.string() + ": " + CPLGetLastErrorMsg());
     }
     ds.reset();
     return rasterInfo(file);
@@ -262,7 +295,7 @@ void collect(const OGRGeometry* g, double z0, std::vector<GeometryObject>& out, 
         auto m = std::make_shared<MeshData>();
         std::map<std::array<double, 3>, std::uint32_t> index;
         for (int i = 0; i < ps->getNumGeometries(); ++i) {
-            const auto* poly = ps->getGeometryRef(i)->toPolygon();
+            const OGRPolygon* poly = ps->getGeometryRef(i); // the parts of a TIN / polyhedral surface are polygons
             const auto* r = poly->getExteriorRing();
             std::vector<std::uint32_t> ids;
             for (int k = 0; k + 1 < r->getNumPoints(); ++k) {
@@ -296,14 +329,25 @@ VectorImport importVector(const fs::path& file, const std::string& layerName, do
     VectorImport r;
     crsOf(l->GetSpatialRef(), r.crsWkt, r.crsAuthority);
     OGRFeatureDefn* d = l->GetLayerDefn();
-    std::vector<std::string> keys;
+    // KML drivers expose presentation settings as fields: they are not feature data.
+    const std::string drvName = ds->GetDriver() ? ds->GetDriver()->GetDescription() : "";
+    const bool kml = drvName == "KML" || drvName == "LIBKML";
+    static const std::set<std::string> kmlPresentation{"tessellate", "extrude", "visibility", "draworder", "icon", "altitudemode", "begin", "end", "timestamp", "snippet"};
+    std::vector<std::string> keys; // empty = field not imported
     for (int f = 0; f < d->GetFieldCount(); ++f) {
         const auto* fd = d->GetFieldDefn(f);
+        std::string lower = fd->GetNameRef();
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (kml && kmlPresentation.count(lower)) {
+            keys.emplace_back();
+            continue;
+        }
         std::string type = "Text";
         if (fd->GetType() == OFTReal) type = "Real";
         else if (fd->GetType() == OFTInteger || fd->GetType() == OFTInteger64) type = "Integer";
         else if (fd->GetType() == OFTDate) type = "Date";
-        keys.push_back(sanitizeKey(fd->GetNameRef()));
+        // "Name"/"NAME" (KML, many shapefiles) is the feature name.
+        keys.push_back(lower == "name" ? std::string("name") : sanitizeKey(fd->GetNameRef()));
         r.fields.push_back({keys.back(), type});
     }
     l->ResetReading();
@@ -316,7 +360,7 @@ VectorImport importVector(const fs::path& file, const std::string& layerName, do
         }
         AttributeMap attrs;
         for (int f = 0; f < d->GetFieldCount(); ++f) {
-            if (!feat->IsFieldSetAndNotNull(f)) continue;
+            if (keys[static_cast<std::size_t>(f)].empty() || !feat->IsFieldSetAndNotNull(f)) continue;
             if (d->GetFieldDefn(f)->GetType() == OFTDate) {
                 int y, mo, dd, h, mi, tz;
                 float s;

@@ -13,8 +13,11 @@
 //  * Volumes integrate station areas with the average-end-area rule over the station interval.
 //  * Clearance (optional equipment envelope in section coordinates) is the smallest distance from
 //    the envelope to the as-built boundary, negative where the as-built intrudes into it.
-//  * An open as-built section (e.g. an unscanned floor) is closed with the chord between its ends;
-//    such stations are flagged.
+//  * Mesh sections are assembled from the plane-section chains: chains broken by holes in the
+//    as-built surface are joined end to end across gaps up to `maxGap`; a section still open (e.g.
+//    an unscanned floor) is closed with the chord between its ends and flagged. An open section
+//    that does not enclose the design centroid is partial (typically at an unscanned end): the
+//    station is reported but not used for volumes and depths.
 
 #include "openmine/geometry/Sweep.h"
 #include "openmine/project/Project.h"

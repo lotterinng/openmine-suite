@@ -57,6 +57,8 @@
 #include <QVBoxLayout>
 #include <QTimer>
 
+#include <set>
+
 namespace openmine::app {
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
@@ -154,6 +156,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     updateTitle();
     updateActions();
     QTimer::singleShot(0, this, &MainWindow::loadPlugins);
+    connect(&ctx_, &AppContext::pluginRescanRequested, this, &MainWindow::loadPlugins);
 }
 
 MainWindow::~MainWindow() = default;
@@ -1142,13 +1145,32 @@ void MainWindow::loadPlugins() {
         if (!s.loaded && std::find(disabled.begin(), disabled.end(), s.manifest.id) == disabled.end())
             ctx_.report(tr("Plugin %1 not loaded: %2").arg(qstr(s.manifest.id), qstr(s.error)), MessageLevel::Warning);
     if (n) ctx_.report(tr("%1 plugin(s) loaded").arg(n));
+    // Python plugins: installed distributions and the "python" subfolder of each plugin folder.
+    if (PythonConsolePanel::available() && ctx_.settings().value("plugins/python", true).toBool()) {
+        QStringList problems;
+        const int k = python_->discoverPlugins(ctx_.pluginDirectories(), &problems);
+        for (const auto& p : problems) ctx_.report(p, MessageLevel::Warning);
+        ctx_.setScriptPlugins(python_);
+        std::set<std::string> native;
+        for (const auto& c : ctx_.plugins().commands()) native.insert(c.name);
+        for (const auto& c : python_->scriptCommands())
+            if (native.count(c.name))
+                ctx_.report(tr("Python plugin command %1 (%2) is hidden by a native plugin command of the same name").arg(qstr(c.name), qstr(c.plugin)),
+                            MessageLevel::Warning);
+        if (k) ctx_.report(tr("%1 Python plugin command(s) available").arg(k));
+    }
     rebuildPluginMenu();
 }
 
 void MainWindow::rebuildPluginMenu() {
     pluginMenu_->clear();
-    const auto cmds = ctx_.plugins().commands();
+    const auto cmds = ctx_.pluginCommands();
+    bool pythonSection = false;
     for (const auto& c : cmds) {
+        if (c.python && !pythonSection) {
+            pluginMenu_->addSection(tr("Python plugins"));
+            pythonSection = true;
+        }
         const QString name = qstr(c.name);
         auto* a = pluginMenu_->addAction(name, this, [this, name] {
             QString args = "{}";
@@ -1157,12 +1179,16 @@ void MainWindow::rebuildPluginMenu() {
                 args = QInputDialog::getText(this, name, tr("Arguments (JSON):"), QLineEdit::Normal, "{}", &ok);
                 if (!ok) return;
             }
-            const auto r = ctx_.plugins().runCommand(ctx_.project(), sstr(name), sstr(args));
+            if (!ctx_.hasProject()) {
+                ctx_.report(tr("Open or create a project first"), MessageLevel::Warning);
+                return;
+            }
+            const auto r = ctx_.runPluginCommand(sstr(name), sstr(args));
             for (const auto& l : r.log) ctx_.report(qstr(l));
             if (r.ok) ctx_.report(tr("%1: %2").arg(name, qstr(r.text)));
-            else ctx_.report(tr("%1 failed: %2%3").arg(name, qstr(r.error), r.rolledBack ? tr(" (its open edit was rolled back)") : QString()), MessageLevel::Error);
+            else ctx_.report(tr("%1 failed: %2%3").arg(name, qstr(r.error), r.rolledBack ? tr(" (its changes were rolled back)") : QString()), MessageLevel::Error);
         });
-        a->setToolTip(qstr(c.description + " [" + c.pluginId + "]"));
+        a->setToolTip(qstr(c.description + " [" + c.plugin + (c.python ? ", Python" : "") + "]"));
     }
     if (cmds.empty()) pluginMenu_->addAction(tr("(no plugin commands)"))->setEnabled(false);
 }

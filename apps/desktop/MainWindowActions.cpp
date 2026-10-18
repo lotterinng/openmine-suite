@@ -131,6 +131,13 @@ void showSectionAlong(ViewportArea* area, const Uuid& developmentId, double chai
     area->active()->sectionAtChainage(developmentId, chainage);
 }
 
+/// ESRI ASCII grids and ASCII point files share ".asc": a grid starts with its "ncols" header.
+bool isAsciiGrid(const QString& file) {
+    QFile f(file);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) return false;
+    return QString::fromLatin1(f.readLine(256)).trimmed().startsWith(QLatin1String("ncols"), Qt::CaseInsensitive);
+}
+
 } // namespace
 
 // ---- import ------------------------------------------------------------------------------------
@@ -251,7 +258,7 @@ bool MainWindow::importFile(const QString& path) {
             return false;
 #endif
         }
-        if (ext == ".shp" || ext == ".gpkg" || ext == ".geojson" || ext == ".json" || ext == ".kml" || ext == ".gml" || ext == ".tab") {
+        if (ext == ".shp" || ext == ".gpkg" || ext == ".geojson" || ext == ".json" || ext == ".kml") {
 #ifdef OPENMINE_APP_HAVE_GIS
             double z = activeView() ? activeView()->workPlaneZ() : 0.0;
             QString layerName;
@@ -297,7 +304,7 @@ bool MainWindow::importFile(const QString& path) {
             return false;
 #endif
         }
-        if (ext == ".tif" || ext == ".tiff" || ext == ".asc" || ext == ".dem" || ext == ".img") {
+        if (ext == ".tif" || ext == ".tiff" || (ext == ".asc" && isAsciiGrid(path))) {
 #ifdef OPENMINE_APP_HAVE_GIS
             int step = 1;
             if (!nonInteractive_) {

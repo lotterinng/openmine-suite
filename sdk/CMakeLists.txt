@@ -29,3 +29,22 @@ endfunction()
 
 openmine_add_plugin(openmine_station_import ${CMAKE_SOURCE_DIR}/plugins/samples/station_import
     SOURCES ${CMAKE_SOURCE_DIR}/plugins/samples/station_import/station_import.cpp)
+
+# openmine_add_python_plugin(<folder> <distribution> <version> <package> <entry point>): stages a
+# Python plugin package with its distribution metadata into ${CMAKE_BINARY_DIR}/plugins/python, the
+# layout the application searches (an installed wheel provides the same metadata).
+function(openmine_add_python_plugin folder dist version package entry)
+    set(out ${CMAKE_BINARY_DIR}/plugins/python)
+    file(GLOB_RECURSE _srcs RELATIVE ${folder} ${folder}/${package}/*.py)
+    foreach(f ${_srcs})
+        configure_file(${folder}/${f} ${out}/${f} COPYONLY)
+    endforeach()
+    string(REPLACE "-" "_" _dist ${dist})
+    set(_info ${out}/${_dist}-${version}.dist-info)
+    file(WRITE ${_info}/METADATA "Metadata-Version: 2.1\nName: ${dist}\nVersion: ${version}\n")
+    file(WRITE ${_info}/entry_points.txt "[openmine.plugins]\n${entry}\n")
+    file(WRITE ${_info}/top_level.txt "${package}\n")
+endfunction()
+
+openmine_add_python_plugin(${CMAKE_SOURCE_DIR}/plugins/samples/python_levels openmine-levels-sample 1.0.0 openmine_levels
+    "levels = openmine_levels:register")

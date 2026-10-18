@@ -255,6 +255,41 @@ def test_native_and_python_plugins(tmp_path):
         reg.add_command("bad", bad)
 
 
+@pytest.mark.skipif(not os.environ.get("OPENMINE_TEST_PLUGIN_DIR"), reason="plugin build folder not given")
+def test_sample_python_plugin_discovery_and_desktop_host():
+    import json
+    import sys
+    from openmine import plugins
+    folder = os.path.join(os.environ["OPENMINE_TEST_PLUGIN_DIR"], "python")
+    described = json.loads(plugins._desktop_discover(json.dumps([folder])))
+    assert folder in sys.path
+    names = {c["name"]: c for c in described["commands"]}
+    assert {"levels.summary", "levels.layers"} <= set(names), described
+    assert names["levels.summary"]["plugin"] == "levels" and described["errors"] == []
+    reg = plugins.discover()
+    p = Project.new("Levels", start="2026-11-02")
+    for name, level, length in (("A", "675", 30.0), ("B", "675", 20.0), ("C", "700", 12.5)):
+        p.cad.create_development(name=name, length=length, width=5.0, height=5.0, start=(0.0, 0.0, 0.0), azimuth_deg=90,
+                                 gradient_percent=0.0, level=level)
+    s = reg.run(p, "levels.summary")
+    assert s["675"]["headings"] == 2 and s["675"]["metres"] == pytest.approx(50.0)
+    assert s["700"]["volume_m3"] == pytest.approx(12.5 * 25.0, rel=1e-6)
+    before = len(p.cad.layers())
+    assert reg.run(p, "levels.layers", prefix="L") == {"created": ["L675", "L700"]}
+    assert len(p.cad.layers()) == before + 2
+    assert reg.run(p, "levels.layers", prefix="L") == {"created": []}  # idempotent
+    p.undo()
+    p.undo()  # the first run was one undo step for both layers
+    assert len(p.cad.layers()) == before
+    with pytest.raises(ValueError):
+        reg.run(p, "levels.layers", prefix=" ")
+    assert len(p.cad.layers()) == before
+    # The desktop entry point reports errors as JSON instead of raising.
+    out = json.loads(plugins._desktop_run("levels.summary", "{}"))
+    assert out == {"ok": False, "error": "No project is open", "rolled_back": False}  # standalone interpreter
+    assert not json.loads(plugins._desktop_run("no.such", "{}"))["ok"]
+
+
 @pytest.mark.skipif(not os.environ.get("OPENMINE_PG_DSN") or not openmine.FEATURES["repository"], reason="no PostgreSQL test database")
 def test_repository_round_trip():
     from openmine.repository import Repository

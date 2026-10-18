@@ -584,9 +584,16 @@ void MainWindow::registerCommands() {
         spec.headingId = sstr(a[0]);
         if (a.size() > 1) spec.width = number(a[1], "Width");
         spec.height = a.size() > 2 ? number(a[2], "Height") : spec.width;
-        if (a.size() > 3)
+        if (a.size() > 3) {
             for (const auto& l : ctx_.project().model().levels.all())
                 if (qstr(l.code).compare(a[3], Qt::CaseInsensitive) == 0 || qstr(l.name).compare(a[3], Qt::CaseInsensitive) == 0) spec.levelId = l.id;
+            if (spec.levelId.isNil()) {
+                // No level object with that code or name: keep the level as text (as the Python API
+                // does) and say so, rather than dropping it.
+                spec.level = sstr(a[3]);
+                ctx_.report(tr("No level '%1' is defined: recorded as the heading's level text").arg(a[3]), MessageLevel::Warning);
+            }
+        }
         ctx_.tryEdit(tr("Create heading"), [&] {
             const Uuid id = mine_design::createDevelopment(ctx_.project(), geoms.front(), spec);
             const auto mt = mine_design::computeMetrics(ctx_.project(), *ctx_.project().model().developments.find(id));
@@ -747,13 +754,13 @@ void MainWindow::registerCommands() {
     con.registerCommand("PLUGIN", "PLUGIN [command [json arguments]]", "Run a plugin command (no args lists them)", [=, this](const QStringList& a) {
         if (a.isEmpty()) {
             QStringList names;
-            for (const auto& c : ctx_.plugins().commands()) names << qstr(c.name);
+            for (const auto& c : ctx_.pluginCommands()) names << qstr(c.name) + (c.python ? " (Python)" : "");
             return ctx_.report(names.isEmpty() ? tr("No plugin commands are loaded") : tr("Plugin commands: %1").arg(names.join(", ")));
         }
         needProject();
-        const auto r = ctx_.plugins().runCommand(ctx_.project(), sstr(a[0]), a.size() > 1 ? sstr(a.mid(1).join(' ')) : "{}");
+        const auto r = ctx_.runPluginCommand(sstr(a[0]), a.size() > 1 ? sstr(a.mid(1).join(' ')) : "{}");
         for (const auto& l : r.log) ctx_.report(qstr(l));
-        if (!r.ok) throw ValidationError(r.error + (r.rolledBack ? " (the open edit was rolled back)" : ""));
+        if (!r.ok) throw ValidationError(r.error + (r.rolledBack ? " (its changes were rolled back)" : ""));
         ctx_.report(qstr(r.text));
     });
     con.registerCommand("JOBS", "JOBS [CANCEL]", "List background jobs, or cancel them all", [this](const QStringList& a) {

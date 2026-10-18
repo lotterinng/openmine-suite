@@ -14,6 +14,9 @@
 #include <QFileDialog>
 #include <QFontDatabase>
 #include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -109,7 +112,9 @@ void PythonConsolePanel::ensureConsole() {
     for (const QString& cand : {appDir.filePath("../lib/openmine/python"), appDir.filePath("python")})
         if (QFileInfo::exists(QDir(cand).filePath("openmine/__init__.py"))) paths.emplace_back(cand.toStdString());
     console_ = std::make_unique<python::PythonConsole>(ctx_.projectPtr(), paths);
-    console_->setOutputSink([this](int stream, const std::string& text) { append(qstr(text), stream); });
+    console_->setOutputSink([this](int stream, const std::string& text) {
+        if (!quiet_) append(qstr(text), stream);
+    });
     console_->setPump([this] {
         // Show the modal progress dialog once code has run for a moment, then keep the UI alive.
         if (!progress_ && QDateTime::currentMSecsSinceEpoch() - runStart_ > 600) {
@@ -218,6 +223,106 @@ bool PythonConsolePanel::runFile(const QString& path) {
 }
 
 QString PythonConsolePanel::transcript() const { return out_->toPlainText(); }
+
+bool PythonConsolePanel::runQuiet(const QString& source, QString* output, QString* error) {
+#ifdef OPENMINE_APP_HAVE_PYTHON
+    if (running_) {
+        if (error) *error = tr("Python is busy");
+        return false;
+    }
+    ensureConsole();
+    beginRun(QStringLiteral("<plugin>"));
+    quiet_ = true;
+    python::PythonConsole::Result r;
+    try {
+        r = console_->run(sstr(source), "<openmine plugin host>");
+    } catch (const std::exception& e) {
+        r.ok = false;
+        r.error = e.what();
+    }
+    quiet_ = false;
+    endRun();
+    if (output) *output = qstr(r.output);
+    if (error) *error = qstr(r.error);
+    return r.ok;
+#else
+    (void)source;
+    (void)output;
+    if (error) *error = tr("This build has no embedded Python");
+    return false;
+#endif
+}
+
+namespace {
+/// A JSON array of strings is also a Python list literal: the safe way to pass text into code.
+QString pyStrings(const QStringList& values) {
+    QJsonArray a;
+    for (const auto& v : values) a.append(v);
+    return QString::fromUtf8(QJsonDocument(a).toJson(QJsonDocument::Compact));
+}
+/// The last line of `output` that is a JSON object; earlier lines go to `rest`.
+QJsonObject lastJsonLine(const QString& output, QStringList* rest) {
+    QStringList lines = output.split('\n', Qt::SkipEmptyParts);
+    while (!lines.isEmpty()) {
+        const auto doc = QJsonDocument::fromJson(lines.last().toUtf8());
+        lines.removeLast();
+        if (doc.isObject()) {
+            if (rest) *rest = lines;
+            return doc.object();
+        }
+    }
+    return {};
+}
+} // namespace
+
+int PythonConsolePanel::discoverPlugins(const std::vector<std::filesystem::path>& folders, QStringList* problems) {
+    commands_.clear();
+    if (!available()) return 0;
+    QStringList paths;
+    for (const auto& f : folders) {
+        const auto py = f / "python";
+        std::error_code ec;
+        if (std::filesystem::is_directory(py, ec)) paths << QString::fromStdU16String(py.u16string());
+    }
+    QString out, err;
+    const QString src = QStringLiteral("import openmine.plugins as _omp\nprint(_omp._desktop_discover(%1[0]))\n")
+                            .arg(pyStrings({QString::fromUtf8(QJsonDocument(QJsonArray::fromStringList(paths)).toJson(QJsonDocument::Compact))}));
+    if (!runQuiet(src, &out, &err)) {
+        if (problems) *problems << tr("Python plugin discovery failed: %1").arg(err.trimmed());
+        return 0;
+    }
+    const auto o = lastJsonLine(out, nullptr);
+    for (const auto& v : o.value("commands").toArray()) {
+        const auto c = v.toObject();
+        commands_.push_back({sstr(c.value("name").toString()), sstr(c.value("help").toString()), sstr(c.value("plugin").toString())});
+    }
+    if (problems)
+        for (const auto& e : o.value("errors").toArray()) *problems << tr("Python plugin %1").arg(e.toString());
+    return static_cast<int>(commands_.size());
+}
+
+ScriptPluginHost::Result PythonConsolePanel::runScriptCommand(const std::string& name, const std::string& argumentsJson) {
+    Result r;
+    QString out, err;
+    const QString src = QStringLiteral("import openmine.plugins as _omp\n_a = %1\nprint(_omp._desktop_run(_a[0], _a[1]))\n")
+                            .arg(pyStrings({qstr(name), qstr(argumentsJson)}));
+    if (!runQuiet(src, &out, &err)) {
+        r.error = sstr(err.trimmed());
+        return r;
+    }
+    QStringList rest;
+    const auto o = lastJsonLine(out, &rest);
+    for (const auto& l : rest) r.log.push_back(sstr(l));
+    if (o.isEmpty()) {
+        r.error = "The Python plugin host returned no result";
+        return r;
+    }
+    r.ok = o.value("ok").toBool();
+    r.text = sstr(o.value("text").toString());
+    r.error = sstr(o.value("error").toString());
+    r.rolledBack = o.value("rolled_back").toBool();
+    return r;
+}
 
 void PythonConsolePanel::complete() {
 #ifdef OPENMINE_APP_HAVE_PYTHON

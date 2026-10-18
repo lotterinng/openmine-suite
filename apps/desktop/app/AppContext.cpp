@@ -13,6 +13,7 @@
 #include <QTimer>
 
 #include <algorithm>
+#include <set>
 
 namespace openmine::app {
 
@@ -353,6 +354,39 @@ void AppContext::setPlaybackCompareBaseline(bool on) {
 }
 
 // ---- services --------------------------------------------------------------------------------------
+
+std::vector<PluginCommandInfo> AppContext::pluginCommands() const {
+    std::vector<PluginCommandInfo> out;
+    std::set<std::string> names;
+    for (const auto& c : plugins_->commands()) {
+        out.push_back({c.name, c.description, c.pluginId, false});
+        names.insert(c.name);
+    }
+    if (scriptPlugins_)
+        for (const auto& c : scriptPlugins_->scriptCommands())
+            if (!names.count(c.name)) out.push_back({c.name, c.help, c.plugin, true});
+    std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return a.name < b.name; });
+    return out;
+}
+
+plugins::PluginCallResult AppContext::runPluginCommand(const std::string& name, const std::string& argumentsJson) {
+    for (const auto& c : plugins_->commands())
+        if (c.name == name) return plugins_->runCommand(project(), name, argumentsJson);
+    plugins::PluginCallResult r;
+    if (scriptPlugins_)
+        for (const auto& c : scriptPlugins_->scriptCommands())
+            if (c.name == name) {
+                const auto s = scriptPlugins_->runScriptCommand(name, argumentsJson);
+                r.ok = s.ok;
+                r.text = s.text;
+                r.error = s.error;
+                r.rolledBack = s.rolledBack;
+                r.log = s.log;
+                return r;
+            }
+    r.error = "Unknown plugin command '" + name + "'";
+    return r;
+}
 
 std::vector<std::filesystem::path> AppContext::pluginDirectories() const {
     std::vector<std::filesystem::path> dirs;

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openmine-levels-sample"
+version = "1.0.0"
+description = "Sample OpenMine Suite Python plugin: development quantities by level"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+
+[project.entry-points."openmine.plugins"]
+levels = "openmine_levels:register"
+
+[tool.setuptools]
+packages = ["openmine_levels"]

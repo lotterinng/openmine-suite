@@ -61,7 +61,8 @@ endif()
 
 if(TARGET openmine_gis)
     add_executable(openmine_gis_tests unit/test_gis.cpp)
-    target_link_libraries(openmine_gis_tests PRIVATE openmine_gis openmine_cad GTest::gtest_main)
+    # GDAL directly as well: the KML test checks the transformation against OGR independently.
+    target_link_libraries(openmine_gis_tests PRIVATE openmine_gis openmine_cad GDAL::GDAL GTest::gtest_main)
     gtest_discover_tests(openmine_gis_tests DISCOVERY_TIMEOUT 60)
 endif()
 

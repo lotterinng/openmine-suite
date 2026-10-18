@@ -5,9 +5,11 @@
 #include "openmine/project/ProjectEditor.h"
 
 #include <gtest/gtest.h>
+#include <ogr_spatialref.h>
 
 #include <filesystem>
 #include <fstream>
+#include <memory>
 
 using namespace openmine;
 using namespace openmine::gis;
@@ -51,6 +53,22 @@ TEST(Gis, DemExportImportRoundTrip) {
     const auto coarse = importDem(dir / "dem.tif", io);
     EXPECT_EQ(coarse.vertices.size(), 10u * 6u);
     EXPECT_THROW(importDem(dir / "missing.tif"), GisError);
+    // ESRI ASCII grid (written by copy from an in-memory raster), with its CRS in the .prj.
+    DemExportOptions ao = eo;
+    ao.driver = "AAIGrid";
+    const auto ai = exportDem(plane, dir / "dem.asc", ao);
+    EXPECT_EQ(ai.driver, "AAIGrid");
+    EXPECT_EQ(ai.width, 50);
+    EXPECT_EQ(ai.height, 30);
+    EXPECT_TRUE(fs::exists(dir / "dem.prj"));
+    RasterInfo ari;
+    const auto am = importDem(dir / "dem.asc", {}, &ari);
+    ASSERT_EQ(am.vertices.size(), m.vertices.size());
+    for (std::size_t i = 0; i < am.vertices.size(); ++i) {
+        EXPECT_NEAR(am.vertices[i].x, m.vertices[i].x, 1e-9);
+        EXPECT_NEAR(am.vertices[i].y, m.vertices[i].y, 1e-9);
+        EXPECT_NEAR(am.vertices[i].z, m.vertices[i].z, 1e-6); // decimal text
+    }
     fs::remove_all(dir);
 }
 
@@ -106,7 +124,50 @@ TEST(Gis, VectorRoundTripWithAttributesAndCrs) {
     // Shapefiles take one geometry type.
     VectorExportOptions so;
     EXPECT_THROW(exportVector({&road, &bh}, dir / "mixed.shp", so), GisError);
+    so.crsWkt = kLo25;
     exportVector({&road}, dir / "road.shp", so);
+    {
+        const auto shp = importVector(dir / "road.shp");
+        // The .prj is ESRI WKT without an authority; PROJ cannot identify it as EPSG:2051 with
+        // confidence (it is only a 25 % match), so no authority is claimed — but the definition
+        // is the same south-orientated Transverse Mercator on 25° E.
+        EXPECT_TRUE(shp.crsAuthority.empty() || shp.crsAuthority == "EPSG:2051") << shp.crsAuthority;
+        OGRSpatialReference lo25, read;
+        lo25.SetFromUserInput(kLo25);
+        ASSERT_EQ(read.SetFromUserInput(shp.crsWkt.c_str()), OGRERR_NONE);
+        const char* same[] = {"IGNORE_DATA_AXIS_TO_SRS_AXIS_MAPPING=YES", "CRITERION=EQUIVALENT_EXCEPT_AXIS_ORDER_GEOGCRS", nullptr};
+        EXPECT_TRUE(read.IsSame(&lo25, same) || (read.GetProjParm(SRS_PP_CENTRAL_MERIDIAN) == 25.0 && std::string(read.GetAttrValue("PROJECTION") ? read.GetAttrValue("PROJECTION") : "").find("South") != std::string::npos));
+        ASSERT_EQ(shp.features.size(), 1u);
+        EXPECT_EQ(shp.features[0].geometry.vertices.size(), 3u);
+        EXPECT_DOUBLE_EQ(shp.features[0].geometry.vertices[2].z, 1490);
+        EXPECT_EQ(shp.features[0].attributes.at("width_m"), "12.5");
+    }
+    // KML is geographic: features are written in WGS 84 (transformed by the driver) and come back
+    // as longitude/latitude with heights — the importer reports the CRS, it does not transform.
+    {
+        VectorExportOptions ko;
+        ko.crsWkt = kLo25;
+        exportVector({&road, &bh}, dir / "out.kml", ko);
+        const auto kml = importVector(dir / "out.kml");
+        EXPECT_EQ(kml.crsAuthority, "EPSG:4326");
+        ASSERT_EQ(kml.features.size(), 2u);
+        OGRSpatialReference src, dst;
+        src.SetFromUserInput(kLo25);
+        dst.SetWellKnownGeogCS("WGS84");
+        src.SetAxisMappingStrategy(OAMS_TRADITIONAL_GIS_ORDER);
+        dst.SetAxisMappingStrategy(OAMS_TRADITIONAL_GIS_ORDER);
+        std::unique_ptr<OGRCoordinateTransformation> ct(OGRCreateCoordinateTransformation(&src, &dst));
+        ASSERT_TRUE(ct);
+        for (std::size_t k = 0; k < road.vertices.size(); ++k) {
+            double x = road.vertices[k].x, y = road.vertices[k].y;
+            ASSERT_TRUE(ct->Transform(1, &x, &y));
+            EXPECT_NEAR(kml.features[0].geometry.vertices[k].x, x, 1e-9);
+            EXPECT_NEAR(kml.features[0].geometry.vertices[k].y, y, 1e-9);
+            EXPECT_NEAR(kml.features[0].geometry.vertices[k].z, road.vertices[k].z, 1e-6);
+        }
+        EXPECT_EQ(kml.features[1].geometry.type, GeometryType::Point);
+        EXPECT_EQ(kml.features[0].attributes.at("name"), "Haul road");
+    }
     // Import into a project creates the attribute definitions; one undo step.
     auto pp = Project::createNew("GIS", Date::fromYmd(2026, 11, 2));
     ProjectEditor ed(*pp);
