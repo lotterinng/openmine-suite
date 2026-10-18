@@ -11,7 +11,9 @@
 #include "openmine/mine_design/Development.h"
 #include "openmine/objects/EnumNames.h"
 #include "openmine/project/ProjectEditor.h"
+#include "openmine/reporting/ReportDocument.h"
 #include "openmine/reporting/SurveyReports.h"
+#include "openmine/survey/AsBuilt.h"
 #include "openmine/survey/Conformance.h"
 #include "openmine/survey/KdTree.h"
 #include "openmine/survey/Meshing.h"
@@ -115,17 +117,6 @@ int derivedJob(AppContext& ctx, const QString& title, const Uuid& id, const std:
     }, true);
 }
 
-std::vector<Vec3> densify(const std::vector<Vec3>& line, double step) {
-    std::vector<Vec3> out;
-    for (std::size_t i = 1; i < line.size(); ++i) {
-        const double d = distance(line[i - 1], line[i]);
-        const int n = std::max(1, static_cast<int>(std::ceil(d / step)));
-        for (int k = 0; k < n; ++k) out.push_back(lerp(line[i - 1], line[i], static_cast<double>(k) / n));
-    }
-    if (!line.empty()) out.push_back(line.back());
-    return out;
-}
-
 } // namespace
 
 // ---- import ------------------------------------------------------------------------------------------
@@ -209,6 +200,54 @@ std::vector<int> PointCloudImportDialog::start() {
 
 // ---- processing --------------------------------------------------------------------------------------
 
+void CloudProcessDialog::setBox(const BoundingBox& box, bool keepInside) {
+    if (op_ != Operation::CropBox) return;
+    a_->setValue(box.min.x);
+    b_->setValue(box.min.y);
+    c_->setValue(box.min.z);
+    d_->setValue(box.max.x);
+    e_->setValue(box.max.y);
+    f_->setValue(box.max.z);
+    flag_->setChecked(keepInside);
+}
+
+bool CloudProcessDialog::setValue(const QString& field, double value) {
+    QDoubleSpinBox* d = field == "a" ? a_ : field == "b" ? b_ : field == "c" ? c_ : field == "d" ? d_ : field == "e" ? e_ : field == "f" ? f_ : nullptr;
+    if (d) {
+        d->setValue(value);
+        return std::abs(d->value() - value) <= std::pow(10.0, -d->decimals());
+    }
+    if (field == "k" && k_) {
+        k_->setValue(static_cast<int>(std::lround(value)));
+        return k_->value() == static_cast<int>(std::lround(value));
+    }
+    return false;
+}
+
+bool CloudProcessDialog::setMode(int modeData) {
+    if (!mode_) return false;
+    const int i = mode_->findData(modeData);
+    if (i < 0) return false;
+    mode_->setCurrentIndex(i);
+    return true;
+}
+
+bool CloudProcessDialog::setFlag(bool on) {
+    if (!flag_) return false;
+    flag_->setChecked(on);
+    return true;
+}
+
+bool CloudProcessDialog::setEngine(const QString& engine) {
+    if (!engine_) return false;
+    const int i = engine_->findData(engine);
+    if (i < 0) return false;
+    engine_->setCurrentIndex(i);
+    return true;
+}
+
+void CloudProcessDialog::setOutputName(const QString& name) { name_->setText(name); }
+
 QString CloudProcessDialog::title(Operation op) {
     switch (op) {
     case Operation::Subsample: return tr("Subsample point cloud");
@@ -220,6 +259,8 @@ QString CloudProcessDialog::title(Operation op) {
     case Operation::Distance: return tr("Distance to reference");
     case Operation::Statistics: return tr("Point-cloud statistics");
     case Operation::Planes: return tr("Extract planes (RANSAC)");
+    case Operation::Segment: return tr("Segment into clusters");
+    case Operation::CropBox: return tr("Crop by box");
     }
     return {};
 }
@@ -341,6 +382,48 @@ CloudProcessDialog::CloudProcessDialog(AppContext& ctx, Operation op, const Uuid
         form->addRow(tr("Min inliers"), b_);
         form->addRow(QString(), flag_);
         break;
+    case Operation::Segment:
+        mode_ = new QComboBox(this);
+        mode_->addItem(tr("Connected components (points within a distance)"), 0);
+        mode_->addItem(tr("Region growing on normals (smooth surfaces)"), 1);
+        a_ = spin(0.001, 100, 0.25, 3, " m", this);
+        a_->setToolTip(tr("Connected components: points closer than this are in the same cluster"));
+        b_ = spin(0.1, 90, 5.0, 1, " °", this);
+        b_->setToolTip(tr("Region growing: maximum angle between neighbouring normals"));
+        k_ = ispin(1, 100000000, 50, this);
+        flag_ = new QCheckBox(tr("Drop points in clusters smaller than the minimum size"), this);
+        form->addRow(tr("Method"), mode_);
+        form->addRow(tr("Distance tolerance"), a_);
+        form->addRow(tr("Normal angle"), b_);
+        form->addRow(tr("Minimum cluster size"), k_);
+        form->addRow(QString(), flag_);
+        name_->setText(base + tr(" (clusters)"));
+        break;
+    case Operation::CropBox: {
+        BoundingBox bb = BoundingBox::empty();
+        if (d && !d->storedBounds.isEmpty())
+            for (int k = 0; k < 8; ++k)
+                bb.expand(d->transform.apply({(k & 1) ? d->storedBounds.max.x : d->storedBounds.min.x, (k & 2) ? d->storedBounds.max.y : d->storedBounds.min.y,
+                                              (k & 4) ? d->storedBounds.max.z : d->storedBounds.min.z}));
+        if (bb.isEmpty()) bb = {{0, 0, 0}, {1, 1, 1}};
+        a_ = spin(-1e8, 1e8, bb.min.x, 3, {}, this);
+        b_ = spin(-1e8, 1e8, bb.min.y, 3, {}, this);
+        c_ = spin(-1e8, 1e8, bb.min.z, 3, {}, this);
+        d_ = spin(-1e8, 1e8, bb.max.x, 3, {}, this);
+        e_ = spin(-1e8, 1e8, bb.max.y, 3, {}, this);
+        f_ = spin(-1e8, 1e8, bb.max.z, 3, {}, this);
+        flag_ = new QCheckBox(tr("Keep the points inside the box (otherwise remove them)"), this);
+        flag_->setChecked(true);
+        form->addRow(tr("Minimum E / X"), a_);
+        form->addRow(tr("Minimum N / Y"), b_);
+        form->addRow(tr("Minimum Z"), c_);
+        form->addRow(tr("Maximum E / X"), d_);
+        form->addRow(tr("Maximum N / Y"), e_);
+        form->addRow(tr("Maximum Z"), f_);
+        form->addRow(QString(), flag_);
+        name_->setText(base + tr(" (cropped)"));
+        break;
+    }
     }
     // Engine: the built-in implementation or Open3D (Poisson: PDAL or Open3D).
     if (op == Operation::Subsample || op == Operation::Outliers || op == Operation::Normals || op == Operation::Poisson) {
@@ -627,6 +710,59 @@ int CloudProcessDialog::start() {
                                    {"min", {s->bounds.min.x, s->bounds.min.y, s->bounds.min.z}}, {"max", {s->bounds.max.x, s->bounds.max.y, s->bounds.max.z}}});
                 });
             };
+        });
+    }
+    case Operation::Segment: {
+        const int mode = mode_->currentData().toInt();
+        const double tol = a_->value(), angle = b_->value();
+        const auto minSize = static_cast<std::size_t>(k_->value());
+        const bool drop = flag_->isChecked();
+        const std::string deriv = mode == 0 ? "connected components tol=" + std::to_string(tol) + " min=" + std::to_string(minSize)
+                                            : "region growing angle=" + std::to_string(angle) + " min=" + std::to_string(minSize);
+        return derivedJob(ctx, t, id, name, deriv, [mode, tol, angle, minSize, drop](survey::PointBuffer& b, jobs::Progress& pr, QString& msg) {
+            std::vector<int> labels;
+            if (mode == 0) labels = survey::euclideanClusters(b, tol, minSize, SIZE_MAX, pr);
+            else {
+                if (!b.schema().normals) {
+                    survey::NormalOptions no;
+                    no.storeCurvature = true;
+                    survey::estimateNormals(b, no, pr);
+                }
+                labels = survey::regionGrowing(b, 16, angle, minSize, pr);
+            }
+            const int ci = b.scalarIndex("cluster", true);
+            int clusters = 0;
+            std::size_t unclustered = 0;
+            for (std::size_t i = 0; i < b.size(); ++i) {
+                b.scalars[static_cast<std::size_t>(ci)][i] = static_cast<float>(labels[i]);
+                clusters = std::max(clusters, labels[i] + 1);
+                unclustered += labels[i] < 0 ? 1 : 0;
+            }
+            msg = QObject::tr("%1 clusters; %L2 points in no cluster%3").arg(clusters).arg(static_cast<qulonglong>(unclustered))
+                      .arg(drop && unclustered ? QObject::tr(" (dropped)") : QString());
+            if (!drop) return b;
+            std::vector<char> keep(b.size());
+            for (std::size_t i = 0; i < b.size(); ++i) keep[i] = labels[i] >= 0 ? 1 : 0;
+            return b.filtered(keep);
+        });
+    }
+    case Operation::CropBox: {
+        BoundingBox box{{a_->value(), b_->value(), c_->value()}, {d_->value(), e_->value(), f_->value()}};
+        if (!(box.max.x > box.min.x && box.max.y > box.min.y && box.max.z > box.min.z)) {
+            ctx_.report(tr("Each maximum must exceed its minimum"), MessageLevel::Error);
+            return 0;
+        }
+        const bool inside = flag_->isChecked();
+        const std::string deriv = std::string(inside ? "box crop (inside) " : "box crop (outside) ") + reporting::fmtNumber(box.min.x, 3) + "," +
+                                  reporting::fmtNumber(box.min.y, 3) + "," + reporting::fmtNumber(box.min.z, 3) + " – " + reporting::fmtNumber(box.max.x, 3) + "," +
+                                  reporting::fmtNumber(box.max.y, 3) + "," + reporting::fmtNumber(box.max.z, 3);
+        return derivedJob(ctx, t, id, name, deriv, [box, inside](survey::PointBuffer& b, jobs::Progress&, QString& msg) {
+            auto keep = survey::selectBox(b, box);
+            if (!inside) keep = survey::invert(std::move(keep));
+            auto out = b.filtered(keep);
+            if (out.empty()) throw ValidationError("No points remain after the crop");
+            msg = QObject::tr("%L1 of %L2 points kept").arg(static_cast<qulonglong>(out.size())).arg(static_cast<qulonglong>(b.size()));
+            return out;
         });
     }
     case Operation::Planes: {
@@ -981,7 +1117,7 @@ AsBuiltDialog::AsBuiltDialog(AppContext& ctx, const Uuid& datasetId, QWidget* pa
     form->addRow(tr("Subsample voxel"), voxel_);
     form->addRow(tr("Poisson depth"), depth_);
     form->addRow(tr("Surface engine"), engine_);
-    auto* note = new QLabel(tr("Normals are oriented towards the heading's centreline, so the reconstructed surface faces into the excavation. "
+    auto* note = new QLabel(tr("Normals are oriented towards the inside of the heading (its design profile's centroid along the centreline), so the reconstructed surface faces into the excavation. "
                                "Triangles farther from the scan than twice its point spacing (Poisson closes unscanned gaps) are removed."),
                             this);
     note->setWordWrap(true);
@@ -1005,70 +1141,34 @@ int AsBuiltDialog::start() {
     return ctx_.jobs().start(tr("As-built model"), tr("Survey"), [snap, ds, dev, corridor, voxel, depth, engine, c](jobs::Progress& pr) -> UiApply {
         const auto* d = snap->model().developments.find(dev);
         if (!d) throw ValidationError("Choose a development");
-        const auto cl = mine_design::centrelinePoints(*snap, *d);
-        auto box = BoundingBox::empty();
-        for (const auto& p : cl) box.expand(p);
-        box.min = box.min - Vec3{corridor, corridor, corridor};
-        box.max = box.max + Vec3{corridor, corridor, corridor};
-        pr.subRange(0, 0.3);
-        auto pts = survey::datasetPoints(*snap, ds, true, box, pr);
-        std::vector<char> keep(pts.size(), 0);
-        for (std::size_t i = 0; i < pts.size(); ++i) {
-            const auto dist = geometry::pointPolylineDistance(pts.xyz[i], cl);
-            keep[i] = dist && *dist <= corridor ? 1 : 0;
-        }
-        pts = pts.filtered(keep);
-        if (voxel > 0) pts = survey::voxelDownsample(pts, voxel);
-        if (pts.size() < 100) throw ValidationError("Fewer than 100 scan points lie within the corridor of the heading");
-        pr.subRange(0.3, 0.6);
-        survey::NormalOptions no;
-        no.orientation = survey::NormalOptions::Orientation::TowardsNearestScanner;
-        no.scanners = densify(cl, 0.5);
-        survey::estimateNormals(pts, no, pr);
-        pr.subRange(0.6, 0.95);
-        pr.update(0, "Poisson reconstruction");
-        MeshData mesh;
+        survey::AsBuiltOptions o;
+        o.corridor = corridor;
+        o.voxel = voxel;
+        o.depth = depth;
+        survey::SurfaceEngine surface;
         if (engine == "open3d") {
 #ifdef OPENMINE_APP_HAVE_OPEN3D
-            o3d::PoissonOptions po;
-            po.depth = depth;
-            mesh = o3d::poissonSurface(pts, po).mesh;
-            mesh.vertexScalars.clear(); // densities are not an as-built attribute
-            mesh.scalarName.clear();
+            surface = [](const survey::PointBuffer& pts, int dep) {
+                o3d::PoissonOptions po;
+                po.depth = dep;
+                return o3d::poissonSurface(pts, po).mesh; // densities are cleared by the pipeline
+            };
 #endif
         } else {
 #ifdef OPENMINE_APP_HAVE_PDAL
-            pdalio::PoissonOptions po;
-            po.depth = depth;
-            mesh = pdalio::poissonSurface(pts, po);
+            surface = [](const survey::PointBuffer& pts, int dep) {
+                pdalio::PoissonOptions po;
+                po.depth = dep;
+                return pdalio::poissonSurface(pts, po);
+            };
 #endif
         }
-        if (mesh.triangles.empty()) throw ValidationError("The surface engine returned no surface");
-        // Trim the surface away from the data: triangles farther from the scan than about twice
-        // its point spacing are Poisson extrapolation (closing the open ends, bridging shadows).
-        const survey::KdTree tree(pts.xyz);
-        std::vector<double> spacing;
-        const std::size_t stride = std::max<std::size_t>(1, pts.size() / 5000);
-        for (std::size_t i = 0; i < pts.size(); i += stride) {
-            std::vector<double> d2;
-            tree.knn(pts.xyz[i], 2, &d2);
-            if (d2.size() == 2) spacing.push_back(std::sqrt(d2[1]));
+        std::shared_ptr<MeshData> cleaned;
+        try {
+            cleaned = std::make_shared<MeshData>(survey::buildAsBuiltSurface(*snap, ds, dev, o, surface, pr));
+        } catch (const survey::PointCloudError& e) {
+            throw ValidationError(e.what());
         }
-        std::nth_element(spacing.begin(), spacing.begin() + static_cast<std::ptrdiff_t>(spacing.size() / 2), spacing.end());
-        const double medianSpacing = spacing.empty() ? voxel : spacing[spacing.size() / 2];
-        const double maxD = std::max({3 * voxel, 2.0 * medianSpacing, 0.05});
-        MeshData trimmed;
-        trimmed.vertices = mesh.vertices;
-        for (const auto& t : mesh.triangles) {
-            const Vec3 cen = (mesh.vertices[t[0]] + mesh.vertices[t[1]] + mesh.vertices[t[2]]) / 3.0;
-            const auto n = tree.nearest(cen);
-            if (n && std::sqrt(n->second) <= maxD) trimmed.triangles.push_back(t);
-        }
-        if (trimmed.triangles.empty()) throw ValidationError("The reconstructed surface does not follow the scan");
-        survey::RepairOptions ro;
-        ro.orientConsistently = true;
-        ro.orientOutward = false;
-        auto cleaned = std::make_shared<MeshData>(survey::repairMesh(trimmed, ro));
         const std::string name = d->headingId + " as-built";
         const std::string method = "Poisson depth=" + std::to_string(depth) + " (" + engineLabel(engine) + ")";
         return [c, cleaned, ds, dev, method, name] {
@@ -1121,6 +1221,9 @@ ConformanceDialog::ConformanceDialog(AppContext& ctx, const Uuid& asBuiltId, QWi
     envelope_ = new QCheckBox(tr("Check clearance of an equipment envelope (rectangle on the floor centre)"), this);
     envW_ = spin(0.1, 50, 3.0, 2, " m", this);
     envH_ = spin(0.1, 50, 3.5, 2, " m", this);
+    maxGap_ = spin(0, 10, 0.5, 2, " m", this);
+    maxGap_->setToolTip(tr("Holes in the as-built surface up to this size are bridged when a section is assembled; "
+                           "larger gaps leave the section open, closed by its chord"));
     report_ = new QCheckBox(tr("Generate the conformance report (PDF)"), this);
     report_->setChecked(true);
     form->addRow(tr("As-built model"), asBuilt_);
@@ -1130,6 +1233,7 @@ ConformanceDialog::ConformanceDialog(AppContext& ctx, const Uuid& asBuiltId, QWi
     form->addRow(tr("From chainage"), from_);
     form->addRow(tr("To chainage"), to_);
     form->addRow(tr("Sections"), orientation_);
+    form->addRow(tr("Bridge gaps up to"), maxGap_);
     form->addRow(envelope_);
     form->addRow(tr("Envelope width"), envW_);
     form->addRow(tr("Envelope height"), envH_);
@@ -1150,6 +1254,7 @@ int ConformanceDialog::start() {
         o.toChainage = to_->value();
     }
     o.orientation = static_cast<geometry::SectionOrientation>(orientation_->currentData().toInt());
+    o.maxGap = maxGap_->value();
     if (envelope_->isChecked()) {
         const double w = envW_->value() / 2, h = envH_->value();
         o.clearanceEnvelope = {{-w, 0}, {w, 0}, {w, h}, {-w, h}};

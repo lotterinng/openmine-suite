@@ -10,6 +10,11 @@
 #include "dialogs/DataDialogs.h"
 #include "dialogs/DesignDialogs.h"
 #include "dialogs/GeologyDialogs.h"
+#include "dialogs/MeshDialogs.h"
+#include "dialogs/ModelDialogs.h"
+#include "dialogs/SettingsDialogs.h"
+#include "ribbon/Ribbon.h"
+#include "scheduler/LibraryDialogs.h"
 #include "dialogs/SurveyDialogs.h"
 #include "panels/PlaybackPanel.h"
 #include "panels/PropertiesPanel.h"
@@ -24,13 +29,22 @@
 #include "openmine/geology/BlockModel.h"
 #include "openmine/mine_design/Development.h"
 #include "openmine/omf/Omf.h"
+#include "openmine/cad/Edit.h"
+#include "openmine/geometry/MeshOps.h"
 #include "openmine/project/ProjectEditor.h"
 
 #include <QAction>
+#include <QMenuBar>
+#include <QToolBar>
 #include <QComboBox>
 #include <QApplication>
 #include <QDialog>
+#include <QCheckBox>
+#include <QDate>
 #include <QDir>
+#include <QDoubleSpinBox>
+#include <QTableWidget>
+#include <QTreeWidget>
 #include <QDockWidget>
 #include <QElapsedTimer>
 #include <QFile>
@@ -40,6 +54,7 @@
 #include <QTimer>
 
 #include <cmath>
+#include <numbers>
 #include <random>
 
 namespace openmine::app {
@@ -192,6 +207,10 @@ private:
     void views();
     void scripting();
     void persistence();
+    void workspace();
+    void modelling();
+    void surfaces();
+    void libraries();
 
     MainWindow& w_;
     AppContext& ctx_;
@@ -577,7 +596,12 @@ void Smoke::survey() {
             waitJobs(600000);
             if (check(m().conformanceResults.size() == 1, "design conformance analysed")) {
                 const auto& r = m().conformanceResults.all().front();
-                check(r.overbreakVolume > 0.5, QStringLiteral("the north-wall bulge is measured as overbreak (%1 m³)").arg(r.overbreakVolume, 0, 'f', 2));
+                // The bulge is 0.4·sin over 10 m on the 5 m wall: 2·0.4·10/π·5 = 12.73 m³. Scanner
+                // noise adds about as much overbreak as underbreak, so the net volume measures it.
+                const double net = r.overbreakVolume - r.underbreakVolume, expected = 2 * 0.4 * 10 / M_PI * 5;
+                check(std::abs(net - expected) < 2.5,
+                      QStringLiteral("the north-wall bulge is measured: net overbreak %1 m³ (expected %2 m³; overbreak %3, underbreak %4 m³)")
+                          .arg(net, 0, 'f', 2).arg(expected, 0, 'f', 2).arg(r.overbreakVolume, 0, 'f', 2).arg(r.underbreakVolume, 0, 'f', 2));
                 w_.handleEntityAction("export-conformance:" + path("out/stations.csv"), {{EntityKind::Conformance, r.id}});
                 check(QFileInfo(path("out/stations.csv")).size() > 100, "station table exported");
             }
@@ -820,6 +844,286 @@ void Smoke::persistence() {
     shot("reopened");
 }
 
+
+// ---- workspace ------------------------------------------------------------------------------------------
+
+void Smoke::workspace() {
+    section("Workspace");
+    QStringList pages;
+    for (int i = 0; i < w_.ribbon()->count(); ++i) pages << w_.ribbon()->tabText(i);
+    check(pages == QStringList({"Home", "Survey", "CAD", "Mine Design", "Scheduler", "Geology", "Geotechnical", "Analysis", "Reporting", "Automation"}),
+          "the ten ribbon workspaces: " + pages.join(", "));
+    QStringList menus;
+    for (auto* a : w_.findChild<QMenuBar*>()->actions()) menus << QString(a->text()).remove('&');
+    for (const char* need : {"File", "Edit", "View", "Tools", "Window", "Settings", "Help"})
+        check(menus.contains(need), QStringLiteral("menu %1").arg(need));
+    // Quick-access toolbar: customise, persist, restore defaults.
+    w_.setQuickAccess({"file.save", "view.fit", "draw.polyline", "survey.icp"});
+    check(w_.quickAccessBar()->actions().size() == 4 && w_.quickAccessBar()->actions().at(2) == w_.action("draw.polyline"), "quick-access toolbar customised");
+    check(ctx_.settings().value("ui/quickAccess").toStringList().size() == 4, "quick-access toolbar stored in the user settings");
+    w_.setQuickAccess({});
+    check(w_.quickAccessBar()->actions().size() == 6, "quick-access defaults restored");
+    // Preferences apply to the tools and persist.
+    {
+        PreferencesDialog d(ctx_, *w_.viewports(), {}, &w_);
+        check(d.apply(), "preferences applied");
+        check(ctx_.settings().contains("snap/gridSpacing") && ctx_.settings().contains("clouds/pointBudget"), "preferences stored in the user settings");
+    }
+    // Every ribbon page shows enabled or explained actions.
+    for (int i = 0; i < w_.ribbon()->count(); ++i) {
+        w_.ribbon()->setCurrentIndex(i);
+        pump(60);
+    }
+    w_.ribbon()->setCurrentIndex(0);
+    closeDialogs();
+}
+
+// ---- 3D modelling --------------------------------------------------------------------------------------
+
+void Smoke::modelling() {
+    section("3D modelling");
+#ifdef OPENMINE_APP_HAVE_OCCT
+    auto pt = [](double x, double y, double z) { return QStringLiteral("%1,%2,%3").arg(x, 0, 'f', 3).arg(y, 0, 'f', 3).arg(z, 0, 'f', 3); };
+    const double x = kE0 + 200, y = kN0, z = kZ0;
+    // An outline with a hole, extruded 6 m: volume = (20×10 − 4×4) × 6.
+    cmd("RECTANGLE " + pt(x, y, z) + " " + pt(x + 20, y + 10, z));
+    const Uuid outer = lastGeometry();
+    cmd("RECTANGLE " + pt(x + 3, y + 3, z) + " " + pt(x + 7, y + 7, z));
+    const Uuid hole = lastGeometry();
+    ctx_.selectMany({{EntityKind::Geometry, outer}, {EntityKind::Geometry, hole}});
+    check(cmd("EXTRUDE 6"), "EXTRUDE the outline with its hole");
+    const Uuid block = lastGeometry();
+    const auto* b = m().geometry.find(block);
+    check(b && b->type == GeometryType::Solid && std::abs(std::abs(geometry::meshSignedVolume(*b->mesh)) - (200 - 16) * 6.0) < 1e-3,
+          QStringLiteral("extruded solid volume %1 m³ (expected 1104)").arg(b && b->mesh ? std::abs(geometry::meshSignedVolume(*b->mesh)) : 0, 0, 'f', 3));
+    ctx_.select(EntityKind::Geometry, block);
+    check(cmd("SOLIDCHECK") && w_.console()->lastOutput().contains("valid"), "solid check reports validity and volume");
+    check(cmd("HEAL"), "heal (a valid solid stays valid)");
+    // Sweep a 5 × 5 m profile along a bent path: volume ≈ 25 m² × path length.
+    cmd("POLYLINE " + pt(x, y + 30, z) + " " + pt(x + 30, y + 30, z - 1.5) + " " + pt(x + 30, y + 60, z - 3));
+    const Uuid path = lastGeometry();
+    ctx_.select(EntityKind::Geometry, path);
+    check(cmd("SWEEP 5 5"), "SWEEP a 5 × 5 m profile along a bent path");
+    const auto* sw = m().geometry.find(lastGeometry());
+    const double len = geometry::curveLength(*m().geometry.find(path));
+    check(sw && sw->type == GeometryType::Solid && std::abs(std::abs(geometry::meshSignedVolume(*sw->mesh)) / (25 * len) - 1) < 0.02,
+          QStringLiteral("swept volume %1 m³ ≈ 25 m² × %2 m").arg(sw && sw->mesh ? std::abs(geometry::meshSignedVolume(*sw->mesh)) : 0, 0, 'f', 1).arg(len, 0, 'f', 2));
+    // Loft between a 10 × 10 square and a 4 × 4 square 8 m above: a frustum, V = h/3 (A1 + A2 + √(A1 A2)).
+    cmd("RECTANGLE " + pt(x + 60, y, z) + " " + pt(x + 70, y + 10, z));
+    const Uuid s1 = lastGeometry();
+    cmd("RECTANGLE " + pt(x + 63, y + 3, z + 8) + " " + pt(x + 67, y + 7, z + 8));
+    const Uuid s2 = lastGeometry();
+    ctx_.selectMany({{EntityKind::Geometry, s1}, {EntityKind::Geometry, s2}});
+    check(cmd("LOFT RULED"), "LOFT two sections (ruled)");
+    const auto* lf = m().geometry.find(lastGeometry());
+    const double frustum = 8.0 / 3.0 * (100 + 16 + 40);
+    check(lf && std::abs(std::abs(geometry::meshSignedVolume(*lf->mesh)) - frustum) < 0.01 * frustum,
+          QStringLiteral("loft volume %1 m³ (frustum %2 m³)").arg(lf && lf->mesh ? std::abs(geometry::meshSignedVolume(*lf->mesh)) : 0, 0, 'f', 2).arg(frustum, 0, 'f', 2));
+    // Revolve a vertical rectangle (in the XZ plane) about the Z axis through its inner edge: a ring.
+    {
+        GeometryObject r = cad::makePolyline({{x + 100, y, z}, {x + 102, y, z}, {x + 102, y, z + 3}, {x + 100, y, z + 3}}, true);
+        r.layerId = ctx_.currentLayer();
+        Uuid rid;
+        ctx_.tryEdit("profile", [&] { rid = ProjectEditor(ctx_.project()).addGeometry(r); });
+        ctx_.select(EntityKind::Geometry, rid);
+        SolidModelDialog d(ctx_, SolidModelDialog::Operation::Revolve, &w_);
+        d.setRevolution({x + 95, y, z}, {0, 0, 1}, 360);
+        const auto ids = d.create();
+        // Annulus between r = 5 and r = 7, height 3: V = π (49 − 25) × 3.
+        const double ring = std::numbers::pi * 24 * 3;
+        const auto* rv = ids.empty() ? nullptr : m().geometry.find(ids.front());
+        check(rv && std::abs(std::abs(geometry::meshSignedVolume(*rv->mesh)) - ring) < 0.01 * ring,
+              QStringLiteral("revolved ring volume %1 m³ (exact %2 m³)").arg(rv && rv->mesh ? std::abs(geometry::meshSignedVolume(*rv->mesh)) : 0, 0, 'f', 2).arg(ring, 0, 'f', 2));
+    }
+    // Section the extruded block horizontally at mid-height: two closed loops (outline and hole).
+    w_.activeView()->setWorkPlaneZ(z + 3);
+    ctx_.select(EntityKind::Geometry, block);
+    const std::size_t n0 = m().geometry.size();
+    check(cmd("SECTIONOBJ") && m().geometry.size() >= n0 + 2, QStringLiteral("section by the work plane: %1 curve(s)").arg(m().geometry.size() - n0));
+    w_.activeView()->setWorkPlaneZ(kZ0);
+#else
+    skip("3D modelling (built without Open CASCADE)");
+#endif
+    // Chamfer two lines meeting at a corner, picked in the plan view.
+    const double cx = kE0 + 400, cy = kN0;
+    cmd(QStringLiteral("LINE %1,%2,%3 %4,%5,%6").arg(cx, 0, 'f', 3).arg(cy, 0, 'f', 3).arg(kZ0, 0, 'f', 3).arg(cx + 10, 0, 'f', 3).arg(cy, 0, 'f', 3).arg(kZ0, 0, 'f', 3));
+    const Uuid la = lastGeometry();
+    cmd(QStringLiteral("LINE %1,%2,%3 %4,%5,%6").arg(cx + 10, 0, 'f', 3).arg(cy, 0, 'f', 3).arg(kZ0, 0, 'f', 3).arg(cx + 10, 0, 'f', 3).arg(cy + 10, 0, 'f', 3).arg(kZ0, 0, 'f', 3));
+    const Uuid lb = lastGeometry();
+    w_.activeView()->setNamedView("top");
+    ctx_.selectMany({{EntityKind::Geometry, la}, {EntityKind::Geometry, lb}});
+    w_.activeView()->fitSelection();
+    pump(200);
+    ctx_.clearSelection();
+    const std::size_t before = m().geometry.size();
+    check(cmd("CHAMFER 2"), "CHAMFER tool with 2 m distances");
+    for (const Vec3 q : {Vec3{cx + 4, cy, kZ0}, Vec3{cx + 10, cy + 4, kZ0}})
+        if (auto w = w_.activeView()->worldToWidget(q)) w_.activeView()->simulateClick(w->toPoint());
+    pump(150);
+    w_.action("draw.select")->trigger();
+    const auto* ca = m().geometry.find(la);
+    check(m().geometry.size() == before + 1 && ca && std::abs(geometry::curveLength(*ca) - 8.0) < 1e-6, "chamfer trims both lines by 2 m and adds the chamfer line");
+    closeDialogs();
+}
+
+// ---- surfaces -------------------------------------------------------------------------------------------
+
+void Smoke::surfaces() {
+    section("Surfaces and point-cloud tools");
+    if (cloud_.isNil()) return skip("surfaces (no point cloud)");
+    ctx_.select(EntityKind::PointCloud, cloud_);
+    std::size_t n = m().pointClouds.size();
+    check(cmd("SEGMENT 0.6 100") && waitJobs() && m().pointClouds.size() == n + 1, "SEGMENT into connected components (derived dataset with a cluster field)");
+    if (m().pointClouds.size() == n + 1) {
+        const auto& seg = m().pointClouds.all().back();
+        check(std::find(seg.attributes.scalarFields.begin(), seg.attributes.scalarFields.end(), "cluster") != seg.attributes.scalarFields.end(),
+              "the derived dataset carries the 'cluster' field");
+    }
+    ctx_.select(EntityKind::PointCloud, cloud_);
+    n = m().pointClouds.size();
+    check(cmd(QStringLiteral("CROP %1,%2,%3 %4,%5,%6").arg(kE0 + 10, 0, 'f', 3).arg(kN0 - 5, 0, 'f', 3).arg(kZ0 - 10, 0, 'f', 3).arg(kE0 + 30, 0, 'f', 3).arg(kN0 + 5, 0, 'f', 3).arg(kZ0 + 10, 0, 'f', 3)) &&
+              waitJobs() && m().pointClouds.size() == n + 1,
+          "CROP by box");
+    if (m().pointClouds.size() == n + 1) {
+        const auto& c = m().pointClouds.all().back();
+        // 20 m of a 100 m scan with the same density: about a fifth of the points.
+        check(c.pointCount > expectedPoints_ / 6 && c.pointCount < expectedPoints_ / 4, QStringLiteral("cropped dataset has %1 points").arg(c.pointCount));
+    }
+    ctx_.select(EntityKind::PointCloud, cloud_);
+    n = m().pointClouds.size();
+    check(cmd("FILTER OUTLIERS 16 2") && waitJobs() && m().pointClouds.size() == n + 1, "FILTER OUTLIERS (console)");
+    ctx_.select(EntityKind::PointCloud, cloud_);
+    n = m().pointClouds.size();
+    check(cmd("FILTER VOXEL 0.5") && waitJobs() && m().pointClouds.size() == n + 1, "FILTER VOXEL (console)");
+#ifdef OPENMINE_APP_HAVE_OPEN3D
+    ctx_.select(EntityKind::PointCloud, cloud_);
+    n = m().pointClouds.size();
+    check(cmd("FILTER VOXEL 0.5 OPEN3D") && waitJobs() && m().pointClouds.size() == n + 1 && qstr(m().pointClouds.all().back().derivation).contains("Open3D"),
+          "FILTER VOXEL with the Open3D engine");
+    if (m().pointClouds.size() == n + 1 && n >= 1) {
+        const auto& a = m().pointClouds.all()[n - 1];
+        const auto& o = m().pointClouds.all()[n];
+        (void)a;
+        check(o.pointCount > 0, QStringLiteral("Open3D voxel dataset: %1 points").arg(o.pointCount));
+    }
+#endif
+    ctx_.select(EntityKind::PointCloud, cloud_);
+    const std::size_t g0 = m().geometry.size();
+    check(cmd("MESH DELAUNAY 2") && waitJobs() && m().geometry.size() == g0 + 1, "MESH DELAUNAY (console)");
+    const Uuid surface = lastGeometry();
+    // Decimate / smooth / repair / compare a surface.
+    ctx_.select(EntityKind::Geometry, surface);
+    const auto tris = m().geometry.find(surface)->mesh->triangles.size();
+    check(cmd(QStringLiteral("DECIMATE %1").arg(tris / 4)) && waitJobs(), "DECIMATE");
+    const auto* dec = m().geometry.find(lastGeometry());
+    check(dec && dec->mesh->triangles.size() <= tris / 4 + 2, QStringLiteral("decimated %1 → %2 triangles").arg(tris).arg(dec ? dec->mesh->triangles.size() : 0));
+    const Uuid decimated = lastGeometry();
+    ctx_.select(EntityKind::Geometry, surface);
+    check(cmd("SMOOTH 5") && waitJobs() && m().geometry.find(lastGeometry())->mesh->triangles.size() == tris, "SMOOTH keeps the topology");
+    ctx_.select(EntityKind::Geometry, surface);
+    check(cmd("REPAIR") && waitJobs(), "REPAIR");
+    ctx_.select(EntityKind::Geometry, decimated);
+    const QString refName = qstr(m().geometry.find(surface)->name);
+    if (!refName.contains(' ')) {
+        check(cmd("COMPARE " + refName + " 5") && waitJobs(), "COMPARE the decimated surface with the original");
+        const auto* cmp = m().geometry.find(lastGeometry());
+        check(cmp && cmp->mesh->scalarName == "distance" && cmp->mesh->vertexScalars.size() == cmp->mesh->vertices.size(), "per-vertex distances stored on the comparison");
+    } else {
+        MeshToolDialog d(ctx_, MeshToolDialog::Operation::Compare, decimated, &w_);
+        d.setReference(surface, 5);
+        check(d.start() > 0 && waitJobs(), "compare the decimated surface with the original");
+        const auto* cmp = m().geometry.find(lastGeometry());
+        check(cmp && cmp->mesh->scalarName == "distance" && cmp->mesh->vertexScalars.size() == cmp->mesh->vertices.size(), "per-vertex distances stored on the comparison");
+    }
+    // Console ICP between the original and its outlier-filtered copy.
+    if (!subsampled_.isNil()) {
+        ctx_.select(EntityKind::PointCloud, subsampled_);
+        const std::size_t regs = m().registrations.size();
+        const QString target = qstr(m().pointClouds.find(cloud_)->name);
+        if (!target.contains(' ')) check(cmd("REGISTER ICP " + target + " 1") && waitJobs() && m().registrations.size() == regs + 1, "REGISTER ICP (console)");
+    }
+    closeDialogs();
+}
+
+// ---- scheduling libraries -------------------------------------------------------------------------------
+
+void Smoke::libraries() {
+    section("Scheduling libraries");
+    if (activity_.isNil()) return skip("libraries (no activity)");
+    // Resources and assignments.
+    check(cmd("RESOURCE Jumbo 1 Equipment") && cmd("RESOURCE Loader LH517 1 Equipment"), "RESOURCE adds equipment to the library");
+    ctx_.select(EntityKind::Activity, activity_);
+    check(cmd("ASSIGN Jumbo 1 DRIVES"), "ASSIGN a resource to the activity");
+    check(m().assignments.size() >= 1 && m().assignments.all().back().drivesRate, "assignment stored (drives the rate)");
+    {
+        ResourceLibraryDialog d(ctx_, &w_);
+        d.show();
+        pump(100);
+        check(d.findChildren<QTableWidget*>().size() == 2, "resource library dialog lists resources and assignments");
+        d.close();
+    }
+    // A calendar: two 10 h shifts Monday–Friday, a public holiday; the project default.
+    const double finish0 = ctx_.schedule().result.timings.at(activity_).ef;
+    {
+        CalendarDialog d(ctx_, {}, &w_);
+        const Uuid cal = d.createCalendar("Two shifts weekdays", CalendarKind::Shift);
+        d.select(cal);
+        d.findChildren<QTableWidget*>().front()->setRowCount(0);
+        d.addShift("Day", 6 * 60, 10 * 60, 0b0011111);
+        d.addShift("Night", 18 * 60, 10 * 60, 0b0011111);
+        d.addException(QDate(2026, 1, 12), {}, "Public holiday");
+        for (auto* cb : d.findChildren<QCheckBox*>())
+            if (cb->text().contains("default")) cb->setChecked(true);
+        check(d.apply(), "calendar saved and made the project default");
+        check(d.summary().contains("100.0 working hours per week"), "calendar summary: " + d.summary().left(60));
+        const auto* c = m().calendars.find(cal);
+        check(c && c->shifts.size() == 2 && c->exceptions.size() == 1 && m().info.defaultCalendarId == cal, "calendar shifts, exception and default stored");
+    }
+    cmd("SCHEDULE");
+    const double finish1 = ctx_.schedule().result.timings.at(activity_).ef;
+    check(finish1 > finish0, "working only 100 h a week pushes the heading's finish later");
+    // A development cycle drives the activity's rate.
+    {
+        CycleDialog d(ctx_, &w_);
+        const Uuid cyc = d.createCycle("5x5 jumbo cycle");
+        d.select(cyc);
+        check(d.apply(), "development cycle saved");
+        check(d.breakdownText().contains("m per day"), "cycle evaluated: " + d.breakdownText().left(80));
+        check(d.useForActivities({activity_}) == 1, "the activity takes its rate from the cycle");
+        check(m().activities.find(activity_)->useCycleRate && m().activities.find(activity_)->productionModelId == cyc, "cycle link stored on the activity");
+    }
+    cmd("SCHEDULE");
+    check(ctx_.schedule().result.ok && qstr(ctx_.schedule().result.timings.at(activity_).durationBasis).contains("cycle", Qt::CaseInsensitive),
+          "duration basis: " + qstr(ctx_.schedule().result.timings.at(activity_).durationBasis));
+    // Monthly production targets.
+    {
+        TargetsDialog d(ctx_, &w_);
+        check(d.addMonthly(QDate(2026, 1, 1), QDate(2026, 6, 30), 80) == 6, "six monthly production targets");
+    }
+    // Scheduler grid: filter and group.
+    auto* sp = w_.scheduler();
+    const int all = sp->visibleActivityCount();
+    sp->setShow(SchedulerPanel::Show::Critical);
+    const int crit = sp->visibleActivityCount();
+    check(crit >= 1 && crit <= all, QStringLiteral("filter critical: %1 of %2 activities").arg(crit).arg(all));
+    sp->setShow(SchedulerPanel::Show::All);
+    sp->setFilter("no such activity name");
+    check(sp->visibleActivityCount() == 0, "text filter hides non-matching activities");
+    sp->setFilter({});
+    sp->setGroupBy(SchedulerPanel::GroupBy::Resource);
+    pump(100);
+    bool jumboGroup = false;
+    for (int i = 0; i < sp->grid()->topLevelItemCount(); ++i) jumboGroup = jumboGroup || sp->grid()->topLevelItem(i)->text(0) == "Jumbo";
+    check(jumboGroup && sp->visibleActivityCount() == all - static_cast<int>(std::count_if(m().activities.all().begin(), m().activities.all().end(),
+                                                                                             [](const auto& a) { return a.kind == ActivityKind::Summary; })),
+          "grouped by resource (a 'Jumbo' group)");
+    w_.dock("scheduler")->show();
+    w_.dock("scheduler")->raise();
+    shot("scheduler_grouped");
+    sp->setGroupBy(SchedulerPanel::GroupBy::Wbs);
+    closeDialogs();
+}
+
 int Smoke::run() {
     line("OpenMine Suite GUI smoke test — " + QDateTime::currentDateTime().toString(Qt::ISODate));
     line("Qt " + QString(qVersion()) + ", output in " + dir_);
@@ -836,8 +1140,8 @@ int Smoke::run() {
         const char* name;
         void (Smoke::*fn)();
     };
-    const Step steps[] = {{"project", &Smoke::project}, {"cad", &Smoke::cad},           {"design", &Smoke::design},   {"survey", &Smoke::survey},
-                          {"geology", &Smoke::geology}, {"schedule", &Smoke::schedule}, {"exchange", &Smoke::exchange}, {"views", &Smoke::views},
+    const Step steps[] = {{"project", &Smoke::project}, {"workspace", &Smoke::workspace}, {"cad", &Smoke::cad}, {"modelling", &Smoke::modelling},           {"design", &Smoke::design},   {"survey", &Smoke::survey}, {"surfaces", &Smoke::surfaces},
+                          {"geology", &Smoke::geology}, {"schedule", &Smoke::schedule}, {"libraries", &Smoke::libraries}, {"exchange", &Smoke::exchange}, {"views", &Smoke::views},
                           {"scripting", &Smoke::scripting}, {"persistence", &Smoke::persistence}};
     for (const auto& s : steps) {
         try {

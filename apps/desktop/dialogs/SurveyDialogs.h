@@ -50,10 +50,20 @@ private:
 class CloudProcessDialog : public QDialog {
     Q_OBJECT
 public:
-    enum class Operation { Subsample, Outliers, Normals, Ground, Delaunay, Poisson, Distance, Statistics, Planes };
+    enum class Operation { Subsample, Outliers, Normals, Ground, Delaunay, Poisson, Distance, Statistics, Planes, Segment, CropBox };
     CloudProcessDialog(AppContext& ctx, Operation op, const Uuid& datasetId, QWidget* parent = nullptr);
     int start();
     static QString title(Operation op);
+    /// Box crop limits (project coordinates).
+    void setBox(const BoundingBox& box, bool keepInside);
+    /// Scripted use (console): the dialog's fields by their letter ("a"…"f", "k"), the method
+    /// combo by its data value, the check box and the engine ("openmine", "open3d", "pdal").
+    /// Each returns false when the operation has no such field / value.
+    bool setValue(const QString& field, double value);
+    bool setMode(int modeData);
+    bool setFlag(bool on);
+    bool setEngine(const QString& engine);
+    void setOutputName(const QString& name);
 
 private:
     AppContext& ctx_;
@@ -67,6 +77,8 @@ private:
     QCheckBox* flag_ = nullptr;
     QDoubleSpinBox* c_ = nullptr;
     QDoubleSpinBox* d_ = nullptr;
+    QDoubleSpinBox* e_ = nullptr;
+    QDoubleSpinBox* f_ = nullptr;
     QLineEdit* name_ = nullptr;
     QComboBox* engine_ = nullptr; ///< "openmine" | "open3d" | "pdal"
 };
@@ -144,6 +156,7 @@ private:
     QComboBox* asBuilt_;
     QComboBox* development_;
     QDoubleSpinBox* interval_;
+    QDoubleSpinBox* maxGap_ = nullptr;
     QCheckBox* range_;
     QDoubleSpinBox* from_;
     QDoubleSpinBox* to_;

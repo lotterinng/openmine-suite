@@ -30,6 +30,7 @@
 #include "openmine/reporting/SurveyReports.h"
 #include "openmine/scheduling/Cpm.h"
 #include "openmine/scheduling/ScheduleTable.h"
+#include "openmine/survey/AsBuilt.h"
 #include "openmine/survey/Conformance.h"
 #include "openmine/survey/Meshing.h"
 #include "openmine/survey/PointCloudProject.h"
@@ -65,6 +66,9 @@
 #include <pybind11/stl/filesystem.h>
 
 #include <cmath>
+#include <functional>
+#include <optional>
+#include <set>
 #include <fstream>
 #include <sstream>
 
@@ -242,6 +246,25 @@ py::dict bufferDict(const survey::PointBuffer& b) {
         py::array_t<std::uint8_t> a(static_cast<py::ssize_t>(b.classification.size()));
         std::copy(b.classification.begin(), b.classification.end(), a.mutable_data());
         d["classification"] = a;
+    }
+    if (!b.normal.empty()) {
+        py::array_t<float> a({static_cast<py::ssize_t>(b.normal.size()), static_cast<py::ssize_t>(3)});
+        auto w = a.mutable_unchecked<2>();
+        for (std::size_t i = 0; i < b.normal.size(); ++i)
+            for (py::ssize_t k = 0; k < 3; ++k) w(static_cast<py::ssize_t>(i), k) = b.normal[i][static_cast<std::size_t>(k)];
+        d["normals"] = a;
+    }
+    if (!b.returnNumber.empty()) {
+        py::array_t<std::uint8_t> rn(static_cast<py::ssize_t>(b.returnNumber.size())), nr(static_cast<py::ssize_t>(b.numberOfReturns.size()));
+        std::copy(b.returnNumber.begin(), b.returnNumber.end(), rn.mutable_data());
+        std::copy(b.numberOfReturns.begin(), b.numberOfReturns.end(), nr.mutable_data());
+        d["return_number"] = rn;
+        d["number_of_returns"] = nr;
+    }
+    if (!b.gpsTime.empty()) {
+        py::array_t<double> a(static_cast<py::ssize_t>(b.gpsTime.size()));
+        std::copy(b.gpsTime.begin(), b.gpsTime.end(), a.mutable_data());
+        d["gps_time"] = a;
     }
     for (std::size_t s = 0; s < b.scalars.size(); ++s) {
         py::array_t<float> a(static_cast<py::ssize_t>(b.scalars[s].size()));
@@ -486,6 +509,7 @@ void defineBindings(py::module_& m) {
     py::register_exception<ValidationError>(m, "ValidationError", PyExc_ValueError);
     py::register_exception<persistence::PersistenceError>(m, "PersistenceError", PyExc_IOError);
     py::register_exception<jobs::CancelledError>(m, "CancelledError", PyExc_RuntimeError);
+    py::register_exception<survey::PointCloudError>(m, "PointCloudError", PyExc_RuntimeError);
 
     py::class_<jobs::Progress>(m, "Progress", "Progress and cancellation of a long operation (cancel() may be called from another thread).")
         .def(py::init<>())
@@ -975,9 +999,11 @@ void defineBindings(py::module_& m) {
                 .toString();
         }, py::arg("dataset"), py::arg("vertices"), py::arg("triangles"), py::arg("name"), py::arg("layer") = "0", py::arg("development") = "",
              py::arg("method") = "Python")
-        .def("conformance", [](PyProject& s, const std::string& asBuilt, const std::string& dev, double interval, bool commit) {
+        .def("conformance", [](PyProject& s, const std::string& asBuilt, const std::string& dev, double interval, bool commit, double maxGap) {
             survey::ConformanceOptions o;
             o.interval = interval;
+            if (maxGap < 0) throw py::value_error("max_gap must not be negative");
+            o.maxGap = maxGap;
             survey::ConformanceReport r;
             {
                 py::gil_scoped_release rel;
@@ -986,7 +1012,216 @@ void defineBindings(py::module_& m) {
             auto d = conformanceDict(r);
             if (commit) d["result"] = survey::commitConformance(s.get(), uuidArg(asBuilt), uuidArg(dev), r, o).toString();
             return d;
-        }, py::arg("as_built"), py::arg("development"), py::arg("interval") = 1.0, py::arg("commit") = false);
+        }, py::arg("as_built"), py::arg("development"), py::arg("interval") = 1.0, py::arg("commit") = false, py::arg("max_gap") = 0.5)
+        .def("derive_point_cloud", [progressOr](PyProject& s, const std::string& id, const std::string& op, const py::dict& prm, const std::string& engine,
+                                                const std::string& name, jobs::Progress* progress) {
+            const Uuid parent = uuidArg(id);
+            const auto* ds = s.get().model().pointClouds.find(parent);
+            if (!ds) throw py::key_error("No point cloud '" + id + "'");
+            const bool open3d = engine == "open3d" || engine == "Open3D";
+            if (!open3d && engine != "openmine" && engine != "OpenMine") throw py::value_error("Unknown engine '" + engine + "' (use \"openmine\" or \"open3d\")");
+#ifndef OPENMINE_PY_HAVE_OPEN3D
+            if (open3d) throw py::value_error("This build has no Open3D engine");
+#endif
+            auto num = [&](const char* key, double def) { return prm.contains(key) ? prm[key].cast<double>() : def; };
+            auto integer = [&](const char* key, int def) { return prm.contains(key) ? prm[key].cast<int>() : def; };
+            for (const auto& kv : prm) {
+                static const std::set<std::string> known{"k", "std_ratio", "radius", "min_neighbours", "voxel", "spacing", "count", "seed", "orientation",
+                                                         "viewpoint", "box", "inside", "curvature"};
+                if (!known.count(kv.first.cast<std::string>())) throw py::value_error("Unknown parameter '" + kv.first.cast<std::string>() + "'");
+            }
+            std::string suffix; // the engine, recorded in the derivation
+#ifdef OPENMINE_PY_HAVE_OPEN3D
+            if (open3d) suffix = " (" + o3d::engineName() + ")";
+#endif
+            std::string derivation;
+            std::function<survey::PointBuffer(survey::PointBuffer&, jobs::Progress&)> process;
+            if (op == "statistical_outliers") {
+                const int k = integer("k", 16);
+                const double ratio = num("std_ratio", 2.0);
+                if (k < 1 || !(ratio > 0)) throw py::value_error("k must be at least 1 and std_ratio positive");
+                derivation = "statistical outlier removal k=" + std::to_string(k) + " n=" + std::to_string(ratio) + suffix;
+                process = [=](survey::PointBuffer& b, jobs::Progress& pr) {
+#ifdef OPENMINE_PY_HAVE_OPEN3D
+                    if (open3d) return b.filtered(o3d::statisticalInliers(b, k, ratio));
+#endif
+                    return b.filtered(survey::statisticalInliers(b, k, ratio, pr));
+                };
+            } else if (op == "radius_outliers") {
+                const double r = num("radius", 0.0);
+                const int minN = integer("min_neighbours", 4);
+                if (!(r > 0) || minN < 1) throw py::value_error("radius must be positive and min_neighbours at least 1");
+                derivation = "radius outlier removal r=" + std::to_string(r) + " min=" + std::to_string(minN) + suffix;
+                process = [=](survey::PointBuffer& b, jobs::Progress& pr) {
+#ifdef OPENMINE_PY_HAVE_OPEN3D
+                    if (open3d) return b.filtered(o3d::radiusInliers(b, r, minN));
+#endif
+                    return b.filtered(survey::radiusInliers(b, r, minN, pr));
+                };
+            } else if (op == "voxel" || op == "voxel_centroid") {
+                const double v = num("voxel", 0.0);
+                if (!(v > 0)) throw py::value_error("voxel must be positive");
+                if (open3d && op == "voxel") throw py::value_error("Open3D subsamples to voxel centroids only: use operation \"voxel_centroid\"");
+                derivation = (op == "voxel" ? "voxel nearest-to-centre " : "voxel centroid ") + std::to_string(v) + " m" + suffix;
+                process = [=](survey::PointBuffer& b, jobs::Progress&) {
+#ifdef OPENMINE_PY_HAVE_OPEN3D
+                    if (open3d) return o3d::voxelDownsample(b, v);
+#endif
+                    return survey::voxelDownsample(b, v, op == "voxel" ? survey::VoxelMode::NearestToCentre : survey::VoxelMode::Centroid);
+                };
+            } else if (op == "minimum_spacing" || op == "random") {
+                if (open3d) throw py::value_error("Operation '" + op + "' has no Open3D implementation");
+                const double sp = num("spacing", 0.0);
+                const int count = integer("count", 0);
+                const auto seed = static_cast<unsigned>(integer("seed", 1));
+                if (op == "minimum_spacing" && !(sp > 0)) throw py::value_error("spacing must be positive");
+                if (op == "random" && count < 1) throw py::value_error("count must be at least 1");
+                derivation = op == "random" ? "random subsample n=" + std::to_string(count) : "minimum spacing " + std::to_string(sp) + " m";
+                process = [=](survey::PointBuffer& b, jobs::Progress&) {
+                    return op == "random" ? survey::randomSubsample(b, static_cast<std::size_t>(count), seed) : survey::minimumSpacing(b, sp);
+                };
+            } else if (op == "normals") {
+                survey::NormalOptions no;
+                no.k = integer("k", 16);
+                no.radius = num("radius", 0.0);
+                no.storeCurvature = prm.contains("curvature") ? prm["curvature"].cast<bool>() : true;
+                const std::string orient = prm.contains("orientation") ? prm["orientation"].cast<std::string>() : "up";
+                std::optional<Vec3> vp;
+                if (prm.contains("viewpoint")) {
+                    const auto a = prm["viewpoint"].cast<std::array<double, 3>>();
+                    vp = Vec3{a[0], a[1], a[2]};
+                }
+                if (orient == "up") no.orientation = survey::NormalOptions::Orientation::Up;
+                else if (orient == "towards_viewpoint") no.orientation = survey::NormalOptions::Orientation::TowardsViewpoint;
+                else if (orient == "away_from_viewpoint") no.orientation = survey::NormalOptions::Orientation::AwayFromViewpoint;
+                else throw py::value_error("orientation must be \"up\", \"towards_viewpoint\" or \"away_from_viewpoint\"");
+                if (no.k < 3) throw py::value_error("k must be at least 3");
+                derivation = "PCA normals k=" + std::to_string(no.k) + suffix;
+                process = [=](survey::PointBuffer& b, jobs::Progress& pr) {
+                    auto o = no;
+                    if (o.orientation != survey::NormalOptions::Orientation::Up) o.viewpoint = vp ? *vp : survey::statistics(b, 0).centroid;
+#ifdef OPENMINE_PY_HAVE_OPEN3D
+                    if (open3d) {
+                        o3d::estimateNormals(b, o, pr);
+                        return b;
+                    }
+#endif
+                    survey::estimateNormals(b, o, pr);
+                    return b;
+                };
+            } else if (op == "crop_box") {
+                if (open3d) throw py::value_error("Operation 'crop_box' has no Open3D implementation");
+                if (!prm.contains("box")) throw py::value_error("crop_box needs box=(xmin, ymin, zmin, xmax, ymax, zmax)");
+                const auto a = prm["box"].cast<std::array<double, 6>>();
+                const BoundingBox box{{a[0], a[1], a[2]}, {a[3], a[4], a[5]}};
+                if (!(box.max.x > box.min.x && box.max.y > box.min.y && box.max.z > box.min.z)) throw py::value_error("The box must have positive extents");
+                const bool inside = prm.contains("inside") ? prm["inside"].cast<bool>() : true;
+                derivation = std::string(inside ? "crop to box" : "remove box");
+                process = [=](survey::PointBuffer& b, jobs::Progress&) {
+                    auto mask = survey::selectBox(b, box);
+                    return b.filtered(inside ? mask : survey::invert(std::move(mask)));
+                };
+            } else {
+                throw py::value_error("Unknown operation '" + op +
+                                      "' (statistical_outliers, radius_outliers, voxel, voxel_centroid, minimum_spacing, random, normals, crop_box)");
+            }
+            const std::string outName = name.empty() ? ds->name + " (" + op + ")" : name;
+            survey::PreparedDataset prep;
+            std::size_t before = 0, after = 0;
+            {
+                py::gil_scoped_release rel;
+                auto& pr = progressOr(progress);
+                pr.subRange(0, 0.3);
+                auto pts = survey::datasetPoints(s.get(), parent, true, std::nullopt, pr);
+                before = pts.size();
+                pr.subRange(0.3, 0.8);
+                auto out = process(pts, pr);
+                after = out.size();
+                if (out.empty()) throw survey::PointCloudError("The operation left no points");
+                pr.subRange(0.8, 1.0);
+                prep = survey::prepareDerived(s.get(), parent, out, outName, derivation, pr);
+            }
+            py::dict d;
+            d["id"] = survey::commitDataset(s.get(), std::move(prep), "Derive " + outName).toString();
+            d["input_count"] = before;
+            d["output_count"] = after;
+            d["derivation"] = derivation;
+            return d;
+        }, py::arg("id"), py::arg("operation"), py::arg("params") = py::dict(), py::arg("engine") = "openmine", py::arg("name") = "",
+             py::arg("progress") = nullptr)
+        .def("build_as_built", [progressOr](PyProject& s, const std::string& dataset, const std::string& development, double corridor, double voxel, int depth,
+                                            const std::string& engine, const std::string& name, const std::string& layer, std::size_t fillHoles,
+                                            jobs::Progress* progress) {
+            survey::AsBuiltOptions o;
+            o.fillHolesUpTo = fillHoles;
+            o.corridor = corridor;
+            o.voxel = voxel;
+            o.depth = depth;
+            if (depth < 4 || depth > 14) throw py::value_error("depth must be between 4 and 14");
+            if (voxel < 0) throw py::value_error("voxel must not be negative");
+            std::string eng = engine;
+            if (eng.empty()) {
+#if defined(OPENMINE_PY_HAVE_PDAL)
+                eng = "pdal";
+#elif defined(OPENMINE_PY_HAVE_OPEN3D)
+                eng = "open3d";
+#else
+                throw py::value_error("This build has no surface-reconstruction engine (PDAL or Open3D)");
+#endif
+            }
+            survey::SurfaceEngine surface;
+            std::string label;
+            if (eng == "pdal") {
+#ifdef OPENMINE_PY_HAVE_PDAL
+                surface = [](const survey::PointBuffer& pts, int dep) {
+                    pdalio::PoissonOptions po;
+                    po.depth = dep;
+                    return pdalio::poissonSurface(pts, po);
+                };
+                label = "PDAL " + pdalio::pdalVersion();
+#endif
+            } else if (eng == "open3d") {
+#ifdef OPENMINE_PY_HAVE_OPEN3D
+                surface = [](const survey::PointBuffer& pts, int dep) {
+                    o3d::PoissonOptions po;
+                    po.depth = dep;
+                    return o3d::poissonSurface(pts, po).mesh;
+                };
+                label = o3d::engineName();
+#endif
+            } else {
+                throw py::value_error("Unknown engine '" + eng + "' (use \"pdal\" or \"open3d\")");
+            }
+            if (!surface) throw py::value_error("This build has no '" + eng + "' engine");
+            const Uuid ds = uuidArg(dataset), dev = uuidArg(development);
+            const auto* d = s.get().model().developments.find(dev);
+            if (!d) throw py::key_error("No development '" + development + "'");
+            MeshData mesh;
+            {
+                py::gil_scoped_release rel;
+                mesh = survey::buildAsBuiltSurface(s.get(), ds, dev, o, surface, progressOr(progress));
+            }
+            const std::string outName = name.empty() ? d->headingId + " as-built" : name;
+            const std::string method = "Poisson depth=" + std::to_string(depth) + " (" + label + ")";
+            Uuid id;
+            {
+                CommandStack::MacroScope macro(s.get().commands(), "Add as-built " + outName);
+                ProjectEditor ed(s.get());
+                Uuid lay;
+                if (const auto* l = ed.findLayerByName(layer); l && !l->locked) lay = l->id;
+                else lay = ed.addLayer(layer, 0xFFB74D);
+                id = survey::addAsBuiltModel(s.get(), ds, mesh, outName, lay, dev, method);
+                macro.commit();
+            }
+            py::dict r;
+            r["id"] = id.toString();
+            r["vertices"] = mesh.vertices.size();
+            r["triangles"] = mesh.triangles.size();
+            r["method"] = method;
+            r["engine"] = eng;
+            return r;
+        }, py::arg("dataset"), py::arg("development"), py::arg("corridor") = 6.0, py::arg("voxel") = 0.05, py::arg("depth") = 9, py::arg("engine") = "",
+             py::arg("name") = "", py::arg("layer") = "As-built", py::arg("fill_holes_up_to") = 32, py::arg("progress") = nullptr);
 
     m.def("fit_transform", [](const Points& src, const Points& tgt, bool scale) {
         const auto f = survey::fitTransform(toPoints(src), toPoints(tgt), scale);

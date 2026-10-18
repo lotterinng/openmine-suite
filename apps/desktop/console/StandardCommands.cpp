@@ -5,6 +5,10 @@
 #include "../MainWindow.h"
 
 #include "../app/EntityInfo.h"
+#include "../dialogs/MeshDialogs.h"
+#include "../dialogs/ModelDialogs.h"
+#include "../dialogs/SurveyDialogs.h"
+#include "../scheduler/LibraryDialogs.h"
 #include "../panels/PropertiesPanel.h"
 #include "../panels/PythonConsolePanel.h"
 #include "../panels/ReportsPanel.h"
@@ -17,8 +21,10 @@
 #include "openmine/geometry/MeshOps.h"
 #include "openmine/geometry/Polyline.h"
 #include "openmine/mine_design/Development.h"
+#include "openmine/objects/EnumNames.h"
 #include "openmine/project/ProjectEditor.h"
 #include "openmine/scheduling/Cpm.h"
+#include "openmine/survey/Registration.h"
 
 #ifdef OPENMINE_APP_HAVE_OCCT
 #include "openmine/occt/SolidObjects.h"
@@ -29,6 +35,7 @@
 
 #include <QAction>
 #include <QDockWidget>
+#include <QRegularExpression>
 
 #include <cmath>
 #include <numbers>
@@ -771,6 +778,289 @@ void MainWindow::registerCommands() {
         const int ms = a.isEmpty() ? -1 : static_cast<int>(number(a[0], "Seconds") * 1000);
         if (!ctx_.jobs().waitAll(ms)) throw ValidationError("Jobs are still running");
         ctx_.report(tr("All jobs finished"));
+    });
+    // ---- point clouds, surfaces and solids (the spec's FILTER / MESH / REGISTER / EXTRUDE …) ---------
+    auto cloud = [this, needProject]() {
+        needProject();
+        const Uuid id = primaryOf(EntityKind::PointCloud);
+        if (id.isNil()) throw ValidationError("Select a point cloud first (SELECT <name>)");
+        return id;
+    };
+    using CO = CloudProcessDialog::Operation;
+    // Runs a point-cloud operation through the same dialog (and job) as the menus.
+    auto runCloud = [this](CO op, const Uuid& id, const std::function<void(CloudProcessDialog&)>& configure) {
+        CloudProcessDialog d(ctx_, op, id, this);
+        configure(d);
+        if (d.start() <= 0) throw ValidationError("The operation did not start (see the messages above)");
+        ctx_.report(tr("%1 started as a background job (WAIT to wait for it)").arg(CloudProcessDialog::title(op)));
+    };
+    auto hasWord = [](const QStringList& a, const char* w) {
+        for (const auto& x : a)
+            if (x.compare(QLatin1String(w), Qt::CaseInsensitive) == 0) return true;
+        return false;
+    };
+    auto numbers = [](const QStringList& a) {
+        std::vector<double> v;
+        for (const auto& x : a) {
+            bool ok = false;
+            const double d = x.toDouble(&ok);
+            if (ok) v.push_back(d);
+        }
+        return v;
+    };
+    auto engineOf = [hasWord](const QStringList& a) { return hasWord(a, "OPEN3D") ? QStringLiteral("open3d") : hasWord(a, "PDAL") ? QStringLiteral("pdal") : QString(); };
+    con.registerCommand("FILTER", "FILTER OUTLIERS [k ratio] | RADIUS r n | VOXEL size [CENTROID] | SPACING d | RANDOM n | GROUND  [OPEN3D]",
+                        "Filter the selected point cloud into a derived dataset (the original is never changed)", [=, this](const QStringList& a) {
+                            const Uuid id = cloud();
+                            if (a.isEmpty()) throw ValidationError("FILTER needs OUTLIERS, RADIUS, VOXEL, SPACING, RANDOM or GROUND");
+                            const QString kind = a[0].toUpper();
+                            const auto n = numbers(a.mid(1));
+                            const QString engine = engineOf(a);
+                            if (kind == "OUTLIERS" || kind == "RADIUS") {
+                                runCloud(CO::Outliers, id, [&](CloudProcessDialog& d) {
+                                    d.setMode(kind == "RADIUS" ? 1 : 0);
+                                    if (kind == "RADIUS") {
+                                        if (n.size() < 2) throw ValidationError("FILTER RADIUS needs a radius and a neighbour count");
+                                        d.setValue("b", n[0]);
+                                        d.setValue("k", n[1]);
+                                    } else {
+                                        if (!n.empty()) d.setValue("k", n[0]);
+                                        if (n.size() > 1) d.setValue("a", n[1]);
+                                    }
+                                    if (!engine.isEmpty() && !d.setEngine(engine)) throw ValidationError("That engine is not available in this build");
+                                });
+                            } else if (kind == "VOXEL" || kind == "SPACING" || kind == "RANDOM") {
+                                if (n.empty()) throw ValidationError("Give the voxel size, spacing or point count");
+                                runCloud(CO::Subsample, id, [&](CloudProcessDialog& d) {
+                                    if (kind == "RANDOM") {
+                                        d.setMode(3);
+                                        d.setValue("k", n[0]);
+                                    } else {
+                                        d.setMode(kind == "SPACING" ? 2 : (hasWord(a, "CENTROID") || engine == "open3d" ? 1 : 0));
+                                        d.setValue("a", n[0]);
+                                    }
+                                    if (!engine.isEmpty() && !d.setEngine(engine)) throw ValidationError("That engine is not available in this build");
+                                });
+                            } else if (kind == "GROUND") {
+                                runCloud(CO::Ground, id, [](CloudProcessDialog&) {});
+                            } else {
+                                throw ValidationError("Unknown filter " + sstr(kind));
+                            }
+                        });
+    con.registerCommand("NORMALS", "NORMALS [k] [UP|IN|OUT] [OPEN3D]", "Estimate normals of the selected point cloud", [=, this](const QStringList& a) {
+        const Uuid id = cloud();
+        const auto n = numbers(a);
+        runCloud(CO::Normals, id, [&](CloudProcessDialog& d) {
+            if (!n.empty()) d.setValue("k", n[0]);
+            d.setMode(hasWord(a, "IN") ? 1 : hasWord(a, "OUT") ? 2 : 0);
+            if (!engineOf(a).isEmpty() && !d.setEngine(engineOf(a))) throw ValidationError("That engine is not available in this build");
+        });
+    });
+    con.registerCommand("MESH", "MESH DELAUNAY [maxEdge] | MESH POISSON [depth] [OPEN3D|PDAL]", "Surface from the selected point cloud",
+                        [=, this](const QStringList& a) {
+                            const Uuid id = cloud();
+                            const bool poisson = !a.isEmpty() && a[0].compare("POISSON", Qt::CaseInsensitive) == 0;
+                            const auto n = numbers(a.mid(1));
+                            runCloud(poisson ? CO::Poisson : CO::Delaunay, id, [&](CloudProcessDialog& d) {
+                                if (poisson) {
+                                    if (!n.empty()) d.setValue("k", n[0]);
+                                    if (!engineOf(a).isEmpty() && !d.setEngine(engineOf(a))) throw ValidationError("That engine is not available in this build");
+                                } else if (!n.empty()) {
+                                    d.setValue("b", n[0]);
+                                }
+                            });
+                        });
+    con.registerCommand("SEGMENT", "SEGMENT tolerance [minSize] [GROW angle] [DROP]", "Cluster the selected point cloud (connected components or region growing)",
+                        [=, this](const QStringList& a) {
+                            const Uuid id = cloud();
+                            const auto n = numbers(a);
+                            runCloud(CO::Segment, id, [&](CloudProcessDialog& d) {
+                                const bool grow = hasWord(a, "GROW");
+                                d.setMode(grow ? 1 : 0);
+                                if (grow) {
+                                    if (!n.empty()) d.setValue("b", n[0]);
+                                    if (n.size() > 1) d.setValue("k", n[1]);
+                                } else {
+                                    if (n.empty()) throw ValidationError("SEGMENT needs a distance tolerance");
+                                    d.setValue("a", n[0]);
+                                    if (n.size() > 1) d.setValue("k", n[1]);
+                                }
+                                d.setFlag(hasWord(a, "DROP"));
+                            });
+                        }, {"CLUSTER"});
+    con.registerCommand("CROP", "CROP x1,y1,z1 x2,y2,z2 [OUTSIDE] | CROP (draw a polygon)", "Crop the selected point cloud by a box or a drawn polygon",
+                        [=, this](const QStringList& a) {
+                            const Uuid id = cloud();
+                            if (a.isEmpty()) return tool(Tool::CropPolygon);
+                            const auto pts = parsePoints(a.filter(QRegularExpression("^[-@0-9.,<]+$")), workZ());
+                            if (pts.size() != 2) throw ValidationError("CROP needs two opposite corners");
+                            BoundingBox bb = BoundingBox::empty();
+                            bb.expand(pts[0]);
+                            bb.expand(pts[1]);
+                            runCloud(CO::CropBox, id, [&](CloudProcessDialog& d) { d.setBox(bb, !hasWord(a, "OUTSIDE")); });
+                        });
+    con.registerCommand("REGISTER", "REGISTER ICP <target cloud> [maxCorr] [OPEN3D] [APPLY] | REGISTER PAIRS",
+                        "Register the selected point cloud (ICP onto a target, or open point-pair registration)", [=, this](const QStringList& a) {
+                            const Uuid moving = cloud();
+                            if (a.isEmpty() || a[0].compare("PAIRS", Qt::CaseInsensitive) == 0) return handleEntityAction("register-pairs", {{EntityKind::PointCloud, moving}});
+                            if (a[0].compare("ICP", Qt::CaseInsensitive) != 0 || a.size() < 2) throw ValidationError("REGISTER ICP needs the target cloud's name");
+                            Uuid target;
+                            for (const auto& pc : ctx_.project().model().pointClouds.all())
+                                if (qstr(pc.name).compare(a[1], Qt::CaseInsensitive) == 0) target = pc.id;
+                            if (target.isNil()) throw ValidationError("No point cloud named " + sstr(a[1]));
+                            survey::IcpOptions o;
+                            const auto n = numbers(a.mid(2));
+                            if (!n.empty()) o.maxCorrespondence = n[0];
+                            if (hasWord(a, "OPEN3D")) o.engine = "Open3D";
+                            if (hasWord(a, "POINT")) o.mode = survey::IcpMode::PointToPoint;
+                            const bool apply = hasWord(a, "APPLY");
+                            auto snap = ctx_.snapshot();
+                            AppContext* c = &ctx_;
+                            ctx_.jobs().start(tr("ICP registration"), tr("Registration"), [snap, moving, target, o, apply, c](jobs::Progress& pr) -> UiApply {
+                                auto r = std::make_shared<Registration>(survey::computeIcpRegistration(*snap, moving, target, o, {}, pr));
+                                return [c, r, apply] {
+                                    c->tryEdit(apply ? QObject::tr("Apply registration") : QObject::tr("Store registration"), [&] {
+                                        survey::commitRegistration(c->project(), *r, apply);
+                                        c->report(QObject::tr("ICP %1: fitness %2, inlier RMS %3 m, %4 iterations%5 (%6)")
+                                                      .arg(apply ? QObject::tr("applied") : QObject::tr("stored"))
+                                                      .arg(r->icpFitness, 0, 'f', 3)
+                                                      .arg(r->icpInlierRms, 0, 'g', 4)
+                                                      .arg(r->icpIterations)
+                                                      .arg(r->icpConverged ? QString() : QObject::tr(", not converged"))
+                                                      .arg(qstr(r->notes)));
+                                    });
+                                };
+                            });
+                            ctx_.report(tr("ICP started as a background job (WAIT to wait for it)"));
+                        }, {"REG"});
+    using SO = SolidModelDialog::Operation;
+    auto solidOp = [this, needProject](SO op, const std::function<void(SolidModelDialog&)>& configure) {
+        needProject();
+        SolidModelDialog d(ctx_, op, this);
+        configure(d);
+        if (d.create().empty()) throw ValidationError("No solid was created (see the messages above)");
+    };
+    con.registerCommand("EXTRUDE", "EXTRUDE height | dx,dy,dz [SYM] [NOHOLES]", "Extrude the selected closed curves into solids", [=](const QStringList& a) {
+        if (a.isEmpty()) throw ValidationError("EXTRUDE needs a height or a vector");
+        Vec3 v;
+        if (a[0].contains(',')) v = vectorArg(a[0], "The vector");
+        else v = {0, 0, number(a[0], "Height")};
+        solidOp(SO::Extrude, [&](SolidModelDialog& d) { d.setExtrusion(v, hasWord(a, "SYM"), !hasWord(a, "NOHOLES")); });
+    }, {"EXT"});
+    con.registerCommand("REVOLVE", "REVOLVE [angle] [px,py,pz dx,dy,dz]", "Revolve the selected closed curves (axis: a selected line, or the given one)",
+                        [=](const QStringList& a) {
+                            const double ang = a.isEmpty() ? 360.0 : number(a[0], "Angle");
+                            solidOp(SO::Revolve, [&](SolidModelDialog& d) {
+                                if (a.size() >= 3) d.setRevolution(parsePoints({a[1]}, workZ()).front(), vectorArg(a[2], "Axis direction"), ang);
+                                else d.setRevolutionAngle(ang);
+                            });
+                        }, {"REV"});
+    con.registerCommand("SWEEP", "SWEEP width height | SWEEP PROFILE <name>", "Sweep a tunnel profile along the selected path curves", [=, this](const QStringList& a) {
+        solidOp(SO::Sweep, [&](SolidModelDialog& d) {
+            if (!a.isEmpty() && a[0].compare("PROFILE", Qt::CaseInsensitive) == 0) {
+                const QString name = a.mid(1).join(' ');
+                for (const auto& pr : ctx_.project().model().profiles.all())
+                    if (qstr(pr.name).compare(name, Qt::CaseInsensitive) == 0 && d.setSweepProfile(pr.id)) return;
+                throw ValidationError("No tunnel profile named " + sstr(name));
+            }
+            if (a.size() < 2) throw ValidationError("SWEEP needs a width and a height (or PROFILE <name>)");
+            d.setSweepRectangle(number(a[0], "Width"), number(a[1], "Height"));
+        });
+    });
+    con.registerCommand("LOFT", "LOFT [RULED] [SHELL]", "Loft through the selected closed sections (in selection order)", [=](const QStringList& a) {
+        solidOp(SO::Loft, [&](SolidModelDialog& d) { d.setLoft(!hasWord(a, "SHELL"), hasWord(a, "RULED")); });
+    });
+    con.registerCommand("SOLIDCHECK", "SOLIDCHECK", "Validity, volume, area and topology of the selected solids and meshes",
+                        [this](const QStringList&) { handleEntityAction("solid-check", ctx_.selection()); }, {"CHECKSOLID"});
+    con.registerCommand("HEAL", "HEAL", "Heal the selected solids (shape fixing, orientation, face merging)",
+                        [this](const QStringList&) { handleEntityAction("solid-heal", ctx_.selection()); });
+    con.registerCommand("SECTIONOBJ", "SECTIONOBJ", "Section the selected solids and meshes by the section plane (or the work plane)",
+                        [this](const QStringList&) { handleEntityAction("section-objects", ctx_.selection()); });
+    con.registerCommand("CHAMFER", "CHAMFER [d1 [d2]]", "Chamfer two curves (pick them in the viewport)", [=, this](const QStringList& a) {
+        needProject();
+        auto& t = viewports_->tools();
+        if (!a.isEmpty()) {
+            const double d1 = number(a[0], "Distance");
+            t.setChamferDistances(d1, a.size() > 1 ? number(a[1], "Distance") : d1);
+        }
+        tool(Tool::Chamfer);
+    }, {"CHA"});
+    using MO = MeshToolDialog::Operation;
+    auto surface = [this, needProject]() {
+        needProject();
+        for (const auto& id : ctx_.selectedGeometry())
+            if (const auto* g = ctx_.project().model().geometry.find(id); g && g->mesh) return id;
+        throw ValidationError("Select a surface (mesh) first");
+    };
+    auto runMesh = [this](MO op, const Uuid& id, const std::function<void(MeshToolDialog&)>& configure) {
+        MeshToolDialog d(ctx_, op, id, this);
+        configure(d);
+        if (d.start() <= 0) throw ValidationError("The operation did not start (see the messages above)");
+    };
+    con.registerCommand("DECIMATE", "DECIMATE triangles [maxError]", "Decimate the selected surface", [=](const QStringList& a) {
+        const auto n = numbers(a);
+        if (n.empty()) throw ValidationError("DECIMATE needs a target triangle count");
+        runMesh(MO::Decimate, surface(), [&](MeshToolDialog& d) { d.setDecimation(static_cast<std::size_t>(n[0]), n.size() > 1 ? n[1] : 0.0); });
+    });
+    con.registerCommand("SMOOTH", "SMOOTH [iterations]", "Taubin-smooth the selected surface", [=](const QStringList& a) {
+        const auto n = numbers(a);
+        runMesh(MO::Smooth, surface(), [&](MeshToolDialog& d) { d.setSmoothing(n.empty() ? 10 : static_cast<int>(n[0])); });
+    });
+    con.registerCommand("REPAIR", "REPAIR [fillHolesUpToEdges]", "Repair the selected surface", [=](const QStringList& a) {
+        const auto n = numbers(a);
+        runMesh(MO::Repair, surface(), [&](MeshToolDialog& d) { d.setRepair(n.empty() ? 0 : static_cast<std::size_t>(n[0]), true); });
+    });
+    con.registerCommand("COMPARE", "COMPARE <reference surface> [maxDistance]", "Distance of the selected surface to a reference surface", [=, this](const QStringList& a) {
+        const Uuid id = surface();
+        if (a.isEmpty()) throw ValidationError("COMPARE needs the reference surface's name");
+        const auto n = numbers(a.mid(1));
+        Uuid ref;
+        for (const auto& g : ctx_.project().model().geometry.all())
+            if (g.mesh && g.id != id && qstr(g.name).compare(a[0], Qt::CaseInsensitive) == 0) ref = g.id;
+        if (ref.isNil()) throw ValidationError("No surface named " + sstr(a[0]));
+        runMesh(MO::Compare, id, [&](MeshToolDialog& d) { d.setReference(ref, n.empty() ? 0.0 : n[0]); });
+    });
+    con.registerCommand("RESOURCE", "RESOURCE <name> [capacity] [EQUIPMENT|CREW|MATERIAL|OTHER]", "Add a resource to the library", [=, this](const QStringList& a) {
+        needProject();
+        if (a.isEmpty()) throw ValidationError("RESOURCE needs a name");
+        QStringList words = a;
+        ResourceKind kind = ResourceKind::Equipment;
+        if (const auto k = enumFromString<ResourceKind>(sstr(words.last().left(1).toUpper() + words.last().mid(1).toLower()))) {
+            kind = *k;
+            words.removeLast();
+        }
+        double capacity = 1;
+        bool ok = false;
+        if (words.size() > 1) {
+            capacity = words.last().toDouble(&ok);
+            if (ok) words.removeLast();
+            else capacity = 1;
+        }
+        ResourceLibraryDialog d(ctx_, this);
+        if (d.addResource(words.join(' '), kind, capacity).isNil()) throw ValidationError("The resource was not added");
+        ctx_.report(tr("Resource '%1' (%2, capacity %3)").arg(words.join(' '), qstr(toString(kind))).arg(capacity));
+    });
+    con.registerCommand("ASSIGN", "ASSIGN <resource> [units] [DRIVES]", "Assign a resource to the selected activities", [=, this](const QStringList& a) {
+        needProject();
+        const auto acts = ctx_.selected(EntityKind::Activity);
+        if (acts.empty() || a.isEmpty()) throw ValidationError("Select activities and give a resource name");
+        QStringList words = a;
+        const bool drives = hasWord(words, "DRIVES");
+        words.removeIf([](const QString& w) { return w.compare("DRIVES", Qt::CaseInsensitive) == 0; });
+        double units = 1;
+        bool ok = false;
+        if (words.size() > 1) {
+            units = words.last().toDouble(&ok);
+            if (ok) words.removeLast();
+            else units = 1;
+        }
+        Uuid res;
+        for (const auto& r : ctx_.project().model().resources.all())
+            if (qstr(r.name).compare(words.join(' '), Qt::CaseInsensitive) == 0) res = r.id;
+        if (res.isNil()) throw ValidationError("No resource named " + sstr(words.join(' ')));
+        ResourceLibraryDialog d(ctx_, this);
+        for (const auto& act : acts) d.assign(act, res, units, drives);
+        ctx_.report(tr("%1 assigned to %2 activit%3").arg(words.join(' ')).arg(acts.size()).arg(acts.size() == 1 ? "y" : "ies"));
     });
 #ifdef OPENMINE_APP_HAVE_CRS
     con.registerCommand("CRS", "CRS [EPSG:code | definition]", "Show or declare and set the project CRS (coordinates are never transformed)", [=, this](const QStringList& a) {

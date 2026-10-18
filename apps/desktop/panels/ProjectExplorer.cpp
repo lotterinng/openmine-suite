@@ -588,6 +588,11 @@ void ProjectExplorer::contextMenu(const QPoint& pos) {
         if (key == "g:activities") add(tr("New task"), "new-task");
         if (key == "g:scenarios") add(tr("New scenario…"), "new-scenario");
         if (key == "g:levels") add(tr("New level…"), "new-level");
+        if (key == "g:resources") add(tr("Resources and assignments…"), "resources");
+        if (key == "g:calendars") add(tr("Working calendars…"), "calendars");
+        if (key == "g:cycles") add(tr("Development cycles…"), "cycles");
+        if (key == "g:targets") add(tr("Production targets…"), "targets");
+        if (key == "g:structures") add(tr("Import structures…"), "import-structures");
         menu.exec(tree_->viewport()->mapToGlobal(pos));
         return;
     }
@@ -621,6 +626,9 @@ void ProjectExplorer::contextMenu(const QPoint& pos) {
         act(tr("Estimate normals…"), "cloud-normals", "normals");
         act(tr("Classify ground (SMRF)…"), "cloud-ground", "ground");
         act(tr("Crop by polygon"), "cloud-crop", "polygon");
+        act(tr("Crop by box…"), "cloud-crop-box", "crop");
+        act(tr("Segment into clusters…"), "cloud-segment", "cluster");
+        act(tr("Extract planes…"), "cloud-planes", "structure");
         act(tr("Surface (Delaunay 2.5D)…"), "cloud-delaunay", "surface");
         act(tr("Surface (Poisson)…"), "cloud-poisson", "mesh");
         act(tr("Register (point pairs / control)…"), "register-pairs", "register");
@@ -680,6 +688,23 @@ void ProjectExplorer::contextMenu(const QPoint& pos) {
 #endif
         act(tr("Join"), "join", "join");
         act(tr("Explode"), "explode", "explode");
+        act(tr("Check solid / surface"), "solid-check", "info");
+        act(tr("Section by plane"), "section-objects", "section");
+#ifdef OPENMINE_APP_HAVE_OCCT
+        act(tr("Heal solid"), "solid-heal", "repair");
+#endif
+        break;
+    case EntityKind::Calendar:
+        act(tr("Edit calendar…"), "edit-calendar", "calendar");
+        break;
+    case EntityKind::Resource:
+        act(tr("Resources and assignments…"), "resources", "resource");
+        break;
+    case EntityKind::Cycle:
+        act(tr("Development cycles…"), "cycles", "calc");
+        break;
+    case EntityKind::Target:
+        act(tr("Production targets…"), "targets", "chart");
         break;
     case EntityKind::Report:
         act(tr("Open"), "open-report", "report");

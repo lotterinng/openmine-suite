@@ -786,6 +786,86 @@ const QHash<QString, Painter>& painters() {
              k.p.drawEllipse(QPointF(32, 32), 14, 14);
              k.dot({32, 32}, k.c.accent, 6);
          }},
+        // ---- added workflows ----------------------------------------------------------------------
+        {"add", [](Ink& k) {
+             k.poly({{32, 12}, {32, 52}}, k.accent());
+             k.poly({{12, 32}, {52, 32}}, k.accent());
+         }},
+        {"chamfer", [](Ink& k) {
+             k.poly({{10, 54}, {10, 30}}, k.line());
+             k.poly({{34, 10}, {56, 10}}, k.line());
+             k.poly({{10, 30}, {34, 10}}, k.accent());
+         }},
+        {"extrude", [](Ink& k) {
+             k.fill({{10, 46}, {34, 54}, {54, 44}, {30, 36}}, k.c.panelAlt, k.line());
+             k.poly({{10, 46}, {10, 22}, {30, 12}, {54, 20}, {54, 44}}, k.thin());
+             k.poly({{10, 22}, {34, 30}, {54, 20}}, k.thin());
+             k.poly({{34, 30}, {34, 54}}, k.thin());
+             k.poly({{44, 44}, {44, 18}}, k.accent());
+             k.arrowHead({44, 16}, 270, k.accent());
+         }},
+        {"revolve", [](Ink& k) {
+             k.poly({{32, 6}, {32, 58}}, k.dashed());
+             k.p.setPen(k.line());
+             k.p.drawEllipse(QPointF(32, 46), 20, 7);
+             k.p.drawEllipse(QPointF(32, 18), 14, 5);
+             k.poly({{12, 46}, {18, 18}}, k.line());
+             k.poly({{52, 46}, {46, 18}}, k.line());
+             k.p.setPen(k.accent());
+             k.p.drawArc(QRectF(14, 26, 36, 12), 200 * 16, 140 * 16);
+         }},
+        {"sweep", [](Ink& k) {
+             QPainterPath path(QPointF(8, 52));
+             path.cubicTo(QPointF(24, 52), QPointF(28, 14), QPointF(56, 14));
+             k.p.setPen(k.dashed());
+             k.p.drawPath(path);
+             k.fill({{6, 40}, {18, 40}, {18, 56}, {6, 56}}, k.c.accent);
+             k.poly({{46, 6}, {58, 6}, {58, 22}, {46, 22}}, k.line(), true);
+         }},
+        {"loft", [](Ink& k) {
+             k.p.setPen(k.line());
+             k.p.drawEllipse(QPointF(32, 50), 22, 7);
+             k.poly({{20, 12}, {44, 12}, {44, 20}, {20, 20}}, k.line(), true);
+             k.poly({{10, 50}, {20, 20}}, k.accent());
+             k.poly({{54, 50}, {44, 20}}, k.accent());
+         }},
+        {"repair", [](Ink& k) {
+             k.fill({{8, 50}, {28, 18}, {44, 40}, {56, 30}, {56, 50}}, k.c.panelAlt, k.line());
+             k.p.setPen(QPen(k.c.accent, 6, Qt::SolidLine, Qt::RoundCap));
+             k.p.drawLine(QPointF(30, 54), QPointF(52, 10));
+             k.dot({52, 10}, k.c.accent, 6);
+         }},
+        {"decimate", [](Ink& k) {
+             k.poly({{8, 52}, {20, 20}, {32, 52}, {44, 20}, {56, 52}}, k.thin());
+             k.poly({{8, 52}, {56, 52}}, k.thin());
+             k.poly({{20, 20}, {44, 20}}, k.thin());
+             k.arrowHead({32, 8}, 270, k.accent());
+             k.poly({{32, 40}, {32, 8}}, k.accent());
+         }},
+        {"smooth", [](Ink& k) {
+             k.poly({{8, 40}, {16, 28}, {24, 44}, {32, 24}, {40, 42}, {48, 26}, {56, 38}}, k.dashed());
+             QPainterPath path(QPointF(8, 36));
+             path.cubicTo(QPointF(24, 26), QPointF(40, 44), QPointF(56, 32));
+             k.p.setPen(k.accent());
+             k.p.drawPath(path);
+         }},
+        {"cluster", [](Ink& k) {
+             for (auto [x, y] : {std::pair{14, 18}, {20, 12}, {22, 22}, {12, 26}}) k.dot(QPointF(x, y), k.c.accent, 4);
+             for (auto [x, y] : {std::pair{42, 16}, {50, 22}, {46, 28}}) k.dot(QPointF(x, y), k.c.text, 4);
+             for (auto [x, y] : {std::pair{24, 46}, {32, 52}, {38, 44}, {30, 40}}) k.dot(QPointF(x, y), k.c.warning, 4);
+         }},
+        {"crop", [](Ink& k) {
+             k.poly({{18, 6}, {18, 46}, {58, 46}}, k.line());
+             k.poly({{6, 18}, {46, 18}, {46, 58}}, k.accent());
+         }},
+        {"critical", [](Ink& k) {
+             k.p.setPen(Qt::NoPen);
+             k.p.setBrush(k.c.ganttCritical);
+             k.p.drawRect(QRectF(8, 14, 30, 10));
+             k.p.drawRect(QRectF(26, 40, 30, 10));
+             k.p.setBrush(Qt::NoBrush);
+             k.poly({{38, 19}, {44, 19}, {44, 40}}, k.thin());
+         }},
     };
     return h;
 }

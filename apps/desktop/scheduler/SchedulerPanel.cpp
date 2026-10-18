@@ -19,6 +19,7 @@
 #include <QHeaderView>
 #include <QInputDialog>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QScrollBar>
@@ -92,6 +93,30 @@ SchedulerPanel::SchedulerPanel(AppContext& ctx, QWidget* parent) : QWidget(paren
     tb->addWidget(status_);
     lay->addWidget(tb);
 
+    // Filtering and grouping.
+    auto* fb = new QToolBar(this);
+    fb->setIconSize(QSize(16, 16));
+    fb->addWidget(new QLabel(tr(" Filter "), fb));
+    filter_ = new QLineEdit(fb);
+    filter_->setObjectName("schedulerFilter");
+    filter_->setPlaceholderText(tr("name, WBS, heading, resource, zone…"));
+    filter_->setClearButtonEnabled(true);
+    filter_->setMaximumWidth(260);
+    fb->addWidget(filter_);
+    fb->addWidget(new QLabel(tr("  Show "), fb));
+    show_ = new QComboBox(fb);
+    show_->addItems({tr("All activities"), tr("Critical"), tr("Flagged by design changes"), tr("In progress"), tr("Not started"), tr("Complete"),
+                     tr("Behind the baseline")});
+    fb->addWidget(show_);
+    fb->addWidget(new QLabel(tr("  Group by "), fb));
+    group_ = new QComboBox(fb);
+    group_->addItems({tr("WBS (hierarchy)"), tr("Level"), tr("Zone"), tr("Work area"), tr("Resource"), tr("Calendar"), tr("Kind")});
+    fb->addWidget(group_);
+    lay->addWidget(fb);
+    connect(filter_, &QLineEdit::textChanged, this, &SchedulerPanel::setFilter);
+    connect(show_, &QComboBox::currentIndexChanged, this, [this](int i) { setShow(static_cast<Show>(i)); });
+    connect(group_, &QComboBox::currentIndexChanged, this, [this](int i) { setGroupBy(static_cast<GroupBy>(i)); });
+
     auto* vsplit = new QSplitter(Qt::Vertical, this);
     auto* hsplit = new QSplitter(Qt::Horizontal, vsplit);
     grid_ = new QTreeWidget(hsplit);
@@ -124,6 +149,10 @@ SchedulerPanel::SchedulerPanel(AppContext& ctx, QWidget* parent) : QWidget(paren
     vsplit->addWidget(tabs_);
     vsplit->setStretchFactor(0, 3);
     vsplit->setStretchFactor(1, 1);
+    // The activity grid and Gantt keep most of the height; the charts can be enlarged by the user.
+    for (auto* w : std::initializer_list<QWidget*>{histogram_, production_, variance_, log_}) w->setMinimumHeight(40);
+    tabs_->setMinimumHeight(70);
+    vsplit->setSizes({440, 120});
     lay->addWidget(vsplit, 1);
 
     connect(scenario_, &QComboBox::activated, this, [this](int) { ctx_.setActiveScenario(uuidFrom(scenario_->currentData().toString())); });
@@ -198,6 +227,9 @@ void SchedulerPanel::rebuild() {
     std::set<QString> collapsed;
     for (auto& [id, it] : items_)
         if (it->childCount() && !it->isExpanded()) collapsed.insert(uuidText(id));
+    for (int i = 0; i < grid_->topLevelItemCount(); ++i)
+        if (auto* g = grid_->topLevelItem(i); g->data(0, Qt::UserRole + 11).isValid() && !g->isExpanded())
+            collapsed.insert(g->data(0, Qt::UserRole + 11).toString());
     const int scroll = grid_->verticalScrollBar()->value();
     grid_->clear();
     items_.clear();
@@ -215,12 +247,34 @@ void SchedulerPanel::rebuild() {
     for (const auto& as : m.assignments.all())
         if (const auto* r = m.resources.find(as.resourceId))
             resources[as.activityId].push_back(r->name + (as.units != 1 ? " ×" + QString::number(as.units).toStdString() : std::string()));
+    // Grouped views list tasks and milestones under group headers (summaries are WBS nodes).
+    std::map<QString, QTreeWidgetItem*> groups;
+    auto groupItem = [&](const QString& key) {
+        auto& g = groups[key];
+        if (!g) {
+            g = new QTreeWidgetItem(grid_);
+            g->setText(CName, key.isEmpty() ? tr("(none)") : key);
+            g->setIcon(CName, toolIcon("summary"));
+            QFont f = g->font(CName);
+            f.setBold(true);
+            g->setFont(CName, f);
+            g->setFlags(Qt::ItemIsEnabled);
+            g->setFirstColumnSpanned(false);
+            g->setExpanded(!collapsed.count("group:" + key));
+            g->setData(0, Qt::UserRole + 11, "group:" + key);
+        }
+        return g;
+    };
+    const bool grouped = groupBy_ != GroupBy::Wbs;
     auto pendingA = ordered;
+    if (grouped) std::erase_if(pendingA, [](const ScheduleActivity* a) { return a->kind == ActivityKind::Summary; });
     for (int pass = 0; pass < 64 && !pendingA.empty(); ++pass) {
         std::vector<const ScheduleActivity*> next;
         for (const auto* a : pendingA) {
             QTreeWidgetItem* parent = nullptr;
-            if (!a->parentId.isNil() && m.activities.contains(a->parentId)) {
+            if (grouped) {
+                parent = groupItem(groupKey(*a));
+            } else if (!a->parentId.isNil() && m.activities.contains(a->parentId)) {
                 auto it = items_.find(a->parentId);
                 if (it == items_.end()) {
                     next.push_back(a);
@@ -273,11 +327,167 @@ void SchedulerPanel::rebuild() {
         }
         pendingA = std::move(next);
     }
+    // Group summaries: count, quantity and date range of the group.
+    for (auto& [key, g] : groups) {
+        double qty = 0, es = 1e300, ef = -1e300;
+        for (int i = 0; i < g->childCount(); ++i) {
+            const Uuid id = uuidFrom(g->child(i)->data(0, kIdRole).toString());
+            if (const auto* a = m.activities.find(id)) qty += a->quantity;
+            if (auto t = sch.result.timings.find(id); t != sch.result.timings.end()) {
+                es = std::min(es, t->second.es);
+                ef = std::max(ef, t->second.ef);
+            }
+        }
+        g->setText(CKind, tr("%1 activities").arg(g->childCount()));
+        if (qty > 0) g->setText(CQuantity, QString::number(qty, 'f', 1));
+        if (ef > es) {
+            g->setText(CStart, formatDateTimeMinutes(es));
+            g->setText(CFinish, formatDateTimeMinutes(ef));
+        }
+    }
+    if (grouped) grid_->sortItems(CName, Qt::AscendingOrder);
+    applyFilter();
     building_ = false;
     grid_->verticalScrollBar()->setValue(scroll);
     syncSelectionFromContext();
     updateStatus();
     gantt_->update();
+}
+
+QString SchedulerPanel::groupKey(const ScheduleActivity& a) const {
+    const auto& m = ctx_.project().model();
+    auto firstDev = [&]() -> const MineDevelopment* {
+        for (const auto& d : m.developmentsForActivity(a.id))
+            if (const auto* dev = m.developments.find(d)) return dev;
+        return nullptr;
+    };
+    switch (groupBy_) {
+    case GroupBy::Wbs: return {};
+    case GroupBy::Level: {
+        if (const auto* d = firstDev()) {
+            if (const auto* l = m.levels.find(d->levelId)) return qstr(l->name);
+            return qstr(d->level);
+        }
+        for (const auto& id : m.designsForActivity(a.id))
+            if (const auto* st = m.stopes.find(id))
+                if (const auto* l = m.levels.find(st->levelId)) return qstr(l->name);
+        return {};
+    }
+    case GroupBy::Zone: {
+        if (const auto* d = firstDev()) return qstr(d->zone);
+        return qstr(a.workArea);
+    }
+    case GroupBy::WorkArea: return qstr(a.workArea);
+    case GroupBy::Resource: {
+        QStringList names;
+        for (const auto* as : m.assignmentsForActivity(a.id))
+            if (const auto* r = m.resources.find(as->resourceId)) names << qstr(r->name);
+        names.sort();
+        return names.join(", ");
+    }
+    case GroupBy::Calendar: {
+        const auto* c = m.calendarFor(a);
+        return c ? qstr(c->name) : tr("Continuous (24/7)");
+    }
+    case GroupBy::Kind: return qstr(toString(a.kind));
+    }
+    return {};
+}
+
+bool SchedulerPanel::matches(const ScheduleActivity& a, QTreeWidgetItem* item) const {
+    const auto& sch = ctx_.schedule().result;
+    const auto t = sch.timings.find(a.id);
+    switch (showMode_) {
+    case Show::All: break;
+    case Show::Critical:
+        if (t == sch.timings.end() || !t->second.critical) return false;
+        break;
+    case Show::Flagged:
+        if (!a.designImpactFlag) return false;
+        break;
+    case Show::InProgress:
+        if (t == sch.timings.end() || t->second.percentComplete <= 0 || t->second.percentComplete >= 100) return false;
+        break;
+    case Show::NotStarted:
+        if (t != sch.timings.end() && t->second.percentComplete > 0) return false;
+        break;
+    case Show::Complete:
+        if (t == sch.timings.end() || t->second.percentComplete < 100) return false;
+        break;
+    case Show::BehindBaseline: {
+        const auto* bl = ctx_.comparisonBaseline();
+        if (!bl || t == sch.timings.end()) return false;
+        bool behind = false;
+        for (const auto& b : bl->activities)
+            if (b.activityId == a.id) behind = t->second.ef > static_cast<double>(b.finish.minutes()) + 1e-6;
+        if (!behind) return false;
+        break;
+    }
+    }
+    if (filterText_.isEmpty()) return true;
+    for (int c = 0; c < NCols; ++c)
+        if (item->text(c).contains(filterText_, Qt::CaseInsensitive)) return true;
+    for (const auto& d : ctx_.project().model().developmentsForActivity(a.id))
+        if (const auto* dev = ctx_.project().model().developments.find(d))
+            if (qstr(dev->zone).contains(filterText_, Qt::CaseInsensitive) || qstr(dev->level).contains(filterText_, Qt::CaseInsensitive)) return true;
+    return qstr(a.workArea).contains(filterText_, Qt::CaseInsensitive);
+}
+
+void SchedulerPanel::applyFilter() {
+    if (!ctx_.hasProject()) return;
+    const auto& m = ctx_.project().model();
+    // Children first: a WBS node stays visible when one of its descendants matches.
+    std::function<bool(QTreeWidgetItem*)> visit = [&](QTreeWidgetItem* it) {
+        bool anyChild = false;
+        for (int i = 0; i < it->childCount(); ++i) anyChild = visit(it->child(i)) || anyChild;
+        bool self = false;
+        if (const auto* a = m.activities.find(uuidFrom(it->data(0, kIdRole).toString()))) self = matches(*a, it);
+        const bool show = self || anyChild;
+        it->setHidden(!show);
+        return show;
+    };
+    for (int i = 0; i < grid_->topLevelItemCount(); ++i) visit(grid_->topLevelItem(i));
+    gantt_->update();
+}
+
+void SchedulerPanel::setFilter(const QString& text) {
+    filterText_ = text.trimmed();
+    if (filter_ && filter_->text() != text) {
+        const QSignalBlocker b(filter_);
+        filter_->setText(text);
+    }
+    applyFilter();
+    updateStatus();
+}
+
+void SchedulerPanel::setShow(Show s) {
+    showMode_ = s;
+    if (show_ && show_->currentIndex() != static_cast<int>(s)) {
+        const QSignalBlocker b(show_);
+        show_->setCurrentIndex(static_cast<int>(s));
+    }
+    applyFilter();
+    updateStatus();
+}
+
+void SchedulerPanel::setGroupBy(GroupBy g) {
+    groupBy_ = g;
+    if (group_ && group_->currentIndex() != static_cast<int>(g)) {
+        const QSignalBlocker b(group_);
+        group_->setCurrentIndex(static_cast<int>(g));
+    }
+    grid_->setSortingEnabled(false);
+    rebuild();
+}
+
+int SchedulerPanel::visibleActivityCount() const {
+    int n = 0;
+    for (const auto& [id, it] : items_) {
+        bool hidden = false;
+        for (auto* p = it; p; p = p->parent()) hidden = hidden || p->isHidden();
+        n += hidden ? 0 : 1;
+    }
+    return n;
 }
 
 void SchedulerPanel::updateStatus() {
@@ -458,6 +668,10 @@ void SchedulerPanel::deleteSelected() {
 }
 
 void SchedulerPanel::indent() {
+    if (groupBy_ != GroupBy::Wbs) {
+        ctx_.report(tr("Show the WBS hierarchy (Group by ▸ WBS) to change it"), MessageLevel::Warning);
+        return;
+    }
     const Uuid id = selectedActivity();
     auto* it = itemFor(id);
     if (!it) return;
@@ -480,6 +694,10 @@ void SchedulerPanel::indent() {
 }
 
 void SchedulerPanel::outdent() {
+    if (groupBy_ != GroupBy::Wbs) {
+        ctx_.report(tr("Show the WBS hierarchy (Group by ▸ WBS) to change it"), MessageLevel::Warning);
+        return;
+    }
     const auto& m = ctx_.project().model();
     const auto* a = m.activities.find(selectedActivity());
     if (!a || a->parentId.isNil()) return;
@@ -490,6 +708,10 @@ void SchedulerPanel::outdent() {
 }
 
 void SchedulerPanel::moveSelected(int delta) {
+    if (groupBy_ != GroupBy::Wbs) {
+        ctx_.report(tr("Show the WBS hierarchy (Group by ▸ WBS) to change it"), MessageLevel::Warning);
+        return;
+    }
     const auto& m = ctx_.project().model();
     const auto* a = m.activities.find(selectedActivity());
     if (!a) return;

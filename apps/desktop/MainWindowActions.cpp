@@ -9,10 +9,12 @@
 #include "dialogs/DesignDialogs.h"
 #include "dialogs/DialogUtil.h"
 #include "dialogs/GeologyDialogs.h"
+#include "dialogs/ModelDialogs.h"
 #include "dialogs/SurveyDialogs.h"
 #include "panels/LayerManager.h"
 #include "panels/ReportsPanel.h"
 #include "panels/StereonetPanel.h"
+#include "scheduler/LibraryDialogs.h"
 #include "scheduler/SchedulerPanel.h"
 #include "theme/Theme.h"
 #include "viewport/ViewportArea.h"
@@ -790,6 +792,104 @@ void MainWindow::handleEntityAction(const QString& actionIn, const std::vector<S
     if (action == "cloud-poisson") return cloudOp(CloudProcessDialog::Operation::Poisson);
     if (action == "cloud-distance") return cloudOp(CloudProcessDialog::Operation::Distance);
     if (action == "cloud-planes") return cloudOp(CloudProcessDialog::Operation::Planes);
+    if (action == "cloud-segment") return cloudOp(CloudProcessDialog::Operation::Segment);
+    if (action == "cloud-crop-box") {
+        const Uuid id = need(EntityKind::PointCloud, tr("Crop by box"));
+        if (id.isNil()) return;
+        auto* d = new CloudProcessDialog(ctx_, CloudProcessDialog::Operation::CropBox, id, this);
+        // A section slab in the active view gives a sensible default box.
+        if (auto* v = activeView(); v && v->section().enabled) {
+            const auto& sec = v->section();
+            const auto* pc = m.pointClouds.find(id);
+            BoundingBox bb = BoundingBox::empty();
+            if (pc)
+                for (int k = 0; k < 8; ++k)
+                    bb.expand(pc->transform.apply({(k & 1) ? pc->storedBounds.max.x : pc->storedBounds.min.x, (k & 2) ? pc->storedBounds.max.y : pc->storedBounds.min.y,
+                                                   (k & 4) ? pc->storedBounds.max.z : pc->storedBounds.min.z}));
+            if (!bb.isEmpty() && std::abs(sec.normal.z) < 1e-9 && (std::abs(sec.normal.x) > 0.999 || std::abs(sec.normal.y) > 0.999)) {
+                if (std::abs(sec.normal.x) > 0.999) {
+                    bb.min.x = sec.point.x - sec.halfWidth;
+                    bb.max.x = sec.point.x + sec.halfWidth;
+                } else {
+                    bb.min.y = sec.point.y - sec.halfWidth;
+                    bb.max.y = sec.point.y + sec.halfWidth;
+                }
+                d->setBox(bb, true);
+            }
+        }
+        if (nonInteractive_) {
+            d->setAttribute(Qt::WA_DeleteOnClose);
+            d->start();
+            d->close();
+        } else {
+            runDialog(d);
+        }
+        return;
+    }
+    if (action == "solid-check") {
+        QStringList lines;
+        for (const auto& id : ctx_.selectedGeometry())
+            if (const auto* g = m.geometry.find(id); g && (g->type == GeometryType::Solid || g->mesh)) lines << solidReport(p, id);
+        if (lines.isEmpty()) {
+            ctx_.report(tr("Select solids or meshes to check"), MessageLevel::Warning);
+            return;
+        }
+        for (const auto& l : lines) ctx_.report(l);
+        if (!nonInteractive_) {
+            QMessageBox box(this);
+            box.setWindowTitle(tr("Solid check"));
+            box.setText(lines.join("\n\n"));
+            box.exec();
+        }
+        return;
+    }
+    if (action == "solid-heal") {
+        int n = 0;
+        for (const auto& id : ctx_.selectedGeometry())
+            if (const auto* g = m.geometry.find(id); g && g->type == GeometryType::Solid) n += healSolid(ctx_, id) ? 1 : 0;
+        if (!n) ctx_.report(tr("Select the solids to heal"), MessageLevel::Warning);
+        return;
+    }
+    if (action == "section-objects") {
+        std::vector<Uuid> ids;
+        for (const auto& id : ctx_.selectedGeometry())
+            if (const auto* g = m.geometry.find(id); g && g->mesh) ids.push_back(id);
+        if (ids.empty()) {
+            ctx_.report(tr("Select the solids or meshes to section"), MessageLevel::Warning);
+            return;
+        }
+        Vec3 point{0, 0, activeView() ? activeView()->workPlaneZ() : 0.0}, normal{0, 0, 1};
+        if (auto* v = activeView(); v && v->section().enabled) {
+            point = v->section().point;
+            normal = v->section().normal;
+        } else {
+            for (auto* view : viewports_->views())
+                if (view->section().enabled) {
+                    point = view->section().point;
+                    normal = view->section().normal;
+                }
+        }
+        sectionObjects(ctx_, ids, point, normal);
+        return;
+    }
+    if (action == "resources") {
+        auto* d = new ResourceLibraryDialog(ctx_, this);
+        d->setProperty("nonInteractive", nonInteractive_);
+        runDialog(d, true);
+        return;
+    }
+    if (action == "calendars" || action == "edit-calendar") {
+        runDialog(new CalendarDialog(ctx_, first(EntityKind::Calendar), this), true);
+        return;
+    }
+    if (action == "cycles") {
+        runDialog(new CycleDialog(ctx_, this), true);
+        return;
+    }
+    if (action == "targets") {
+        runDialog(new TargetsDialog(ctx_, this), true);
+        return;
+    }
     if (action == "cloud-crop") {
         if (need(EntityKind::PointCloud, tr("Crop")).isNil()) return;
         startTool(static_cast<int>(Tool::CropPolygon));

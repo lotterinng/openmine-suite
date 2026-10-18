@@ -30,6 +30,9 @@ struct ConformanceOptions {
     double slabHalfWidth = 0.05;            ///< point-cloud sections: ±m around the plane
     int angularBins = 720;                  ///< point-cloud sections
     std::size_t minSlabPoints = 50;         ///< point-cloud sections: fewer → station invalid
+    /// Mesh sections: holes in the as-built surface up to this size (m) are bridged when the
+    /// section is assembled; larger gaps leave the section open (closed by its chord).
+    double maxGap = 0.5;
 };
 
 struct StationConformance {

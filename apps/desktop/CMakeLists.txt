@@ -44,6 +44,10 @@ set(OPENMINE_DESKTOP_SOURCES
     dialogs/DesignDialogs.cpp dialogs/DesignDialogs.h
     dialogs/GeologyDialogs.cpp dialogs/GeologyDialogs.h
     dialogs/DataDialogs.cpp dialogs/DataDialogs.h
+    dialogs/ModelDialogs.cpp dialogs/ModelDialogs.h
+    dialogs/MeshDialogs.cpp dialogs/MeshDialogs.h
+    dialogs/SettingsDialogs.cpp dialogs/SettingsDialogs.h
+    scheduler/LibraryDialogs.cpp scheduler/LibraryDialogs.h
     console/CommandConsole.cpp console/CommandConsole.h
     console/StandardCommands.cpp
     ribbon/Ribbon.cpp ribbon/Ribbon.h

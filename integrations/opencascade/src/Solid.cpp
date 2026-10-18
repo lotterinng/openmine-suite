@@ -38,6 +38,7 @@
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakeHalfSpace.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
@@ -335,9 +336,107 @@ Shape sweepProfile(const std::vector<Vec2>& profile, const GeometryObject& path,
     return sweepProfile(profile, std::vector<double>(profile.size(), 0.0), path, t);
 }
 
+namespace {
+/// Exact mitred sweep along a straight-segment path: each segment is a prism of the profile face
+/// (placed upright and perpendicular to that segment), cut by the bisector (mitre) planes at the
+/// interior vertices, and the pieces are fused. BRepOffsetAPI_MakePipeShell's right-corner mode
+/// produces invalid solids when consecutive segments have a grade; this construction is valid
+/// for any grades and keeps arcs of the profile exact (cylindrical faces along each segment).
+TopoDS_Shape mitredSweep(const TopoDS_Face& localFace, double profileExtent, const std::vector<Vec3>& pts) {
+    const std::size_t n = pts.size();
+    std::vector<Vec3> dir(n - 1);
+    std::vector<double> len(n - 1);
+    for (std::size_t i = 0; i + 1 < n; ++i) {
+        const Vec3 d = pts[i + 1] - pts[i];
+        len[i] = d.length();
+        if (len[i] < 1e-9) throw SolidError("The path has coincident vertices");
+        dir[i] = d / len[i];
+        if (std::abs(dir[i].z) > 1 - 1e-9) throw SolidError("A path segment is vertical: the profile cannot stay upright");
+    }
+    for (std::size_t i = 1; i + 1 < n; ++i)
+        if (dot(dir[i - 1], dir[i]) < std::cos(150.0 * std::numbers::pi / 180.0))
+            throw SolidError("The path turns back on itself (more than 150°) at vertex " + std::to_string(i + 1));
+    // Each prism runs past its mitre planes by enough to be fully cut by them.
+    double maxTurn = 0;
+    for (std::size_t i = 1; i + 1 < n; ++i) maxTurn = std::max(maxTurn, std::acos(std::clamp(dot(dir[i - 1], dir[i]), -1.0, 1.0)));
+    const double ext = profileExtent * (1.0 + std::tan(std::min(maxTurn, 1.4)) * 2.0) + 1.0;
+    std::vector<TopoDS_Shape> pieces;
+    for (std::size_t i = 0; i + 1 < n; ++i) {
+        const double before = i == 0 ? 0.0 : ext, after = i + 2 == n ? 0.0 : ext;
+        const std::vector<Vec3> seg{pts[i], pts[i + 1]};
+        const auto f = geometry::sectionFrameAt(seg, 0.0);
+        const Vec3 origin = pts[i] - dir[i] * before;
+        const Vec3 z = -f.tangent;
+        gp_Trsf place;
+        place.SetValues(f.right.x, f.up.x, z.x, origin.x, f.right.y, f.up.y, z.y, origin.y, f.right.z, f.up.z, z.z, origin.z);
+        const TopoDS_Shape face = BRepBuilderAPI_Transform(localFace, place, true).Shape();
+        TopoDS_Shape prism = BRepPrimAPI_MakePrism(face, V(dir[i] * (before + len[i] + after))).Shape();
+        // Cut by the mitre planes: keep the side of the plane towards this segment.
+        for (const std::size_t j : {i, i + 1}) {
+            if (j == 0 || j + 1 == n) continue;
+            const Vec3 bis = (dir[j - 1] + dir[j]).normalized();
+            const Vec3 keepTowards = j == i ? pts[i + 1] : pts[i]; // a point on this segment's side
+            const Vec3 away = pts[j] + (keepTowards - pts[j]) * -1.0;
+            const TopoDS_Face plane = BRepBuilderAPI_MakeFace(gp_Pln(P(pts[j]), D(bis))).Face();
+            const TopoDS_Solid half = BRepPrimAPI_MakeHalfSpace(plane, P(away)).Solid();
+            BRepAlgoAPI_Cut cut(prism, half);
+            cut.Build();
+            if (!cut.IsDone() || cut.HasErrors()) throw SolidError("The mitre at vertex " + std::to_string(j + 1) + " could not be cut");
+            prism = cut.Shape();
+        }
+        pieces.push_back(prism);
+    }
+    TopoDS_Shape result = pieces.front();
+    if (pieces.size() > 1) {
+        BRepAlgoAPI_Fuse fuse;
+        TopTools_ListOfShape args, tools;
+        args.Append(pieces.front());
+        for (std::size_t i = 1; i < pieces.size(); ++i) tools.Append(pieces[i]);
+        fuse.SetArguments(args);
+        fuse.SetTools(tools);
+        fuse.SetFuzzyValue(1e-7);
+        fuse.Build();
+        if (!fuse.IsDone() || fuse.HasErrors()) throw SolidError("The swept segments could not be joined");
+        result = fuse.Shape();
+    }
+    result = unifyShape(result);
+    // A single solid is expected.
+    TopExp_Explorer ex(result, TopAbs_SOLID);
+    if (!ex.More()) throw SolidError("The mitred sweep produced no solid");
+    TopoDS_Shape solid = ex.Current();
+    ex.Next();
+    if (ex.More()) throw SolidError("The mitred sweep produced several solids (does the path cross itself?)");
+    return solid;
+}
+
+bool isStraightPolyline(const GeometryObject& g) {
+    if (g.type == GeometryType::Line) return true;
+    if (g.type != GeometryType::Polyline || g.closed) return false;
+    for (double b : g.bulges)
+        if (std::abs(b) > 1e-12) return false;
+    return g.vertices.size() >= 2;
+}
+} // namespace
+
 Shape sweepProfile(const std::vector<Vec2>& profile, const std::vector<double>& bulges, const GeometryObject& path, SweepTransition t) {
     return guarded("Sweep", [&] {
         if (profile.size() < 3) throw SolidError("The profile needs at least three points");
+        if (t == SweepTransition::RightCorner && isStraightPolyline(path) && path.vertices.size() >= 3) {
+            GeometryObject prof;
+            prof.type = GeometryType::Polyline;
+            prof.closed = true;
+            double extent = 0;
+            for (const auto& uv : profile) {
+                prof.vertices.push_back({uv.x, uv.y, 0});
+                extent = std::max(extent, std::hypot(uv.x, uv.y));
+            }
+            prof.bulges = bulges;
+            prof.bulges.resize(profile.size(), 0.0);
+            const TopoDS_Face face = BRepBuilderAPI_MakeFace(wireFromObject(prof), true).Face();
+            TopoDS_Shape s = mitredSweep(face, extent, path.vertices);
+            if (volumeOf(s) < 0) s.Reverse();
+            return wrap(s);
+        }
         const TopoDS_Wire spine = wireFromObject(path);
         const auto pts = geometry::curvePolyline(path, 1e-4);
         if (pts.size() < 2) throw SolidError("The path has no length");

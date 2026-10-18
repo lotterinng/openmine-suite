@@ -22,6 +22,7 @@ add_library(openmine_survey
     src/Registration.cpp
     src/Meshing.cpp
     src/Conformance.cpp
+    src/AsBuilt.cpp
 )
 add_library(OpenMine::survey ALIAS openmine_survey)
 target_include_directories(openmine_survey PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)

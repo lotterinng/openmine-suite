@@ -59,6 +59,7 @@ const char* toolName(Tool t) {
     case Tool::Trim: return "Trim";
     case Tool::Extend: return "Extend";
     case Tool::Fillet: return "Fillet";
+    case Tool::Chamfer: return "Chamfer";
     case Tool::Split: return "Split";
     case Tool::PickPoint: return "Pick point";
     case Tool::PickPoints: return "Pick points";
@@ -137,6 +138,9 @@ void ToolController::setTool(Tool t) {
     case Tool::Trim: setPrompt(tr("TRIM: pick the part to remove (cutting edges: selection, or all curves)")); break;
     case Tool::Extend: setPrompt(tr("EXTEND: pick near the end to extend (boundaries: selection, or all curves)")); break;
     case Tool::Fillet: setPrompt(tr("FILLET (r = %1 m, type a value to change): first object").arg(filletRadius_)); break;
+    case Tool::Chamfer:
+        setPrompt(tr("CHAMFER (%1 m, %2 m; type one value for both): first object").arg(chamferA_).arg(chamferB_));
+        break;
     case Tool::Split: setPrompt(tr("SPLIT: pick the split point on a curve")); break;
     case Tool::PickPoint:
     case Tool::PickPoints: break; // prompt set by the request
@@ -289,6 +293,7 @@ bool ToolController::click(Viewport3D* view, QPoint q, bool, bool) {
     case Tool::Trim:
     case Tool::Extend:
     case Tool::Fillet:
+    case Tool::Chamfer:
     case Tool::Split: {
         // Object-picking tools.
         const auto obj = objectAt(view, q);
@@ -312,6 +317,10 @@ bool ToolController::click(Viewport3D* view, QPoint q, bool, bool) {
         }
         if (tool_ == Tool::Fillet && picked_.size() == 1) {
             setPrompt(tr("FILLET: second object (the same polyline fillets its nearest corner)"));
+            return true;
+        }
+        if (tool_ == Tool::Chamfer && picked_.size() == 1) {
+            setPrompt(tr("CHAMFER: second object"));
             return true;
         }
         complete();
@@ -577,6 +586,11 @@ bool ToolController::acceptValue(double v) {
         filletRadius_ = v;
         setPrompt(tr("FILLET (r = %1 m): first object").arg(v));
         return true;
+    case Tool::Chamfer:
+        if (v < 0) return false;
+        chamferA_ = chamferB_ = v;
+        setPrompt(tr("CHAMFER (%1 m, %1 m): first object").arg(v));
+        return true;
     case Tool::Text:
         if (v <= 0) return false;
         textHeight_ = v;
@@ -814,6 +828,33 @@ void ToolController::complete() {
                     j.layerId = a->layerId;
                     ed.addGeometry(std::move(j));
                 }
+            }
+            macro.commit();
+        });
+        break;
+    }
+    case Tool::Chamfer: {
+        if (picked_.size() < 2) break;
+        const auto* a = m.geometry.find(picked_[0]);
+        const auto* b = m.geometry.find(picked_[1]);
+        if (!a || !b) break;
+        ctx_.tryEdit(tr("Chamfer"), [&] {
+            if (a->id == b->id) throw ValidationError("Chamfer two different curves");
+            auto& p = ctx_.project();
+            CommandStack::MacroScope macro(p.commands(), "Chamfer");
+            ProjectEditor ed(p);
+            auto r = cad::chamfer(*a, pickedAt_[0], *b, pickedAt_[1], chamferA_, chamferB_);
+            r.first.id = a->id;
+            r.first.meta = a->meta;
+            r.second.id = b->id;
+            r.second.meta = b->meta;
+            mine_design::updateGeometryWithImpact(p, r.first, "Chamfer");
+            mine_design::updateGeometryWithImpact(p, r.second, "Chamfer");
+            if (r.join) {
+                auto j = *r.join;
+                j.id = {};
+                j.layerId = a->layerId;
+                ed.addGeometry(std::move(j));
             }
             macro.commit();
         });

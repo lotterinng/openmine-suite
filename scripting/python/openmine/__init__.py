@@ -14,6 +14,11 @@ Example (the workflow of the specification)::
                                             start=(-25000, 2900000, 1200), azimuth_deg=270, gradient_percent=-12.5)
     activity = project.scheduler.create_activity(name="Develop LEG2_675_D3_DEC", geometry=design, production_rate=5.0)
     print(project.scheduler.calculate().activity(activity.id)["finish"])
+
+    scan = project.survey.import_pointcloud("scan.las")
+    scan = scan.remove_outliers()
+    report = project.survey.compare_design(design, scan)   # builds the as-built surface first
+    print(report["overbreak_volume"], report["underbreak_volume"])
     project.save("JUP_Mine.openmine")
 
 Modules: :mod:`openmine.geology`, :mod:`openmine.geotech`, :mod:`openmine.survey`,
@@ -22,11 +27,11 @@ Modules: :mod:`openmine.geology`, :mod:`openmine.geotech`, :mod:`openmine.survey
 from __future__ import annotations
 
 from . import _core
-from ._core import CancelledError, PersistenceError, Progress, ValidationError
-from ._project import (Activity, Development, Project, ScheduleResult, current_project)
+from ._core import CancelledError, PersistenceError, PointCloudError, Progress, ValidationError
+from ._project import (Activity, Development, PointCloud, Project, ScheduleResult, current_project)
 
-__all__ = ["Project", "Development", "Activity", "ScheduleResult", "Progress", "ValidationError", "PersistenceError",
-           "CancelledError", "FEATURES", "current_project", "__version__"]
+__all__ = ["Project", "Development", "Activity", "PointCloud", "ScheduleResult", "Progress", "ValidationError", "PersistenceError",
+           "CancelledError", "PointCloudError", "FEATURES", "current_project", "__version__"]
 
 __version__ = getattr(_core, "__version__", "0.3.0")
 #: Optional native features of this build (``{"optimiser": True, "crs": True, ...}``).

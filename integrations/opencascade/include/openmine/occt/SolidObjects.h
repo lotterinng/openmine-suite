@@ -35,6 +35,11 @@ Uuid booleanObjects(Project& project, const Uuid& a, const Uuid& b, BooleanOp op
 /// immutable BREP asset, one undo step) and its id returned.
 Uuid transformSolidObject(Project& project, const Uuid& solidId, const Transform3& t, bool copy, const TessellationSettings& ts = {});
 
+/// Replaces the shape of a Solid object (new immutable BREP asset, re-tessellated; one undo step),
+/// e.g. after healing. Returns the analysis of the new shape.
+ShapeInfo replaceSolidShape(Project& project, const Uuid& solidId, const Shape& shape, const std::string& commandText,
+                            const TessellationSettings& ts = {});
+
 /// Converts a mesh object into a Solid object (sewn, coplanar faces merged). Throws if the mesh is
 /// not closed and `requireClosed`.
 Uuid solidFromMeshObject(Project& project, const Uuid& meshId, bool requireClosed = true);

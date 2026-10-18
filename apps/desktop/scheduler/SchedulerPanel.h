@@ -11,6 +11,7 @@
 
 class QComboBox;
 class QLabel;
+class QLineEdit;
 class QTabWidget;
 class QTreeWidget;
 class QTreeWidgetItem;
@@ -31,6 +32,17 @@ public:
     QTreeWidget* grid() const { return grid_; }
     GanttChart* gantt() const { return gantt_; }
     QTreeWidgetItem* itemFor(const Uuid& id) const;
+
+    /// Grid filters: text (name, WBS, design, resources, zone), and a status filter.
+    enum class Show { All, Critical, Flagged, InProgress, NotStarted, Complete, BehindBaseline };
+    /// Grouping of the grid (WBS = the activity hierarchy).
+    enum class GroupBy { Wbs, Level, Zone, WorkArea, Resource, Calendar, Kind };
+    void setFilter(const QString& text);
+    void setShow(Show s);
+    void setGroupBy(GroupBy g);
+    GroupBy groupBy() const { return groupBy_; }
+    /// Activities currently shown in the grid (after filtering).
+    int visibleActivityCount() const;
 
 public slots:
     Uuid addActivity(ActivityKind kind, const QString& name = {});
@@ -53,12 +65,21 @@ private:
     void updateStatus();
     void syncSelectionFromContext();
     void onItemChanged(QTreeWidgetItem* item, int column);
+    void applyFilter();
+    bool matches(const ScheduleActivity& a, QTreeWidgetItem* item) const;
+    QString groupKey(const ScheduleActivity& a) const;
     Uuid selectedActivity() const;
     Uuid parentForNew() const;
 
     AppContext& ctx_;
     QComboBox* scenario_ = nullptr;
     QLabel* status_ = nullptr;
+    QLineEdit* filter_ = nullptr;
+    QComboBox* show_ = nullptr;
+    QComboBox* group_ = nullptr;
+    Show showMode_ = Show::All;
+    GroupBy groupBy_ = GroupBy::Wbs;
+    QString filterText_;
     QTreeWidget* grid_ = nullptr;
     GanttChart* gantt_ = nullptr;
     QTabWidget* tabs_ = nullptr;

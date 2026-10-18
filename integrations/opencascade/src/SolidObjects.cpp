@@ -59,17 +59,26 @@ Uuid transformSolidObject(Project& p, const Uuid& id, const Transform3& t, bool 
     if (std::abs(t.determinant3()) < 1e-12) throw SolidError("The transformation is singular");
     const Shape moved = transformed(loadSolid(p, g), t);
     if (copy) return addSolidObject(p, moved, g.name.empty() ? std::string("Solid copy") : g.name + " (copy)", g.layerId, ts, "Copy solid");
-    auto mesh = std::make_shared<MeshData>(tessellate(moved, ts.linearDeflection, ts.angularDeflection));
-    Asset asset = p.assets().writeBytes(toBrep(moved), AssetKind::Brep, "brep");
+    replaceSolidShape(p, id, moved, "Transform solid", ts);
+    return id;
+}
+
+ShapeInfo replaceSolidShape(Project& p, const Uuid& id, const Shape& shape, const std::string& text, const TessellationSettings& ts) {
+    const auto& g = object(p, id);
+    if (g.type != GeometryType::Solid) throw SolidError("'" + g.name + "' is not a solid");
+    const auto info = analyse(shape);
+    if (info.faces == 0) throw SolidError("The shape has no faces");
+    auto mesh = std::make_shared<MeshData>(tessellate(shape, ts.linearDeflection, ts.angularDeflection));
+    Asset asset = p.assets().writeBytes(toBrep(shape), AssetKind::Brep, "brep");
     ProjectEditor ed(p);
-    CommandStack::MacroScope macro(p.commands(), "Transform solid");
+    CommandStack::MacroScope macro(p.commands(), text);
     ed.add(asset);
     GeometryObject u = g;
     u.brepAsset.id = asset.id;
     u.mesh = std::move(mesh);
     ed.update(std::move(u));
     macro.commit();
-    return id;
+    return info;
 }
 
 Shape shapeOfObject(const Project& p, const GeometryObject& g) {

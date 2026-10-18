@@ -271,3 +271,140 @@ def test_repository_round_trip():
         assert any(l["name"] == "Bob's" for l in p.cad.layers())
     finally:
         repo.delete_project(p.id)
+
+
+def _scanned_heading(p, bulge=0.3, n=60000, seed=5):
+    """A straight 30 m, 5 × 5 m heading and a synthetic scan of its excavated profile: the walls,
+    back and floor (the face and portal are not scanned) with the north wall ``bulge`` m out
+    over its full height (overbreak), plus scanner noise."""
+    design = p.cad.create_development(name="SCAN_XC", length=30, width=5.0, height=5.0, start=(1000.0, 5000.0, 200.0),
+                                      azimuth_deg=90, gradient_percent=0.0, level="200")
+    v, _ = p._native.development_envelope(design.id)
+    y0, y1 = v[:, 1].min(), v[:, 1].max() + bulge  # the excavated profile: south wall to the over-broken north wall
+    z0, z1 = v[:, 2].min(), v[:, 2].max()
+    w, h = y1 - y0, z1 - z0
+    rng = np.random.default_rng(seed)
+    u = rng.uniform(0, 2 * (w + h), n)  # arc length around the profile (floor, north wall, back, south wall)
+    y = np.where(u < w, y0 + u, np.where(u < w + h, y1, np.where(u < 2 * w + h, y1 - (u - w - h), y0)))
+    z = np.where(u < w, z0, np.where(u < w + h, z0 + (u - w), np.where(u < 2 * w + h, z1, z1 - (u - 2 * w - h))))
+    x = rng.uniform(v[:, 0].min(), v[:, 0].max(), n)
+    pts = np.column_stack([x, y, z]) + rng.normal(0, 0.005, (n, 3))
+    return design, pts
+
+
+def test_point_cloud_handles_and_derived_processing(tmp_path):
+    from openmine import FEATURES, PointCloud
+    p = Project.new("Scans", start="2026-11-02")
+    rng = np.random.default_rng(2)
+    xy = rng.uniform(0, 20, size=(20000, 2))
+    ground = np.column_stack([xy, 0.05 * xy[:, 0] + rng.normal(0, 0.01, len(xy))]) + [50000.0, 7000000.0, 900.0]
+    spikes = ground[:40] + [0, 0, 25.0]  # 40 isolated points 25 m above the surface
+    f = tmp_path / "scan.xyz"
+    np.savetxt(f, np.vstack([ground, spikes]), fmt="%.4f")
+    scan = p.survey.import_pointcloud(f, name="Ground scan")
+    assert isinstance(scan, PointCloud) and isinstance(scan, str)
+    assert scan.name == "Ground scan" and scan.point_count == 20040 and scan.derivation == "" and scan.parent is None
+    assert p.survey.pointcloud(scan.id) == scan and scan in p.survey.pointclouds()
+
+    clean = scan.remove_outliers(k=16, std_ratio=2.0)
+    assert clean.parent == scan and clean.derivation.startswith("statistical outlier removal k=16")
+    z = clean.xyz[:, 2]
+    assert z.max() < 905 and 19800 <= clean.point_count < 20040
+    assert scan.point_count == 20040 and scan.xyz[:, 2].max() > 920  # the source is never altered
+    r = scan.remove_outliers(method="radius", radius=0.5, min_neighbours=3, name="radius clean")
+    assert r.name == "radius clean" and r.xyz[:, 2].max() < 905
+    with pytest.raises(ValueError):
+        scan.remove_outliers(method="radius")
+
+    thin = clean.voxel_downsample(0.5)
+    assert 1000 < thin.point_count < clean.point_count
+    original = {tuple(q) for q in np.round(clean.xyz, 4)}
+    assert all(tuple(q) in original for q in np.round(thin.xyz[:200], 4))  # nearest-to-centre keeps real points
+    assert thin.statistics()["median_spacing"] > 0.3
+    spaced = clean.subsample(spacing=1.0)
+    assert spaced.statistics()["count"] == spaced.point_count
+    sample = clean.subsample(count=500, seed=7)
+    assert sample.point_count == 500
+    with pytest.raises(ValueError):
+        clean.subsample()
+
+    normals = thin.estimate_normals(k=12)
+    assert normals.attributes["normals"] and normals.derivation.startswith("PCA normals k=12")
+    n = normals.points()["normals"]
+    assert np.all(n[:, 2] > 0.95)  # the surface is nearly horizontal, oriented up
+
+    box = (50005.0, 7000005.0, 0.0, 50010.0, 7000010.0, 2000.0)
+    inner = clean.crop(box)
+    outer = clean.crop(box, inside=False)
+    assert inner.point_count + outer.point_count == clean.point_count
+    assert np.all((inner.xyz[:, 0] >= 50005.0) & (inner.xyz[:, 0] <= 50010.0))
+
+    with pytest.raises(ValueError):
+        p._native.derive_point_cloud(scan.id, "statistical_outliers", {"no_such": 1}, "openmine", "", None)
+    with pytest.raises(ValueError):
+        p._native.derive_point_cloud(scan.id, "no_such_operation", {}, "openmine", "", None)
+
+    if FEATURES["open3d"]:
+        o = scan.remove_outliers(engine="open3d")
+        assert "Open3D" in o.derivation and o.xyz[:, 2].max() < 905
+        assert abs(o.point_count - clean.point_count) < 100
+        c = clean.voxel_downsample(0.5, mode="centroid", engine="open3d")
+        assert abs(c.point_count - clean.voxel_downsample(0.5, mode="centroid").point_count) <= 0.02 * c.point_count
+        with pytest.raises(ValueError):
+            clean.voxel_downsample(0.5, engine="open3d")  # Open3D has no nearest-to-centre mode
+        on = thin.estimate_normals(k=12, engine="open3d")
+        assert np.all(on.points()["normals"][:, 2] > 0.95)
+    else:
+        with pytest.raises(ValueError):
+            scan.remove_outliers(engine="open3d")
+
+    count = len(p.survey.pointclouds())
+    p.undo()  # the last derivation is one undo step
+    assert len(p.survey.pointclouds()) == count - 1
+    out = tmp_path / "clean.xyz"
+    clean.export(out)
+    assert out.read_text().splitlines()[0].split()[:3] == ["x", "y", "z"]
+    assert len(np.loadtxt(out, skiprows=1, usecols=(0, 1, 2))) == clean.point_count
+    saved = tmp_path / "Scans.openmine"
+    p.save(saved)
+    q = Project.open(saved)
+    assert q.survey.pointcloud(clean.id).derivation == clean.derivation
+    p.save()  # saves to its file
+
+
+@pytest.mark.skipif(not (openmine.FEATURES["pdal"] or openmine.FEATURES["open3d"]), reason="no surface-reconstruction engine")
+def test_compare_design_against_a_scan():
+    from openmine import FEATURES
+    p = Project.new("Conformance", start="2026-11-02")
+    design, pts = _scanned_heading(p)
+    scan = p.survey.add_point_cloud(pts, "XC scan")
+    engines = [e for e in ("pdal", "open3d") if FEATURES[e]]
+    results = {}
+    for engine in engines:
+        r = p.survey.compare_design(design, scan, interval=1.0, depth=8, voxel=0.05, engine=engine)
+        assert r["as_built_method"].startswith("Poisson depth=8")
+        doc = p.documents.get("AsBuiltModel", r["as_built"])
+        assert doc is not None
+        assert r["valid_stations"] >= 29, engine
+        # The north wall is 0.3 m out over its 5 m height along the 30 m: 0.3 × 5 × 30 = 45 m³ of
+        # overbreak; the rest of the profile matches the design within the scan noise.
+        assert 0.25 < r["max_overbreak_depth"] < 0.45, (engine, r["max_overbreak_depth"])
+        assert r["overbreak_volume"] == pytest.approx(45.0, rel=0.05), (engine, r["overbreak_volume"])
+        assert r["underbreak_volume"] < 2.0, (engine, r["underbreak_volume"])
+        assert r["overbreak_percent"] == pytest.approx(100 * r["overbreak_volume"] / r["design_volume"])
+        assert "result" in r
+        results[engine] = r
+    # A stored as-built model is compared directly (no rebuild).
+    again = p.survey.compare_design(design, results[engines[0]]["as_built"], commit=False)
+    assert again["overbreak_volume"] == pytest.approx(results[engines[0]]["overbreak_volume"], rel=1e-9)
+    assert "result" not in again and "as_built_method" not in again
+    if len(results) == 2:
+        a, b = results["pdal"], results["open3d"]
+        assert a["overbreak_volume"] == pytest.approx(b["overbreak_volume"], rel=0.03)
+    with pytest.raises(KeyError):
+        p.survey.compare_design(design, "00000000-0000-4000-8000-000000000000")
+    with pytest.raises(TypeError):
+        p.survey.compare_design(design, results[engines[0]]["as_built"], depth=8)
+    sparse = p.survey.add_point_cloud(pts[:50], "too sparse")
+    with pytest.raises(RuntimeError):
+        p.survey.build_as_built(sparse, design)

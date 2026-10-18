@@ -18,6 +18,7 @@ class QDockWidget;
 class QLabel;
 class QMenu;
 class QMenuBar;
+class QToolBar;
 
 namespace openmine::app {
 
@@ -56,6 +57,9 @@ public:
     JobsPanel* jobsPanel() const { return jobs_; }
     Ribbon* ribbon() const { return ribbon_; }
     QDockWidget* dock(const QString& name) const;
+    QToolBar* quickAccessBar() const { return quickAccess_; }
+    /// Quick-access toolbar contents (action ids), persisted per user.
+    void setQuickAccess(const QStringList& ids);
     /// Action by id ("file.save", "draw.polyline", "survey.icp", …).
     QAction* action(const QString& id) const;
     QStringList actionIds() const;
@@ -95,6 +99,8 @@ private:
     void loadPlugins();
     void rebuildPluginMenu();
     void rebuildRecentMenu();
+    void rebuildQuickAccess();
+    void resetLayout();
     QAction* addAction(const QString& id, const QString& text, const QString& icon, std::function<void()> slot, const QKeySequence& key = {},
                        const QString& tip = {});
     QString chooseOpenFile(const QString& title, const QString& filter, const QString& key);
@@ -120,6 +126,8 @@ private:
     std::map<QString, QDockWidget*> docks_;
     std::map<QString, QAction*> actions_;
     QMenuBar* menuBar_ = nullptr;
+    QToolBar* quickAccess_ = nullptr;
+    QByteArray defaultState_;
     QMenu* pluginMenu_ = nullptr;
     QMenu* recentMenu_ = nullptr;
     QLabel* coordLabel_ = nullptr;

@@ -31,7 +31,7 @@ enum class Tool {
     Select,
     Point, Line, Polyline, Polygon, Rectangle, Circle, Arc3, Spline, Text, Dimension,
     Measure, MeasureArea,
-    Move, Copy, Rotate, Mirror, Scale, Offset, Trim, Extend, Fillet, Split,
+    Move, Copy, Rotate, Mirror, Scale, Offset, Trim, Extend, Fillet, Chamfer, Split,
     PickPoint, PickPoints, SectionLine, CropPolygon,
 };
 const char* toolName(Tool t);
@@ -70,6 +70,11 @@ public:
     void setTextHeight(double h) { textHeight_ = h; }
     double filletRadius() const { return filletRadius_; }
     void setFilletRadius(double r) { filletRadius_ = r; }
+    std::pair<double, double> chamferDistances() const { return {chamferA_, chamferB_}; }
+    void setChamferDistances(double a, double b) {
+        chamferA_ = a;
+        chamferB_ = b;
+    }
     double offsetDistance() const { return offsetDistance_; }
     void setOffsetDistance(double d) { offsetDistance_ = d; }
 
@@ -141,6 +146,7 @@ private:
     bool ortho_ = false;
     double textHeight_ = 2.0;
     double filletRadius_ = 5.0;
+    double chamferA_ = 1.0, chamferB_ = 1.0;
     double offsetDistance_ = 2.5;
     std::optional<double> typedValue_;
     std::function<void(Vec3)> onPoint_;

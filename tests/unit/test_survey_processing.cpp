@@ -5,6 +5,7 @@
 #include "openmine/geometry/Sweep.h"
 #include "openmine/mine_design/Development.h"
 #include "openmine/project/ProjectEditor.h"
+#include "openmine/survey/AsBuilt.h"
 #include "openmine/survey/Conformance.h"
 #include "openmine/survey/KdTree.h"
 #include "openmine/survey/Meshing.h"
@@ -15,6 +16,7 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <fstream>
 #include <numbers>
@@ -546,6 +548,177 @@ TEST(SurveyConformance, OverbreakUnderbreakClearanceFromMeshAndPoints) {
     EXPECT_NEAR(face.faceChainage, 37.3, 0.05);
     EXPECT_NEAR(face.coveredFrom, 0, 0.5);
     EXPECT_NE(conformanceCsv(r).find("0+050.000"), std::string::npos);
+}
+
+namespace {
+/// A ring with its edges subdivided to at most `step`.
+std::vector<Vec2> densified(const std::vector<Vec2>& ring, double step) {
+    std::vector<Vec2> out;
+    for (std::size_t i = 0; i < ring.size(); ++i) {
+        const Vec2 a = ring[i], b = ring[(i + 1) % ring.size()];
+        const int n = std::max(1, static_cast<int>(std::ceil(distance(a, b) / step - 1e-9)));
+        for (int k = 0; k < n; ++k) out.push_back(a + (b - a) * (static_cast<double>(k) / n));
+    }
+    return out;
+}
+/// Removes the triangles whose centroid satisfies `cut`.
+MeshData withHole(const MeshData& m, const std::function<bool(Vec3)>& cut) {
+    MeshData out;
+    out.vertices = m.vertices;
+    for (const auto& t : m.triangles)
+        if (!cut((m.vertices[t[0]] + m.vertices[t[1]] + m.vertices[t[2]]) / 3.0)) out.triangles.push_back(t);
+    return out;
+}
+} // namespace
+
+TEST(SurveyConformance, HolesInTheAsBuiltAreBridgedAndPartialSectionsIgnored) {
+    const std::vector<Vec3> cl = {{0, 0, -100}, {30, 0, -100}};
+    const std::vector<Vec2> design = geometry::rectangleOutline(5, 5);
+    std::vector<Vec3> path;
+    for (int x = -1; x <= 31; ++x) path.push_back({static_cast<double>(x), 0, -100});
+    const auto full = tube(path, densified(geometry::rectangleOutline(6, 5.5), 0.25));
+    // Two 0.25 m holes (one per wall) between chainages 10 and 11: every section there falls apart
+    // into two open chains.
+    const auto holed = withHole(full, [](Vec3 c) { return c.x > 10 && c.x < 11 && std::abs(std::abs(c.y) - 3) < 1e-6 && c.z > -98 && c.z < -97.75; });
+    ASSERT_LT(holed.triangles.size(), full.triangles.size());
+    ConformanceOptions o;
+    o.interval = 0.5;
+    o.fromChainage = 9.0;
+    o.toChainage = 12.0;
+    const auto bridged = analyseConformance(cl, design, holed, o);
+    for (const auto& st : bridged.stations) {
+        EXPECT_TRUE(st.valid) << st.chainage;
+        EXPECT_FALSE(st.closedByChord) << st.chainage;
+        EXPECT_NEAR(st.asBuiltArea, 33, 0.07) << st.chainage; // a bridged 0.25 m gap differs by < 0.07 m²
+        if (st.chainage > 10 && st.chainage < 11) EXPECT_NE(st.issue.find("bridged"), std::string::npos) << st.issue;
+        else if (st.chainage < 10 || st.chainage > 11) EXPECT_TRUE(st.issue.empty()) << st.issue; // (10 and 11 lie on the holes' edges)
+    }
+    o.maxGap = 0.1; // smaller than the holes: the longer chain alone, closed by its chord
+    const auto strict = analyseConformance(cl, design, holed, o);
+    bool sawChord = false;
+    for (const auto& st : strict.stations)
+        if (st.chainage > 10 && st.chainage < 11) {
+            sawChord = true;
+            EXPECT_TRUE(st.closedByChord);
+            EXPECT_LT(st.asBuiltArea, 30);
+        }
+    EXPECT_TRUE(sawChord);
+
+    // Only the floor and the bottom metre of the walls between chainages 20 and 21 (the rest
+    // unscanned): a partial section that measures nothing is not used.
+    const auto partial = withHole(full, [](Vec3 c) { return c.x > 20 && c.x < 21 && c.z > -99; });
+    ConformanceOptions po;
+    po.interval = 0.5;
+    po.fromChainage = 18.75; // stations clear of the tube's rings at whole metres
+    po.toChainage = 21.75;
+    const auto rp = analyseConformance(cl, design, partial, po);
+    int used = 0;
+    for (const auto& st : rp.stations) {
+        if (st.chainage > 20 && st.chainage < 21) {
+            EXPECT_FALSE(st.valid);
+            EXPECT_NE(st.issue.find("partial section"), std::string::npos) << st.issue;
+        } else {
+            EXPECT_TRUE(st.valid);
+            ++used;
+        }
+    }
+    EXPECT_EQ(rp.validStations, used);
+    // Volumes are integrated between consecutive valid stations only.
+    EXPECT_EQ(used, 5);
+    EXPECT_NEAR(rp.overbreakVolume, 8.0 * 1.5, 1e-3); // 18.75–19.75 and 21.25–21.75 m at 8 m² of overbreak
+}
+
+TEST(SurveyAsBuilt, CorridorNormalsTrimmingAndHoleFilling) {
+    auto pp = Project::createNew("AsBuilt", Date::fromYmd(2026, 11, 2));
+    Project& p = *pp;
+    ProjectEditor ed(p);
+    const Uuid layer = ed.addLayer("Design", 0x00AAFF);
+    GeometryObject line = cad::makeLine({1000, 5000, 200}, {1030, 5000, 200});
+    line.layerId = layer;
+    const Uuid dev = mine_design::createDevelopment(p, ed.addGeometry(line), [] {
+        mine_design::NewDevelopment nd;
+        nd.headingId = "XC2";
+        nd.width = 5;
+        nd.height = 5;
+        return nd;
+    }());
+    // The excavated profile (6 × 5.5 m: walls 0.5 m out, back 0.5 m up) sampled densely, plus
+    // points of a parallel drive 20 m away (outside the corridor) and of the face beyond the end.
+    std::mt19937 rng(4);
+    std::uniform_real_distribution<double> u(0, 1);
+    std::vector<Vec3> pts;
+    const double W = 6, H = 5.5, P = 2 * (W + H);
+    for (int i = 0; i < 80000; ++i) {
+        const double x = 1000 + 30 * u(rng), t = P * u(rng);
+        Vec2 q;
+        if (t < W) q = {-3 + t, 0};
+        else if (t < W + H) q = {3, t - W};
+        else if (t < 2 * W + H) q = {3 - (t - W - H), H};
+        else q = {-3, H - (t - 2 * W - H)};
+        pts.push_back({x, 5000 + q.x, 200 + q.y});
+    }
+    for (int i = 0; i < 5000; ++i) pts.push_back({1000 + 30 * u(rng), 5020 + u(rng), 200 + 5 * u(rng)});
+    PointBuffer buf;
+    buf.xyz = pts;
+    const Uuid ds = commitDataset(p, prepareFromPoints(p, buf, "scan", "", "test"));
+
+    AsBuiltOptions o;
+    o.corridor = 6;
+    o.voxel = 0.1;
+    const auto corridor = corridorPoints(p, ds, dev, o);
+    ASSERT_TRUE(corridor.schema().normals);
+    for (const auto& q : corridor.xyz) ASSERT_LT(std::abs(q.y - 5000), 6.0 + 1e-9); // the parallel drive is excluded
+    // Normals face into the excavation (towards the profile centroid line at mid-height), floor
+    // included — the centreline itself is on the floor.
+    std::size_t inward = 0;
+    for (std::size_t i = 0; i < corridor.size(); ++i) {
+        const Vec3 n{corridor.normal[i][0], corridor.normal[i][1], corridor.normal[i][2]};
+        const Vec3 inside{corridor.xyz[i].x, 5000, 202.5};
+        if (dot(n, inside - corridor.xyz[i]) > 0) ++inward;
+    }
+    EXPECT_GT(static_cast<double>(inward) / static_cast<double>(corridor.size()), 0.995);
+
+    // A stand-in surface engine: the exact excavation envelope, extended 3 m beyond both ends (the
+    // Poisson-like extrapolation to trim), with one 0.2 m "scan gap" removed from the north wall.
+    std::size_t engineCalls = 0;
+    const SurfaceEngine engine = [&](const PointBuffer& in, int depth) {
+        ++engineCalls;
+        EXPECT_EQ(depth, o.depth);
+        EXPECT_TRUE(in.schema().normals);
+        std::vector<Vec3> path;
+        for (int x = 997; x <= 1033; ++x) path.push_back({static_cast<double>(x), 5000, 200});
+        auto m = geometry::sweepProfile(path, densified(geometry::rectangleOutline(W, H), 0.2));
+        return withHole(m, [](Vec3 c) { return c.x > 1015 && c.x < 1016 && std::abs(c.y - 5003) < 1e-6 && c.z > 202 && c.z < 202.2; });
+    };
+    const auto mesh = buildAsBuiltSurface(p, ds, dev, o, engine);
+    EXPECT_EQ(engineCalls, 1u);
+    const auto bb = [&] {
+        auto b = BoundingBox::empty();
+        for (const auto& t : mesh.triangles)
+            for (auto v : t) b.expand(mesh.vertices[v]);
+        return b;
+    }();
+    EXPECT_GT(bb.min.x, 999.5); // trimmed to the scan: the extrapolated ends and caps are removed
+    EXPECT_LT(bb.max.x, 1030.5);
+    const auto loops = boundaryLoops(mesh);
+    EXPECT_EQ(loops.size(), 2u); // the two open ends; the small scan gap was filled
+    // Without hole filling the gap remains.
+    o.fillHolesUpTo = 0;
+    EXPECT_GE(boundaryLoops(buildAsBuiltSurface(p, ds, dev, o, engine)).size(), 3u);
+    // The conformance of the result: 8 m² of overbreak per station.
+    const Uuid ab = addAsBuiltModel(p, ds, mesh, "XC2 as-built", layer, dev, "test engine");
+    ConformanceOptions co;
+    co.interval = 2;
+    const auto rep = analyseAsBuilt(p, ab, dev, co);
+    EXPECT_GE(rep.validStations, 14);
+    for (const auto& st : rep.stations)
+        if (st.valid && st.chainage > 1 && st.chainage < 29) EXPECT_NEAR(st.overbreakArea, W * H - 25, 0.05) << st.chainage;
+    // Errors are reported, not hidden.
+    EXPECT_THROW(buildAsBuiltSurface(p, ds, dev, o, SurfaceEngine{}), PointCloudError);
+    EXPECT_THROW(buildAsBuiltSurface(p, ds, Uuid::generate(), o, engine), PointCloudError); // no such development
+    AsBuiltOptions bad = o;
+    bad.corridor = 0;
+    EXPECT_THROW(corridorPoints(p, ds, dev, bad), PointCloudError);
 }
 
 TEST(SurveyConformance, ProjectAsBuiltAndStoredResult) {

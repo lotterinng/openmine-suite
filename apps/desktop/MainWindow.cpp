@@ -7,6 +7,9 @@
 #include "dialogs/DesignDialogs.h"
 #include "dialogs/DialogUtil.h"
 #include "dialogs/GeologyDialogs.h"
+#include "dialogs/MeshDialogs.h"
+#include "dialogs/ModelDialogs.h"
+#include "dialogs/SettingsDialogs.h"
 #include "dialogs/SurveyDialogs.h"
 #include "panels/JobsPanel.h"
 #include "panels/LayerManager.h"
@@ -49,6 +52,9 @@
 #include <QMessageBox>
 #include <QSettings>
 #include <QStatusBar>
+#include <QToolBar>
+#include <QHBoxLayout>
+#include <QVBoxLayout>
 #include <QTimer>
 
 namespace openmine::app {
@@ -135,6 +141,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     });
 
     QSettings& s = ctx_.settings();
+    defaultState_ = saveState();
+    PreferencesDialog::applyStored(s, *viewports_);
     restoreGeometry(s.value("window/geometry").toByteArray());
     if (!restoreState(s.value("window/state").toByteArray())) {
         // First start: give the viewport most of the window once the layout has its real size.
@@ -494,6 +502,7 @@ void MainWindow::createActions() {
         {"modify.trim", "Trim", "trim", Tool::Trim, QKeySequence(Qt::Key_T)},
         {"modify.extend", "Extend", "extend", Tool::Extend, {}},
         {"modify.fillet", "Fillet", "fillet", Tool::Fillet, QKeySequence(Qt::Key_F) },
+        {"modify.chamfer", "Chamfer", "chamfer", Tool::Chamfer, {}},
         {"modify.split", "Split", "split", Tool::Split, {}},
         {"survey.crop", "Crop by polygon", "polygon", Tool::CropPolygon, {}},
     };
@@ -520,7 +529,7 @@ void MainWindow::createActions() {
             {Tool::Spline, "draw.spline"},   {Tool::Text, "draw.text"},          {Tool::Dimension, "draw.dimension"}, {Tool::Measure, "measure.distance"},
             {Tool::MeasureArea, "measure.area"}, {Tool::Move, "modify.move"},   {Tool::Copy, "modify.copy"},      {Tool::Rotate, "modify.rotate"},
             {Tool::Mirror, "modify.mirror"}, {Tool::Scale, "modify.scale"},      {Tool::Offset, "modify.offset"},  {Tool::Trim, "modify.trim"},
-            {Tool::Extend, "modify.extend"}, {Tool::Fillet, "modify.fillet"},    {Tool::Split, "modify.split"},    {Tool::CropPolygon, "survey.crop"}};
+            {Tool::Extend, "modify.extend"}, {Tool::Fillet, "modify.fillet"},    {Tool::Chamfer, "modify.chamfer"},    {Tool::Split, "modify.split"},    {Tool::CropPolygon, "survey.crop"}};
         if (auto it = ids.find(t); it != ids.end()) action(it->second)->setChecked(true);
         else action("draw.select")->setChecked(false);
         promptLabel_->setText(viewports_->tools().prompt());
@@ -685,6 +694,92 @@ void MainWindow::createActions() {
         console_->execute("HELP");
     });
 
+    // ---- 3D modelling
+    using SO = SolidModelDialog::Operation;
+    auto solidAction = [this](const QString& id, const QString& text, const QString& icon, SO op, const QString& tip) {
+        addAction(id, text, icon, [this, op] {
+            auto* d = new SolidModelDialog(ctx_, op, this);
+            d->setAttribute(Qt::WA_DeleteOnClose);
+            d->show();
+        }, {}, tip);
+    };
+    solidAction("solid.extrude", tr("Extrude…"), "extrude", SO::Extrude, tr("Closed curves to solids (inner curves become holes)"));
+    solidAction("solid.revolve", tr("Revolve…"), "revolve", SO::Revolve, tr("A closed profile revolved about an axis"));
+    solidAction("solid.sweep", tr("Sweep…"), "sweep", SO::Sweep, tr("A tunnel profile swept along any path"));
+    solidAction("solid.loft", tr("Loft…"), "loft", SO::Loft, tr("A solid through closed sections, in selection order"));
+    addAction("solid.check", tr("Check solids"), "info", [this] { handleEntityAction("solid-check", ctx_.selection()); }, {},
+              tr("Validity, closure, volume, area and topology"));
+    addAction("solid.heal", tr("Heal solids"), "repair", [this] { handleEntityAction("solid-heal", ctx_.selection()); });
+    addAction("solid.section", tr("Section by plane"), "section", [this] { handleEntityAction("section-objects", ctx_.selection()); }, {},
+              tr("Sections the selected solids and meshes by the active view's section plane, or horizontally at the work-plane elevation"));
+    // ---- surfaces
+    using MO = MeshToolDialog::Operation;
+    auto meshAction = [this](const QString& id, const QString& text, const QString& icon, MO op) {
+        addAction(id, text, icon, [this, op] {
+            Uuid mesh;
+            for (const auto& g : ctx_.selectedGeometry())
+                if (const auto* o = ctx_.project().model().geometry.find(g); o && o->mesh) mesh = g;
+            auto* d = new MeshToolDialog(ctx_, op, mesh, this);
+            d->setAttribute(Qt::WA_DeleteOnClose);
+            d->open();
+        });
+    };
+    meshAction("mesh.decimate", tr("Decimate surface…"), "decimate", MO::Decimate);
+    meshAction("mesh.smooth", tr("Smooth surface…"), "smooth", MO::Smooth);
+    meshAction("mesh.repair", tr("Repair surface…"), "repair", MO::Repair);
+    meshAction("mesh.compare", tr("Compare surfaces…"), "distance", MO::Compare);
+    addAction("survey.segment", tr("Segment into clusters…"), "cluster", [this] { handleEntityAction("cloud-segment", ctx_.selection()); });
+    addAction("survey.cropBox", tr("Crop by box…"), "crop", [this] { handleEntityAction("cloud-crop-box", ctx_.selection()); });
+    // ---- scheduling libraries
+    addAction("schedule.resources", tr("Resources…"), "resource", [this] { handleEntityAction("resources", {}); });
+    addAction("schedule.calendars", tr("Calendars…"), "calendar", [this] { handleEntityAction("calendars", {}); });
+    addAction("schedule.cycles", tr("Development cycles…"), "calc", [this] { handleEntityAction("cycles", {}); });
+    addAction("schedule.targets", tr("Production targets…"), "chart", [this] { handleEntityAction("targets", {}); });
+    addAction("schedule.critical", tr("Show critical activities"), "critical", [this] {
+        scheduler_->setShow(SchedulerPanel::Show::Critical);
+        dock("scheduler")->show();
+        dock("scheduler")->raise();
+    });
+    addAction("schedule.showAll", tr("Show all activities"), "gantt", [this] {
+        scheduler_->setFilter({});
+        scheduler_->setShow(SchedulerPanel::Show::All);
+    });
+    addAction("schedule.production", tr("Production report"), "report", [this] { reports_->generate("production", "pdf"); });
+    addAction("schedule.scenarios", tr("Scenario comparison report"), "report", [this] { reports_->generate("scenarios", "pdf"); });
+    // ---- analysis and reporting
+    addAction("analysis.impacts", tr("Design impacts"), "impacts", [this] { handleEntityAction("impacts", {}); });
+    addAction("report.quantities", tr("Development quantities (PDF)"), "report", [this] { reports_->generate("quantities", "pdf"); });
+    addAction("report.quantitiesXlsx", tr("Development quantities (Excel)"), "xlsx", [this] { reports_->generate("quantities-xlsx", "xlsx"); });
+    addAction("report.scheduleXlsx", tr("Schedule workbook (Excel)"), "xlsx", [this] { reports_->generate("schedule-xlsx", "xlsx"); });
+    // ---- window and settings
+    addAction("window.reset", tr("Reset panel layout"), "view4", [this] { resetLayout(); });
+    addAction("window.nextView", tr("Next view"), "view2", [this] {
+        const auto views = viewports_->views();
+        if (views.size() < 2) return;
+        const auto it = std::find(views.begin(), views.end(), activeView());
+        viewports_->setActive(views[(static_cast<std::size_t>(it - views.begin()) + 1) % views.size()]);
+    }, QKeySequence(Qt::CTRL | Qt::Key_Tab));
+    addAction("settings.preferences", tr("Preferences…"), "settings", [this] {
+        PreferencesDialog d(ctx_, *viewports_, [this](bool dark) { setTheme(dark); }, this);
+        d.exec();
+    }, QKeySequence::Preferences);
+    addAction("settings.quickAccess", tr("Customise quick-access toolbar…"), "settings", [this] {
+        QuickAccessDialog d(actions_, ctx_.settings().value("ui/quickAccess").toStringList(), this);
+        if (d.exec() == QDialog::Accepted) setQuickAccess(d.chosen());
+    });
+    addAction("settings.reset", tr("Restore default settings"), {}, [this] {
+        if (!nonInteractive_ &&
+            QMessageBox::question(this, tr("Restore defaults"), tr("Forget the preferences, layout, recent files and quick-access toolbar? Projects are not affected.")) !=
+                QMessageBox::Yes)
+            return;
+        const auto recent = ctx_.settings().value("recent/files");
+        ctx_.settings().clear();
+        ctx_.settings().setValue("recent/files", recent);
+        setQuickAccess({});
+        resetLayout();
+        ctx_.report(tr("Default settings restored (some take effect at the next start)"));
+    });
+
     // Availability of optional features is fixed for the build.
     action("file.repository")->setEnabled(RepositoryDialog::available());
     action("schedule.optimise")->setEnabled(OptimiserDialog::available());
@@ -694,7 +789,8 @@ void MainWindow::createActions() {
     action("tools.python")->setEnabled(PythonConsolePanel::available());
     action("tools.runScript")->setEnabled(PythonConsolePanel::available());
 #ifndef OPENMINE_APP_HAVE_OCCT
-    for (const char* id : {"modify.union", "modify.subtract", "modify.intersect", "modify.meshToSolid", "design.solid"}) {
+    for (const char* id : {"modify.union", "modify.subtract", "modify.intersect", "modify.meshToSolid", "design.solid", "solid.extrude", "solid.revolve",
+                           "solid.sweep", "solid.loft", "solid.heal"}) {
         action(id)->setEnabled(false);
         action(id)->setToolTip(tr("Not available: built without Open CASCADE"));
     }
@@ -728,49 +824,75 @@ void MainWindow::createMenus() {
     add(edit, {"edit.undo", "edit.redo", "-", "edit.delete", "edit.selectAll", "edit.clearSelection", "-", "edit.properties"});
     auto* view = mb->addMenu(tr("&View"));
     add(view, {"view.fit", "view.fitSelection", "-", "view.top", "view.north", "view.east", "view.iso", "view.isoNw", "view.perspective", "-",
-               "view.section", "view.sectionLine", "view.sectionWidth", "view.workplane", "-", "view.layout1", "view.layout2", "view.layout2h", "view.layout4", "-",
-               "view.grid", "view.labels", "view.legend", "view.clouds", "view.envelopes", "view.statusColours", "view.stations", "view.meshEdges",
-               "view.drillholeField", "view.pointBudget", "view.showAll", "-", "view.dark", "view.light", "view.screenshot"});
-    auto* panels = view->addMenu(tr("Panels"));
-    for (const auto& [name, d] : docks_) panels->addAction(d->toggleViewAction());
+               "view.section", "view.sectionLine", "view.sectionWidth", "view.workplane", "-", "view.grid", "view.labels", "view.legend", "view.clouds",
+               "view.envelopes", "view.statusColours", "view.stations", "view.meshEdges", "view.drillholeField", "view.pointBudget", "view.showAll", "-",
+               "view.screenshot"});
     auto* draw = mb->addMenu(tr("&Draw"));
     add(draw, {"draw.select", "-", "draw.point", "draw.line", "draw.polyline", "draw.polygon", "draw.rectangle", "draw.circle", "draw.arc", "draw.spline",
                "draw.text", "draw.dimension", "-", "measure.distance", "measure.area", "-", "draw.snap", "draw.surfaceSnap", "draw.ortho", "draw.gridSnap",
                "draw.gridSpacing"});
     auto* modify = mb->addMenu(tr("&Modify"));
     add(modify, {"modify.move", "modify.copy", "modify.rotate", "modify.mirror", "modify.scale", "-", "modify.offset", "modify.trim", "modify.extend",
-                 "modify.fillet", "modify.split", "modify.join", "modify.explode", "-", "modify.union", "modify.subtract", "modify.intersect",
-                 "modify.meshToSolid", "-", "modify.newLayer"});
+                 "modify.fillet", "modify.chamfer", "modify.split", "modify.join", "modify.explode", "-", "modify.newLayer"});
+    auto* solids = modify->addMenu(toolIcon("solid"), tr("Solids"));
+    add(solids, {"solid.extrude", "solid.revolve", "solid.sweep", "solid.loft", "-", "modify.union", "modify.subtract", "modify.intersect", "-",
+                 "modify.meshToSolid", "solid.check", "solid.heal", "solid.section"});
     auto* survey = mb->addMenu(tr("&Survey"));
     add(survey, {"survey.importCloud", "survey.importControl", "-", "survey.subsample", "survey.outliers", "survey.normals", "survey.ground", "survey.crop",
-                 "survey.planes", "survey.stats", "-", "survey.register", "survey.icp", "-", "survey.delaunay", "survey.poisson", "survey.distance",
-                 "survey.volume", "-", "survey.asbuilt", "survey.conformance", "survey.face", "-", "survey.reportCloud"});
-    auto* design = mb->addMenu(tr("D&esign"));
+                 "survey.cropBox", "survey.segment", "survey.planes", "survey.stats", "-", "survey.register", "survey.icp", "-", "survey.delaunay",
+                 "survey.poisson", "survey.distance", "survey.volume", "-", "survey.asbuilt", "survey.conformance", "survey.face", "-", "survey.reportCloud"});
+    auto* surfaces = survey->addMenu(toolIcon("mesh"), tr("Surfaces"));
+    add(surfaces, {"mesh.decimate", "mesh.smooth", "mesh.repair", "mesh.compare", "solid.section"});
+    auto* design = mb->addMenu(tr("Mine D&esign"));
     add(design, {"design.decline", "design.ramp", "design.alignment", "design.oredrive", "design.access", "design.crosscuts", "-", "design.heading",
                  "design.linkedActivity", "design.level", "-", "design.stope", "design.subdivide", "-", "design.revision", "design.gradient",
                  "design.sectionChainage", "design.solid", "-", "design.impacts", "design.applyQuantities", "design.quantities"});
+    auto* schedule = mb->addMenu(tr("S&cheduler"));
+    add(schedule, {"schedule.show", "-", "schedule.task", "schedule.milestone", "schedule.summary", "schedule.dependency", "schedule.actual", "-",
+                   "schedule.resources", "schedule.calendars", "schedule.cycles", "schedule.targets", "-", "schedule.calculate", "schedule.critical",
+                   "schedule.showAll", "schedule.scenario", "schedule.optimise", "schedule.baseline", "-", "schedule.playback", "schedule.gantt",
+                   "schedule.export"});
     auto* geology = mb->addMenu(tr("&Geology"));
     add(geology, {"geology.drillholes", "geology.composite", "-", "geology.blockModel", "geology.code", "geology.estimate", "geology.display",
-                  "geology.gradeTonnage", "-", "geotech.structures", "geotech.stereonet", "geotech.classify"});
-    auto* schedule = mb->addMenu(tr("S&chedule"));
-    add(schedule, {"schedule.show", "-", "schedule.task", "schedule.milestone", "schedule.summary", "schedule.dependency", "schedule.actual", "-",
-                   "schedule.calculate", "schedule.scenario", "schedule.optimise", "schedule.baseline", "-", "schedule.playback", "schedule.gantt",
-                   "schedule.export"});
+                  "geology.gradeTonnage"});
+    auto* geotech = mb->addMenu(tr("Geo&technical"));
+    add(geotech, {"geotech.structures", "geotech.stereonet", "geotech.classify"});
     auto* tools = mb->addMenu(tr("&Tools"));
     add(tools, {"tools.python", "tools.runScript", "tools.console", "-", "tools.crs", "tools.localGrid", "tools.transform", "-", "tools.jobs", "tools.reports",
                 "-", "tools.plugins"});
     pluginMenu_ = tools->addMenu(toolIcon("plugin"), tr("Plugin commands"));
+    auto* window = mb->addMenu(tr("&Window"));
+    add(window, {"view.layout1", "view.layout2", "view.layout2h", "view.layout4", "window.nextView", "-"});
+    auto* panels = window->addMenu(tr("Panels"));
+    for (const auto& [name, d] : docks_) panels->addAction(d->toggleViewAction());
+    add(window, {"-", "window.reset"});
+    auto* settings = mb->addMenu(tr("Se&ttings"));
+    add(settings, {"settings.preferences", "settings.quickAccess", "-", "view.dark", "view.light", "-", "settings.reset"});
     auto* help = mb->addMenu(tr("&Help"));
     add(help, {"help.commands", "help.about"});
 }
 
 void MainWindow::createRibbon() {
     ribbon_ = new Ribbon(this);
+    quickAccess_ = new QToolBar(tr("Quick access"), this);
+    quickAccess_->setObjectName("quickAccess");
+    quickAccess_->setIconSize(QSize(18, 18));
+    quickAccess_->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    quickAccess_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(quickAccess_, &QToolBar::customContextMenuRequested, this, [this](const QPoint& pos) {
+        QMenu m(this);
+        m.addAction(action("settings.quickAccess"));
+        m.exec(quickAccess_->mapToGlobal(pos));
+    });
     auto* holder = new QWidget(this);
     auto* lay = new QVBoxLayout(holder);
     lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(0);
-    lay->addWidget(menuBar_);
+    auto* top = new QHBoxLayout;
+    top->setContentsMargins(0, 0, 0, 0);
+    top->addWidget(menuBar_, 1);
+    top->addWidget(quickAccess_);
+    lay->addLayout(top);
     lay->addWidget(ribbon_);
     setMenuWidget(holder);
     auto big = [this](RibbonGroup* g, std::initializer_list<const char*> ids) {
@@ -783,71 +905,126 @@ void MainWindow::createRibbon() {
             if (auto* a = action(id)) l << a;
         g->addSmall(l);
     };
+    // 1 Home
     auto* home = ribbon_->addPage(tr("Home"));
     big(home->addGroup(tr("Project")), {"file.new", "file.open", "file.save"});
     small(home->addGroup(tr("Data")), {"file.import", "file.export", "file.check", "file.repository", "tools.crs", "tools.localGrid"});
     big(home->addGroup(tr("Edit")), {"edit.undo", "edit.redo", "edit.delete"});
     big(home->addGroup(tr("View")), {"view.fit", "view.top", "view.iso", "view.section"});
-    small(home->addGroup(tr("Layout")), {"view.layout1", "view.layout2", "view.layout4", "view.perspective", "view.dark", "view.light"});
+    small(home->addGroup(tr("Layout")), {"view.layout1", "view.layout2", "view.layout4", "view.perspective", "settings.preferences", "window.reset"});
     home->finish();
+    // 2 Survey
+    auto* survey = ribbon_->addPage(tr("Survey"));
+    big(survey->addGroup(tr("Data")), {"survey.importCloud", "survey.importControl"});
+    small(survey->addGroup(tr("Process")), {"survey.subsample", "survey.outliers", "survey.normals", "survey.ground", "survey.crop", "survey.cropBox",
+                                            "survey.segment", "survey.planes"});
+    big(survey->addGroup(tr("Register")), {"survey.register", "survey.icp"});
+    small(survey->addGroup(tr("Surfaces")), {"survey.delaunay", "survey.poisson", "mesh.decimate", "mesh.smooth", "mesh.repair", "mesh.compare"});
+    big(survey->addGroup(tr("As-built")), {"survey.asbuilt", "survey.conformance", "survey.face"});
+    survey->finish();
+    // 3 CAD
     auto* cad = ribbon_->addPage(tr("CAD"));
     big(cad->addGroup(tr("Select")), {"draw.select"});
     small(cad->addGroup(tr("Draw")), {"draw.point", "draw.line", "draw.polyline", "draw.polygon", "draw.rectangle", "draw.circle", "draw.arc", "draw.spline", "draw.text",
                                       "draw.dimension"});
     small(cad->addGroup(tr("Modify")), {"modify.move", "modify.copy", "modify.rotate", "modify.mirror", "modify.scale", "modify.offset", "modify.trim", "modify.extend",
-                                        "modify.fillet", "modify.split", "modify.join", "modify.explode"});
-    small(cad->addGroup(tr("Solids")), {"modify.union", "modify.subtract", "modify.intersect", "modify.meshToSolid"});
-    small(cad->addGroup(tr("Measure")), {"measure.distance", "measure.area"});
+                                        "modify.fillet", "modify.chamfer", "modify.split", "modify.join", "modify.explode"});
+    small(cad->addGroup(tr("3D")), {"solid.extrude", "solid.revolve", "solid.sweep", "solid.loft", "modify.union", "modify.subtract", "modify.intersect",
+                                    "modify.meshToSolid", "solid.heal"});
     small(cad->addGroup(tr("Snaps")), {"draw.snap", "draw.surfaceSnap", "draw.ortho", "draw.gridSnap", "draw.gridSpacing", "view.workplane"});
     big(cad->addGroup(tr("Layers")), {"modify.newLayer"});
     cad->finish();
-    auto* survey = ribbon_->addPage(tr("Survey"));
-    big(survey->addGroup(tr("Data")), {"survey.importCloud", "survey.importControl"});
-    small(survey->addGroup(tr("Process")), {"survey.subsample", "survey.outliers", "survey.normals", "survey.ground", "survey.crop", "survey.planes"});
-    big(survey->addGroup(tr("Register")), {"survey.register", "survey.icp"});
-    small(survey->addGroup(tr("Surfaces")), {"survey.delaunay", "survey.poisson", "survey.distance", "survey.volume", "survey.stats"});
-    big(survey->addGroup(tr("As-built")), {"survey.asbuilt", "survey.conformance", "survey.face"});
-    big(survey->addGroup(tr("Report")), {"survey.reportCloud"});
-    survey->finish();
-    auto* design = ribbon_->addPage(tr("Design"));
+    // 4 Mine Design
+    auto* design = ribbon_->addPage(tr("Mine Design"));
     big(design->addGroup(tr("Layout")), {"design.decline", "design.ramp"});
     small(design->addGroup(tr("Drives")), {"design.alignment", "design.oredrive", "design.access", "design.crosscuts", "design.heading", "design.level"});
     small(design->addGroup(tr("Stopes")), {"design.stope", "design.subdivide", "design.solid"});
-    small(design->addGroup(tr("Check")), {"design.gradient", "design.sectionChainage", "design.revision", "design.impacts", "design.applyQuantities",
-                                          "design.quantities"});
+    small(design->addGroup(tr("Revisions")), {"design.revision", "design.gradient", "design.sectionChainage", "design.impacts", "design.applyQuantities"});
     big(design->addGroup(tr("Schedule link")), {"design.linkedActivity"});
     design->finish();
+    // 5 Scheduler
+    auto* schedule = ribbon_->addPage(tr("Scheduler"));
+    big(schedule->addGroup(tr("Scheduler")), {"schedule.show", "schedule.calculate"});
+    small(schedule->addGroup(tr("Activities")), {"schedule.task", "schedule.milestone", "schedule.summary", "schedule.dependency", "schedule.actual"});
+    small(schedule->addGroup(tr("Libraries")), {"schedule.resources", "schedule.calendars", "schedule.cycles", "schedule.targets"});
+    small(schedule->addGroup(tr("Scenarios")), {"schedule.scenario", "schedule.optimise", "schedule.baseline", "schedule.critical", "schedule.showAll"});
+    big(schedule->addGroup(tr("4D")), {"schedule.playback"});
+    schedule->finish();
+    // 6 Geology
     auto* geology = ribbon_->addPage(tr("Geology"));
     big(geology->addGroup(tr("Drillholes")), {"geology.drillholes", "geology.composite"});
     small(geology->addGroup(tr("Block models")), {"geology.blockModel", "geology.code", "geology.estimate", "geology.display", "geology.gradeTonnage"});
-    big(geology->addGroup(tr("Geotechnical")), {"geotech.structures", "geotech.stereonet", "geotech.classify"});
     geology->finish();
-    auto* schedule = ribbon_->addPage(tr("Schedule"));
-    big(schedule->addGroup(tr("Scheduler")), {"schedule.show", "schedule.calculate"});
-    small(schedule->addGroup(tr("Activities")), {"schedule.task", "schedule.milestone", "schedule.summary", "schedule.dependency", "schedule.actual"});
-    small(schedule->addGroup(tr("Scenarios")), {"schedule.scenario", "schedule.optimise", "schedule.baseline"});
-    big(schedule->addGroup(tr("4D")), {"schedule.playback"});
-    small(schedule->addGroup(tr("Output")), {"schedule.gantt", "schedule.export"});
-    schedule->finish();
-    auto* tools = ribbon_->addPage(tr("Tools"));
-    big(tools->addGroup(tr("Scripting")), {"tools.python", "tools.runScript", "tools.console"});
-    big(tools->addGroup(tr("Extend")), {"tools.plugins"});
-    big(tools->addGroup(tr("Monitor")), {"tools.jobs", "tools.reports"});
-    tools->finish();
+    // 7 Geotechnical
+    auto* geotech = ribbon_->addPage(tr("Geotechnical"));
+    big(geotech->addGroup(tr("Structures")), {"geotech.structures", "geotech.stereonet", "survey.planes"});
+    big(geotech->addGroup(tr("Rock mass")), {"geotech.classify"});
+    geotech->finish();
+    // 8 Analysis
+    auto* analysis = ribbon_->addPage(tr("Analysis"));
+    big(analysis->addGroup(tr("Measure")), {"measure.distance", "measure.area"});
+    small(analysis->addGroup(tr("Point clouds")), {"survey.stats", "survey.distance", "survey.volume", "survey.segment"});
+    small(analysis->addGroup(tr("Surfaces and solids")), {"mesh.compare", "solid.check", "solid.section", "design.gradient", "design.sectionChainage"});
+    big(analysis->addGroup(tr("Reconciliation")), {"survey.conformance", "survey.face", "analysis.impacts"});
+    analysis->finish();
+    // 9 Reporting
+    auto* reporting = ribbon_->addPage(tr("Reporting"));
+    big(reporting->addGroup(tr("Survey")), {"survey.reportCloud"});
+    small(reporting->addGroup(tr("Design")), {"report.quantities", "report.quantitiesXlsx"});
+    small(reporting->addGroup(tr("Schedule")), {"schedule.gantt", "report.scheduleXlsx", "schedule.production", "schedule.scenarios", "schedule.export"});
+    small(reporting->addGroup(tr("Resources")), {"geology.gradeTonnage"});
+    big(reporting->addGroup(tr("Library")), {"tools.reports", "view.screenshot"});
+    reporting->finish();
+    // 10 Automation
+    auto* automation = ribbon_->addPage(tr("Automation"));
+    big(automation->addGroup(tr("Scripting")), {"tools.python", "tools.runScript", "tools.console"});
+    big(automation->addGroup(tr("Extend")), {"tools.plugins"});
+    big(automation->addGroup(tr("Monitor")), {"tools.jobs"});
+    small(automation->addGroup(tr("Customise")), {"settings.quickAccess", "settings.preferences", "help.commands"});
+    automation->finish();
     connect(ribbon_, &QTabWidget::currentChanged, this, [this](int i) {
         const QString t = ribbon_->tabText(i);
-        if (t == tr("Schedule")) {
+        if (t == tr("Scheduler")) {
             dock("scheduler")->show();
             dock("scheduler")->raise();
         } else if (t == tr("Survey")) {
             dock("jobs")->show();
-        } else if (t == tr("Geology")) {
-            if (ctx_.hasProject() && !ctx_.project().model().structures.empty()) {
-                dock("stereonet")->show();
-                dock("stereonet")->raise();
-            }
+        } else if (t == tr("Geotechnical")) {
+            dock("stereonet")->show();
+            dock("stereonet")->raise();
+        } else if (t == tr("Reporting")) {
+            dock("reports")->show();
+            dock("reports")->raise();
+        } else if (t == tr("Automation")) {
+            dock("python")->show();
+            dock("python")->raise();
         }
     });
+    QStringList quick = ctx_.settings().value("ui/quickAccess").toStringList();
+    setQuickAccess(quick);
+}
+
+void MainWindow::setQuickAccess(const QStringList& idsIn) {
+    QStringList ids = idsIn;
+    if (ids.isEmpty()) ids = {"file.new", "file.open", "file.save", "edit.undo", "edit.redo", "view.fit"};
+    quickAccess_->clear();
+    for (const auto& id : ids)
+        if (auto* a = action(id)) quickAccess_->addAction(a);
+    ctx_.settings().setValue("ui/quickAccess", idsIn.isEmpty() ? QStringList() : ids);
+}
+
+void MainWindow::rebuildQuickAccess() { setQuickAccess(ctx_.settings().value("ui/quickAccess").toStringList()); }
+
+void MainWindow::resetLayout() {
+    if (defaultState_.isEmpty()) return;
+    restoreState(defaultState_);
+    for (const char* n : {"stereonet", "reports"})
+        if (auto* d = dock(n)) d->hide();
+    dock("properties")->raise();
+    dock("explorer")->raise();
+    resizeDocks({dock("explorer"), dock("properties")}, {290, 380}, Qt::Horizontal);
+    resizeDocks({dock("scheduler")}, {height() / 4}, Qt::Vertical);
+    ctx_.settings().remove("window/state");
 }
 
 void MainWindow::createStatusBar() {
@@ -915,7 +1092,9 @@ void MainWindow::updateTitle() {
 void MainWindow::updateActions() {
     const bool has = ctx_.hasProject();
     for (auto& [id, a] : actions_) {
-        if (id == "file.new" || id == "file.open" || id == "file.exit" || id.startsWith("help.") || id.startsWith("view.") || id == "tools.plugins") continue;
+        if (id == "file.new" || id == "file.open" || id == "file.exit" || id.startsWith("help.") || id.startsWith("view.") || id.startsWith("settings.") ||
+            id.startsWith("window.") || id == "tools.plugins")
+            continue;
         if (a->toolTip().contains(tr("Not available"))) continue;
         a->setEnabled(has);
     }

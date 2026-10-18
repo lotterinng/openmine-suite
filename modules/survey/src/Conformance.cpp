@@ -14,8 +14,8 @@
 
 #include <algorithm>
 #include <cmath>
-#include <numbers>
 #include <cstdio>
+#include <numbers>
 #include <sstream>
 
 namespace openmine::survey {
@@ -124,6 +124,80 @@ StationConformance compareSection(const std::vector<Vec2>& design, const std::ve
     return s;
 }
 
+namespace {
+struct SectionCandidate {
+    std::vector<Vec2> ring;
+    bool closed = true;
+    double bridged = 0; ///< largest gap bridged while assembling (m)
+};
+
+/// Turns the section polylines of a mesh into candidate rings in profile coordinates: closed
+/// loops as they are; open chains (from holes in the as-built surface) joined end to end across
+/// gaps up to `maxGap` and closed when their ends meet within it — otherwise left open (to be
+/// closed by their chord).
+std::vector<SectionCandidate> assembleSection(const std::vector<std::vector<Vec3>>& loops, const geometry::SectionFrame& f, double maxGap) {
+    std::vector<SectionCandidate> out;
+    std::vector<std::vector<Vec2>> open;
+    for (const auto& l : loops) {
+        if (l.size() < 2) continue;
+        std::vector<Vec2> ring;
+        ring.reserve(l.size());
+        for (const auto& p : l) ring.push_back(f.toProfile(p));
+        if (l.size() >= 4 && distance(ring.front(), ring.back()) < 1e-6) {
+            ring.pop_back();
+            ring = geometry::normalizeRing(ring);
+            if (ring.size() >= 3) out.push_back({std::move(ring), true, 0.0});
+        } else {
+            open.push_back(std::move(ring));
+        }
+    }
+    auto chainLength = [](const std::vector<Vec2>& c) {
+        double L = 0;
+        for (std::size_t i = 1; i < c.size(); ++i) L += distance(c[i - 1], c[i]);
+        return L;
+    };
+    while (!open.empty()) {
+        // Start from the longest remaining chain and grow it at both ends.
+        auto longest = std::max_element(open.begin(), open.end(), [&](const auto& a, const auto& b) { return chainLength(a) < chainLength(b); });
+        std::vector<Vec2> cur = std::move(*longest);
+        open.erase(longest);
+        double bridged = 0;
+        while (true) {
+            double bestGap = maxGap;
+            std::size_t bestIdx = open.size();
+            int bestMode = 0; // 0: append, 1: append reversed, 2: prepend, 3: prepend reversed
+            for (std::size_t i = 0; i < open.size(); ++i) {
+                const auto& c = open[i];
+                const double g[4] = {distance(cur.back(), c.front()), distance(cur.back(), c.back()), distance(cur.front(), c.back()),
+                                     distance(cur.front(), c.front())};
+                for (int m = 0; m < 4; ++m)
+                    if (g[m] <= bestGap) {
+                        bestGap = g[m];
+                        bestIdx = i;
+                        bestMode = m;
+                    }
+            }
+            if (bestIdx == open.size()) break;
+            auto c = std::move(open[bestIdx]);
+            open.erase(open.begin() + static_cast<std::ptrdiff_t>(bestIdx));
+            if (bestMode == 1 || bestMode == 3) std::reverse(c.begin(), c.end());
+            if (bestMode <= 1) cur.insert(cur.end(), c.begin(), c.end());
+            else cur.insert(cur.begin(), c.begin(), c.end());
+            bridged = std::max(bridged, bestGap);
+        }
+        SectionCandidate cand;
+        const double endGap = distance(cur.front(), cur.back());
+        cand.closed = endGap <= maxGap;
+        if (cand.closed) bridged = std::max(bridged, endGap);
+        cand.bridged = bridged;
+        if (cur.size() >= 2 && distance(cur.front(), cur.back()) < 1e-9) cur.pop_back();
+        cand.ring = geometry::normalizeRing(cur);
+        if (cand.ring.size() >= 3) out.push_back(std::move(cand));
+    }
+    return out;
+}
+} // namespace
+
 ConformanceReport analyseConformance(const std::vector<Vec3>& cl, const std::vector<Vec2>& design, const MeshData& mesh, const ConformanceOptions& o,
                                      jobs::Progress& progress) {
     if (cl.size() < 2) throw PointCloudError("The centreline needs at least two points");
@@ -136,33 +210,37 @@ ConformanceReport analyseConformance(const std::vector<Vec3>& cl, const std::vec
             const auto f = geometry::sectionFrameAt(cl, chs[k], o.orientation);
             const Vec3 normal = o.orientation == geometry::SectionOrientation::PerpendicularToAxis ? f.tangent : cross(f.right, f.up).normalized();
             const auto loops = geometry::planeSection(mesh, f.origin, normal);
-            std::vector<Vec2> best;
-            bool bestClosed = true, bestContains = false;
+            const auto candidates = assembleSection(loops, f, o.maxGap);
+            const SectionCandidate* best = nullptr;
+            bool bestContains = false;
             double bestArea = 0;
-            for (const auto& l : loops) {
-                if (l.size() < 3) continue;
-                std::vector<Vec2> ring;
-                for (const auto& p : l) ring.push_back(f.toProfile(p));
-                const bool closed = distance(ring.front(), ring.back()) < 1e-6;
-                if (closed) ring.pop_back();
-                ring = geometry::normalizeRing(ring);
-                if (ring.size() < 3) continue;
-                const bool contains = geometry::contains(ring, dc);
-                const double a = geometry::area(ring);
-                if ((contains && !bestContains) || (contains == bestContains && a > bestArea)) {
-                    best = ring;
-                    bestClosed = closed;
+            for (const auto& c : candidates) {
+                const bool contains = geometry::contains(c.ring, dc);
+                const double a = geometry::area(c.ring);
+                if (!best || (contains && !bestContains) || (contains == bestContains && a > bestArea)) {
+                    best = &c;
                     bestContains = contains;
                     bestArea = a;
                 }
             }
             StationConformance s;
-            if (best.empty()) s.issue = "the as-built does not cross this station";
+            if (!best) s.issue = "the as-built does not cross this station";
             else {
-                s = compareSection(design, best, o.clearanceEnvelope);
-                s.closedByChord = !bestClosed;
-                if (!bestClosed) s.issue = "open as-built section closed by its chord";
+                s = compareSection(design, best->ring, o.clearanceEnvelope);
+                s.closedByChord = !best->closed;
+                if (best->bridged > 0) {
+                    char buf[64];
+                    std::snprintf(buf, sizeof buf, "gaps up to %.2f m bridged", best->bridged);
+                    s.issue = buf;
+                }
+                if (!best->closed) s.issue += std::string(s.issue.empty() ? "" : "; ") + "open as-built section closed by its chord";
                 if (!bestContains) s.issue += std::string(s.issue.empty() ? "" : "; ") + "as-built section does not enclose the design centroid";
+                if (!best->closed && !bestContains) {
+                    // A partial section (typically at an unscanned end): its chord closure measures
+                    // nothing real, so the station is not used for volumes or depths.
+                    s.valid = false;
+                    s.issue += " — partial section, station not used";
+                }
             }
             s.chainage = chs[k];
             out[k] = std::move(s);
@@ -370,7 +448,7 @@ Uuid commitConformance(Project& p, const Uuid& abId, const Uuid& devId, const Co
     const auto* dev = p.model().developments.find(devId);
     a.name = "Conformance " + (dev ? dev->name : std::string("development"));
     a.inputsJson = json{{"asBuilt", abId.toString()}, {"development", devId.toString()}}.dump();
-    json params{{"interval", o.interval}, {"orientation", o.orientation == geometry::SectionOrientation::PerpendicularToAxis ? "perpendicular" : "vertical"}};
+    json params{{"interval", o.interval}, {"max_gap", o.maxGap}, {"orientation", o.orientation == geometry::SectionOrientation::PerpendicularToAxis ? "perpendicular" : "vertical"}};
     if (o.fromChainage) params["from"] = *o.fromChainage;
     if (o.toChainage) params["to"] = *o.toChainage;
     if (!o.clearanceEnvelope.empty()) {

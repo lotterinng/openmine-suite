@@ -38,6 +38,7 @@ TEST(Occt, RejectsInvalidInput) {
 
 // ---- Solid kernel ---------------------------------------------------------------------------------
 #include "openmine/cad/Edit.h"
+#include "openmine/geometry/Curves.h"
 #include "openmine/geometry/MeshOps.h"
 #include "openmine/geometry/Profile.h"
 #include "openmine/geometry/Sweep.h"
@@ -325,4 +326,32 @@ TEST(OcctSolid, TransformSolidObjectInPlaceAndAsCopy) {
     line.layerId = layer;
     const Uuid lineId = ProjectEditor(p).addGeometry(line);
     EXPECT_ANY_THROW(occt::transformSolidObject(p, lineId, rot, false));
+}
+
+TEST(OcctSolid, MitredSweepOfASymmetricProfileIsAreaTimesCentrelineLength) {
+    // A plan corner with a profile symmetric about the centreline: the mitre removes on the
+    // inside exactly what it adds on the outside, so V = A × L (also with a grade).
+    const auto rect = geometry::rectangleOutline(5.0, 5.0);
+    for (const double drop : {0.0, 1.5}) {
+        const auto corner = cad::makePolyline({{0, 0, 0}, {30, 0, -drop}, {30, 30, -2 * drop}});
+        const double L = geometry::curveLength(corner);
+        const auto info = occt::analyse(occt::sweepProfile(rect, corner, occt::SweepTransition::RightCorner));
+        EXPECT_TRUE(info.valid);
+        EXPECT_NEAR(info.volume, 25.0 * L, 1e-3 * 25.0 * L) << "drop " << drop;
+        const auto mesh = geometry::sweepProfile(corner.vertices, rect);
+        EXPECT_NEAR(std::abs(geometry::meshSignedVolume(mesh)), 25.0 * L, 1e-3 * 25.0 * L) << "mesh envelope, drop " << drop;
+    }
+    // An arched profile (exact arcs) around three graded corners of a decline: still valid and A × L.
+    TunnelProfile tp;
+    tp.shape = ProfileShape::ShoulderArch;
+    tp.width = 5.5;
+    tp.height = 5.5;
+    tp.shoulderRadius = 1.2;
+    const auto pc = geometry::profileCurve(tp);
+    const auto decline = cad::makePolyline({{0, 0, 0}, {60, 0, -4}, {60, 40, -6.7}, {0, 40, -10.7}, {0, 80, -13.4}});
+    const auto info = occt::analyse(occt::sweepProfile(pc.points, pc.bulges, decline, occt::SweepTransition::RightCorner));
+    EXPECT_TRUE(info.valid);
+    EXPECT_TRUE(info.closed);
+    EXPECT_EQ(info.solids, 1);
+    EXPECT_NEAR(info.volume, geometry::profileArea(tp) * geometry::curveLength(decline), 2e-3 * info.volume);
 }

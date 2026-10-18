@@ -284,27 +284,238 @@ class Scheduler(_Namespace):
         return [d["design"] for d in self._n.documents("ActivityDesignLink") if d["activity"] == aid]
 
 
+class PointCloud(str):
+    """A point-cloud dataset of the project. The object *is* the dataset id (a ``str``), so it can be
+    passed wherever an id is expected; its methods run on the stored dataset.
+
+    Processing never modifies a dataset: every operation creates a **derived** dataset (a new
+    octree recording its parent and the derivation, e.g. ``"statistical outlier removal k=16
+    n=2.0"``) and returns it, so the original scan stays untouched and auditable. Each derivation is
+    one undo step.
+    """
+
+    def __new__(cls, project: "Project", id: str):
+        obj = super().__new__(cls, id)
+        obj._project = project
+        return obj
+
+    def __repr__(self) -> str:
+        return f"PointCloud({self.name!r}, {self.point_count} points, id={str(self)!r})"
+
+    def __reduce__(self):  # pickles as its id (a project handle is not picklable)
+        return (str, (str(self),))
+
+    # ---- description -------------------------------------------------------------------------------
+    @property
+    def id(self) -> str:
+        return str(self)
+
+    @property
+    def project(self) -> "Project":
+        return self._project
+
+    @property
+    def document(self) -> dict:
+        d = self._project.documents.get("PointCloudDataset", str(self))
+        if d is None:
+            raise KeyError(f"The point cloud {str(self)!r} no longer exists")
+        return d
+
+    @property
+    def name(self) -> str:
+        return self.document["columns"]["name"]
+
+    @property
+    def point_count(self) -> int:
+        return int(self.document["columns"]["point_count"])
+
+    @property
+    def derivation(self) -> str:
+        """How the dataset was derived from its parent ("" for an imported scan)."""
+        return self.document["columns"]["derivation"]
+
+    @property
+    def parent(self) -> Optional["PointCloud"]:
+        pid = self.document["columns"]["parent_dataset_uuid"]
+        return PointCloud(self._project, pid) if pid else None
+
+    @property
+    def transform(self) -> np.ndarray:
+        """Registration transform (stored to project coordinates), 4×4 row-major."""
+        return np.array([float(v) for v in self.document["columns"]["transform"].split()]).reshape(4, 4)
+
+    @property
+    def attributes(self) -> dict:
+        """Which per-point attributes the dataset stores (intensity, rgb, normals, …)."""
+        import json
+        return json.loads(self.document["columns"]["attributes"])
+
+    # ---- data ----------------------------------------------------------------------------------------
+    def points(self, box: Optional[Sequence[float]] = None) -> dict:
+        """Points in project coordinates as arrays (``xyz`` and the stored attributes), optionally
+        inside a box ``(xmin, ymin, zmin, xmax, ymax, zmax)``."""
+        return self._project.survey.points(self, box)
+
+    @property
+    def xyz(self) -> np.ndarray:
+        return self.points()["xyz"]
+
+    def statistics(self) -> dict:
+        """Count, bounds, centroid and mean/median nearest-neighbour spacing (project coordinates)."""
+        return _core.cloud_statistics(self.xyz)
+
+    def export(self, file: PathType, progress: Optional[_core.Progress] = None) -> None:
+        """Writes the dataset in project coordinates; the format follows the extension (LAS/LAZ,
+        E57, PLY, XYZ/CSV, and the PDAL formats when built with PDAL)."""
+        self._project.survey.export(self, file, progress)
+
+    # ---- processing (each returns a new derived dataset) -------------------------------------------
+    def _derive(self, operation: str, params: dict, engine: str, name: str, progress) -> "PointCloud":
+        r = self._project._native.derive_point_cloud(str(self), operation, params, engine, name, progress)
+        return PointCloud(self._project, r["id"])
+
+    def remove_outliers(self, method: str = "statistical", k: int = 16, std_ratio: float = 2.0, radius: Optional[float] = None,
+                        min_neighbours: int = 4, engine: str = "openmine", name: str = "",
+                        progress: Optional[_core.Progress] = None) -> "PointCloud":
+        """Removes outliers into a new dataset.
+
+        ``method="statistical"``: a point is kept when the mean distance to its ``k`` nearest
+        neighbours is at most μ + ``std_ratio``·σ of all points' mean distances.
+        ``method="radius"``: a point is kept with at least ``min_neighbours`` others within
+        ``radius``. ``engine`` is ``"openmine"`` or ``"open3d"`` (when built with Open3D)."""
+        if method == "statistical":
+            return self._derive("statistical_outliers", {"k": k, "std_ratio": std_ratio}, engine, name, progress)
+        if method == "radius":
+            if radius is None:
+                raise ValueError("Radius outlier removal needs radius=")
+            return self._derive("radius_outliers", {"radius": radius, "min_neighbours": min_neighbours}, engine, name, progress)
+        raise ValueError("method must be 'statistical' or 'radius'")
+
+    def voxel_downsample(self, voxel: float, mode: str = "nearest", engine: str = "openmine", name: str = "",
+                         progress: Optional[_core.Progress] = None) -> "PointCloud":
+        """One point per voxel: ``mode="nearest"`` keeps the original point nearest the voxel centre
+        (no coordinate is invented); ``"centroid"`` averages the voxel (Open3D supports centroids
+        only)."""
+        if mode not in ("nearest", "centroid"):
+            raise ValueError("mode must be 'nearest' or 'centroid'")
+        return self._derive("voxel" if mode == "nearest" else "voxel_centroid", {"voxel": voxel}, engine, name, progress)
+
+    def subsample(self, spacing: Optional[float] = None, count: Optional[int] = None, seed: int = 1, name: str = "",
+                  progress: Optional[_core.Progress] = None) -> "PointCloud":
+        """Minimum-spacing (``spacing=``) or random (``count=``) subsample."""
+        if (spacing is None) == (count is None):
+            raise ValueError("Give exactly one of spacing= or count=")
+        if spacing is not None:
+            return self._derive("minimum_spacing", {"spacing": spacing}, "openmine", name, progress)
+        return self._derive("random", {"count": count, "seed": seed}, "openmine", name, progress)
+
+    def estimate_normals(self, k: int = 16, radius: float = 0.0, orientation: str = "up", viewpoint: Optional[PointLike] = None,
+                         curvature: bool = True, engine: str = "openmine", name: str = "",
+                         progress: Optional[_core.Progress] = None) -> "PointCloud":
+        """PCA normals (and curvature) into a new dataset. ``orientation`` is ``"up"``,
+        ``"towards_viewpoint"`` or ``"away_from_viewpoint"`` (the viewpoint defaults to the
+        centroid)."""
+        params: Dict[str, Any] = {"k": k, "radius": radius, "orientation": orientation, "curvature": curvature}
+        if viewpoint is not None:
+            params["viewpoint"] = [float(v) for v in viewpoint]
+        return self._derive("normals", params, engine, name, progress)
+
+    def crop(self, box: Sequence[float], inside: bool = True, name: str = "",
+             progress: Optional[_core.Progress] = None) -> "PointCloud":
+        """Keeps the points inside (or, with ``inside=False``, outside) a box
+        ``(xmin, ymin, zmin, xmax, ymax, zmax)`` in project coordinates."""
+        return self._derive("crop_box", {"box": [float(v) for v in box], "inside": inside}, "openmine", name, progress)
+
+    # ---- registration and as-built -------------------------------------------------------------------
+    def register_icp(self, target, apply: bool = False, progress: Optional[_core.Progress] = None, **options) -> dict:
+        """ICP of this dataset onto ``target``; the registration is stored (and applied to this
+        dataset's transform only with ``apply=True``)."""
+        return self._project.survey.register_icp(self, target, apply=apply, progress=progress, **options)
+
+    def build_as_built(self, development, corridor: float = 6.0, voxel: float = 0.05, depth: int = 9, engine: str = "",
+                       name: str = "", layer: str = "As-built", fill_holes_up_to: int = 32,
+                       progress: Optional[_core.Progress] = None) -> dict:
+        """As-built surface of a heading from this (registered) scan — see :meth:`Survey.build_as_built`."""
+        return self._project.survey.build_as_built(self, development, corridor=corridor, voxel=voxel, depth=depth, engine=engine,
+                                                   name=name, layer=layer, fill_holes_up_to=fill_holes_up_to, progress=progress)
+
+
 class Survey(_Namespace):
-    def import_point_cloud(self, file: PathType, name: str = "", source_crs: str = "", progress: Optional[_core.Progress] = None) -> str:
-        return self._n.import_point_cloud(str(file), name, source_crs, progress)
+    def import_pointcloud(self, file: PathType, name: str = "", source_crs: str = "",
+                          progress: Optional[_core.Progress] = None) -> PointCloud:
+        """Imports a scan (LAS/LAZ, E57, PLY, XYZ/CSV/TXT/ASC, and the PDAL formats when built with
+        PDAL) into an octree dataset; ``source_crs`` reprojects it into the project CRS."""
+        return PointCloud(self._p, self._n.import_point_cloud(str(file), name, source_crs, progress))
 
-    def add_point_cloud(self, xyz, name: str) -> str:
-        return self._n.add_point_cloud(_points(xyz), name)
+    import_point_cloud = import_pointcloud
 
-    def points(self, dataset: str, box: Optional[Sequence[float]] = None) -> dict:
-        return self._n.point_cloud_points(dataset, list(box) if box is not None else None)
+    def pointcloud(self, id: str) -> PointCloud:
+        """The dataset with this id."""
+        if self._p.documents.get("PointCloudDataset", str(id)) is None:
+            raise KeyError(f"No point cloud {id!r}")
+        return PointCloud(self._p, str(id))
 
-    def export(self, dataset: str, file: PathType, progress: Optional[_core.Progress] = None) -> None:
-        self._n.export_point_cloud(dataset, str(file), progress)
+    def pointclouds(self) -> List[PointCloud]:
+        return [PointCloud(self._p, d["uuid"]) for d in self._p.documents.list("PointCloudDataset")]
 
-    def register_icp(self, moving: str, target: str, apply: bool = False, progress: Optional[_core.Progress] = None, **options) -> dict:
-        return self._n.icp_registration(moving, target, options, apply, progress)
+    def add_point_cloud(self, xyz, name: str) -> PointCloud:
+        return PointCloud(self._p, self._n.add_point_cloud(_points(xyz), name))
 
-    def add_as_built(self, dataset: str, vertices, triangles, name: str, layer: str = "0", development: str = "") -> str:
-        return self._n.add_as_built(dataset, _points(vertices), np.ascontiguousarray(triangles, dtype=np.uint32), name, layer, _id(development) if development else "")
+    def points(self, dataset, box: Optional[Sequence[float]] = None) -> dict:
+        return self._n.point_cloud_points(str(dataset), list(box) if box is not None else None)
 
-    def conformance(self, as_built: str, development, interval: float = 1.0, commit: bool = False) -> dict:
-        return self._n.conformance(as_built, _id(development), interval, commit)
+    def export(self, dataset, file: PathType, progress: Optional[_core.Progress] = None) -> None:
+        self._n.export_point_cloud(str(dataset), str(file), progress)
+
+    def register_icp(self, moving, target, apply: bool = False, progress: Optional[_core.Progress] = None, **options) -> dict:
+        return self._n.icp_registration(str(moving), str(target), options, apply, progress)
+
+    def add_as_built(self, dataset, vertices, triangles, name: str, layer: str = "0", development: str = "") -> str:
+        return self._n.add_as_built(str(dataset), _points(vertices), np.ascontiguousarray(triangles, dtype=np.uint32), name, layer,
+                                    _id(development) if development else "")
+
+    def build_as_built(self, dataset, development, corridor: float = 6.0, voxel: float = 0.05, depth: int = 9, engine: str = "",
+                       name: str = "", layer: str = "As-built", fill_holes_up_to: int = 32,
+                       progress: Optional[_core.Progress] = None) -> dict:
+        """As-built surface of a development heading from a registered scan.
+
+        The scan points within ``corridor`` metres of the centreline are voxel-thinned, given
+        normals towards the centreline (the surface faces into the excavation) and reconstructed
+        by screened Poisson (``engine="pdal"`` or ``"open3d"``; default: the first available).
+        Triangles farther from the scan than about twice its spacing are trimmed and the mesh is
+        repaired; holes with at most ``fill_holes_up_to`` boundary edges (scan gaps) are filled. The
+        result is stored as an as-built model (one undo step): ``{"id", "vertices", "triangles",
+        "method", "engine"}``."""
+        return self._n.build_as_built(str(dataset), _id(development), corridor, voxel, depth, engine, name, layer, fill_holes_up_to, progress)
+
+    def conformance(self, as_built: str, development, interval: float = 1.0, commit: bool = False, max_gap: float = 0.5) -> dict:
+        return self._n.conformance(str(as_built), _id(development), interval, commit, max_gap)
+
+    def compare_design(self, design, asbuilt, interval: float = 1.0, commit: bool = True, max_gap: float = 0.5,
+                       **as_built_options) -> dict:
+        """Design conformance of a heading: overbreak and underbreak volumes, depths and the
+        clearance, overall and per station every ``interval`` metres.
+
+        ``asbuilt`` is an as-built model id, or a scan (:class:`PointCloud` or dataset id) from
+        which the as-built surface is first built (``as_built_options`` go to
+        :meth:`build_as_built`; its id is returned as ``"as_built"``). With ``commit`` the result is
+        stored (``"result"``) for reports. Holes in the as-built surface up to ``max_gap`` m are
+        bridged when sections are assembled; sections left open that do not enclose the design
+        centroid (partial sections at unscanned ends) are not used."""
+        target = _id(asbuilt)
+        built = None
+        if isinstance(asbuilt, PointCloud) or self._p.documents.get("PointCloudDataset", target) is not None:
+            built = self.build_as_built(target, design, **as_built_options)
+            target = built["id"]
+        elif as_built_options:
+            raise TypeError("as-built options apply only when comparing against a scan")
+        elif self._p.documents.get("AsBuiltModel", target) is None:
+            raise KeyError(f"{target!r} is neither an as-built model nor a point cloud")
+        r = self._n.conformance(target, _id(design), interval, commit, max_gap)
+        r["as_built"] = target
+        if built is not None:
+            r["as_built_method"] = built["method"]
+        return r
 
 
 class Reports(_Namespace):
