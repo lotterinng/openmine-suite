@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <mutex>
 #include <numeric>
 
 namespace openmine::survey {
@@ -208,6 +209,62 @@ IcpResult icp(const PointBuffer& source, const PointBuffer& target, const Transf
     return res;
 }
 
+// ---- Engines ---------------------------------------------------------------------------------------------
+namespace {
+struct EngineEntry {
+    std::string name, description;
+    IcpEngine run;
+};
+std::mutex& engineMutex() {
+    static std::mutex m;
+    return m;
+}
+std::vector<EngineEntry>& engines() {
+    static std::vector<EngineEntry> e = {{"OpenMine", "OpenMine ICP",
+                                          [](const PointBuffer& s, const PointBuffer& t, const Transform3& i, const IcpOptions& o, jobs::Progress& p) {
+                                              return icp(s, t, i, o, p);
+                                          }}};
+    return e;
+}
+} // namespace
+
+void registerIcpEngine(const std::string& name, IcpEngine engine, const std::string& description) {
+    if (name.empty() || !engine) throw PointCloudError("An ICP engine needs a name and an implementation");
+    std::lock_guard lk(engineMutex());
+    for (auto& e : engines())
+        if (e.name == name) {
+            if (name == "OpenMine") throw PointCloudError("The built-in ICP engine cannot be replaced");
+            e = {name, description.empty() ? name : description, std::move(engine)};
+            return;
+        }
+    engines().push_back({name, description.empty() ? name : description, std::move(engine)});
+}
+
+std::vector<std::string> icpEngines() {
+    std::lock_guard lk(engineMutex());
+    std::vector<std::string> v;
+    for (const auto& e : engines()) v.push_back(e.name);
+    return v;
+}
+
+std::string icpEngineDescription(const std::string& name) {
+    std::lock_guard lk(engineMutex());
+    for (const auto& e : engines())
+        if (e.name == name) return e.description;
+    return name;
+}
+
+IcpResult runIcp(const PointBuffer& source, const PointBuffer& target, const Transform3& initial, const IcpOptions& options, jobs::Progress& progress) {
+    IcpEngine run;
+    {
+        std::lock_guard lk(engineMutex());
+        for (const auto& e : engines())
+            if (e.name == (options.engine.empty() ? std::string("OpenMine") : options.engine)) run = e.run;
+    }
+    if (!run) throw PointCloudError("ICP engine '" + options.engine + "' is not available in this build");
+    return run(source, target, initial, options, progress);
+}
+
 // ---- Project integration -------------------------------------------------------------------------------
 namespace {
 void evaluate(Registration& r, const Transform3& full) {
@@ -270,7 +327,7 @@ Registration computeIcpRegistration(const Project& p, const Uuid& movingId, cons
     const auto& d = dataset(p, movingId);
     const auto moving = datasetPoints(p, movingId, false, std::nullopt, progress); // stored coordinates
     const auto target = datasetPoints(p, targetId, true, std::nullopt, progress);
-    const auto res = icp(moving, target, d.transform, o, progress);
+    const auto res = runIcp(moving, target, d.transform, o, progress);
     Registration r;
     r.datasetId = movingId;
     r.targetDatasetId = targetId;
@@ -282,6 +339,7 @@ Registration computeIcpRegistration(const Project& p, const Uuid& movingId, cons
     r.icpIterations = res.iterations;
     r.icpConverged = res.converged;
     r.icpMaxCorrespondence = o.maxCorrespondence;
+    r.notes = "ICP engine: " + icpEngineDescription(o.engine.empty() ? "OpenMine" : o.engine);
     for (auto& c : checks) c.role = PairRole::Check;
     r.pairs = std::move(checks);
     evaluate(r, res.transform);

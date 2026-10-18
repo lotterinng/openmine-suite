@@ -1,9 +1,10 @@
 #pragma once
 // SPDX-License-Identifier: Apache-2.0
-// CAD-style command console with an extensible registry. Commands call the same
-// validated editing operations as the UI — they never print fake results.
+// CAD-style command console with an extensible registry. Commands call the same validated
+// editing operations as the UI — they never print fake results. While a viewport tool runs,
+// typed coordinates and values ("x,y,z", "@dx,dy", "@d<bearing", a number) go to the tool.
 
-#include "../AppContext.h"
+#include "../app/AppContext.h"
 
 #include <QStringList>
 #include <QWidget>
@@ -25,8 +26,8 @@ public:
 
     void registerCommand(const QString& name, const QString& usage, const QString& help, Handler handler,
                          const QStringList& aliases = {});
-    /// Registered for discoverability; reports clearly that it is not yet available.
-    void registerPlanned(const QString& name, const QString& plannedIn);
+    /// Typed input is offered to this tool controller first while a tool is active.
+    void setToolController(class ToolController* tools) { tools_ = tools; }
 
     /// Execute one command line. Returns false if the command failed or is unknown.
     bool execute(const QString& line);
@@ -37,12 +38,13 @@ public:
 
 private:
     struct Entry {
-        QString usage, help, planned;
+        QString usage, help;
         Handler handler;
     };
     void printHelp(const QString& name);
 
     AppContext& ctx_;
+    class ToolController* tools_ = nullptr;
     QPlainTextEdit* out_;
     QLineEdit* in_;
     std::map<QString, Entry> commands_;

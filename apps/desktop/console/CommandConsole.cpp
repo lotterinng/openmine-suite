@@ -2,6 +2,7 @@
 #include "CommandConsole.h"
 
 #include "../theme/Theme.h"
+#include "../viewport/Tools.h"
 
 #include <QKeyEvent>
 #include <QLabel>
@@ -60,7 +61,7 @@ CommandConsole::CommandConsole(AppContext& ctx, QWidget* parent) : QWidget(paren
         historyPos_ = static_cast<int>(history_.size());
         execute(line);
     });
-    connect(&ctx_, &AppContext::message, this, [this](const QString& t, bool err) { print(t, err); });
+    connect(&ctx_, &AppContext::message, this, [this](const QString& t, int level) { print(t, level == static_cast<int>(MessageLevel::Error)); });
 
     registerCommand("HELP", "HELP [command]", "List commands or show help for one command",
                     [this](const QStringList& a) { printHelp(a.isEmpty() ? QString() : a.front().toUpper()); }, {"?"});
@@ -68,12 +69,8 @@ CommandConsole::CommandConsole(AppContext& ctx, QWidget* parent) : QWidget(paren
 
 void CommandConsole::registerCommand(const QString& name, const QString& usage, const QString& help, Handler handler,
                                      const QStringList& aliases) {
-    commands_[name.toUpper()] = {usage, help, {}, std::move(handler)};
+    commands_[name.toUpper()] = {usage, help, std::move(handler)};
     for (const auto& a : aliases) aliases_[a.toUpper()] = name.toUpper();
-}
-
-void CommandConsole::registerPlanned(const QString& name, const QString& plannedIn) {
-    commands_[name.toUpper()] = {name.toUpper(), "Not available in this build", plannedIn, nullptr};
 }
 
 QStringList CommandConsole::commandNames() const {
@@ -94,6 +91,7 @@ void CommandConsole::print(const QString& text, bool error) {
 bool CommandConsole::execute(const QString& line) {
     const auto& c = Theme::colors();
     out_->appendHtml(QStringLiteral("<span style='color:%1'>&gt; %2</span>").arg(c.accent.name(), line.toHtmlEscaped()));
+    if (tools_ && tools_->isActive() && tools_->acceptInput(line)) return true;
     QStringList parts = line.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
     if (parts.isEmpty()) return false;
     QString name = parts.takeFirst().toUpper();
@@ -101,10 +99,6 @@ bool CommandConsole::execute(const QString& line) {
     auto it = commands_.find(name);
     if (it == commands_.end()) {
         print(QStringLiteral("Unknown command '%1'. Type HELP for a list.").arg(name), true);
-        return false;
-    }
-    if (!it->second.handler) {
-        print(QStringLiteral("%1 is not available in this build (planned: %2).").arg(name, it->second.planned), true);
         return false;
     }
     lastFailed_ = false;
@@ -124,14 +118,13 @@ void CommandConsole::printHelp(const QString& name) {
             print("No such command: " + name, true);
             return;
         }
-        print(it->second.usage + " — " + it->second.help + (it->second.planned.isEmpty() ? "" : " (planned: " + it->second.planned + ")"));
+        print(it->second.usage + " — " + it->second.help);
         return;
     }
-    QStringList available, planned;
-    for (const auto& [k, e] : commands_) (e.handler ? available : planned) << k;
-    print("Available: " + available.join(", "));
-    print("Planned (not yet available): " + planned.join(", "));
-    print("Points: x,y,z  |  x,y (z = work plane)  |  @dx,dy,dz (relative to previous point)");
+    QStringList available;
+    for (const auto& [k, e] : commands_) available << k;
+    print("Commands: " + available.join(", "));
+    print("While a drawing tool runs: x,y,z | x,y (z = work plane) | @dx,dy[,dz] relative | @distance<bearing polar | a number (distance, radius, angle, factor)");
 }
 
 } // namespace openmine::app

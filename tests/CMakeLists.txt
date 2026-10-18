@@ -19,9 +19,10 @@ add_executable(openmine_unit_tests
     unit/test_geology.cpp
     unit/test_omf.cpp
     unit/test_geotechnical.cpp
+    unit/test_reporting.cpp
 )
 target_link_libraries(openmine_unit_tests PRIVATE
-    openmine_core openmine_scheduling openmine_mine_design openmine_cad openmine_formats openmine_survey openmine_planning openmine_geology openmine_geotechnical openmine_omf SQLite::SQLite3 GTest::gtest_main)
+    openmine_reporting openmine_core openmine_scheduling openmine_mine_design openmine_cad openmine_formats openmine_survey openmine_planning openmine_geology openmine_geotechnical openmine_omf SQLite::SQLite3 GTest::gtest_main)
 gtest_discover_tests(openmine_unit_tests DISCOVERY_TIMEOUT 60)
 
 if(TARGET openmine_occt)
@@ -68,6 +69,16 @@ if(TARGET openmine_optimisation)
     add_executable(openmine_optimisation_tests unit/test_optimiser.cpp)
     target_link_libraries(openmine_optimisation_tests PRIVATE openmine_optimisation GTest::gtest_main)
     gtest_discover_tests(openmine_optimisation_tests DISCOVERY_TIMEOUT 60)
+endif()
+
+# Open3D engines, cross-validated against the built-in implementations (and PDAL when built).
+if(TARGET openmine_open3d)
+    add_executable(openmine_open3d_tests unit/test_open3d.cpp)
+    target_link_libraries(openmine_open3d_tests PRIVATE openmine_open3d openmine_survey GTest::gtest_main)
+    if(TARGET openmine_pdal)
+        target_link_libraries(openmine_open3d_tests PRIVATE openmine_pdal)
+    endif()
+    gtest_discover_tests(openmine_open3d_tests DISCOVERY_TIMEOUT 120 PROPERTIES ENVIRONMENT "LD_LIBRARY_PATH=/opt/pdal/lib" LABELS open3d)
 endif()
 
 # PostgreSQL/PostGIS repository (needs a database: -DOPENMINE_TEST_PG_DSN="host=… dbname=… user=…").

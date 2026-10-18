@@ -53,6 +53,25 @@ Shape loadSolid(const Project& p, const GeometryObject& g) {
     return fromBrep(p.assets().readBytes(*a));
 }
 
+Uuid transformSolidObject(Project& p, const Uuid& id, const Transform3& t, bool copy, const TessellationSettings& ts) {
+    const auto& g = object(p, id);
+    if (g.type != GeometryType::Solid) throw SolidError("Only solid objects are transformed through the kernel (" + g.name + " is not a solid)");
+    if (std::abs(t.determinant3()) < 1e-12) throw SolidError("The transformation is singular");
+    const Shape moved = transformed(loadSolid(p, g), t);
+    if (copy) return addSolidObject(p, moved, g.name.empty() ? std::string("Solid copy") : g.name + " (copy)", g.layerId, ts, "Copy solid");
+    auto mesh = std::make_shared<MeshData>(tessellate(moved, ts.linearDeflection, ts.angularDeflection));
+    Asset asset = p.assets().writeBytes(toBrep(moved), AssetKind::Brep, "brep");
+    ProjectEditor ed(p);
+    CommandStack::MacroScope macro(p.commands(), "Transform solid");
+    ed.add(asset);
+    GeometryObject u = g;
+    u.brepAsset.id = asset.id;
+    u.mesh = std::move(mesh);
+    ed.update(std::move(u));
+    macro.commit();
+    return id;
+}
+
 Shape shapeOfObject(const Project& p, const GeometryObject& g) {
     switch (g.type) {
     case GeometryType::Solid: return loadSolid(p, g);

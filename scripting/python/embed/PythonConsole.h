@@ -11,6 +11,7 @@
 #include "openmine/project/Project.h"
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -42,6 +43,15 @@ public:
     Result runFile(const std::filesystem::path& file);
     /// Completion candidates for the text before the cursor.
     std::vector<std::string> complete(const std::string& text);
+    /// Receives output while code runs (stream 0 = stdout, 1 = stderr), in addition to the text
+    /// returned in Result — so long scripts show progress.
+    void setOutputSink(std::function<void(int stream, const std::string& text)> sink);
+    /// Called roughly every `intervalMs` while code runs, on the calling (UI) thread from inside
+    /// the interpreter — e.g. to process window events so an Interrupt button stays responsive.
+    /// The pump must not call back into this console.
+    void setPump(std::function<void()> pump, int intervalMs = 100);
+    /// True while push()/run() is executing.
+    static bool isRunning();
     /// Raises KeyboardInterrupt in the running code (callable from another thread).
     static void interrupt();
     /// Python version string of the embedded interpreter.

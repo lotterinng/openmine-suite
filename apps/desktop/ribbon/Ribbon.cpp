@@ -6,6 +6,7 @@
 #include <QAction>
 #include <QFrame>
 #include <QLabel>
+#include <QScrollArea>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -46,16 +47,24 @@ void RibbonGroup::addAction(QAction* action) {
     buttons_->addWidget(b);
 }
 
-void RibbonGroup::addPlanned(const QString& text, const QString& plannedIn) {
-    auto* b = makeButton(this);
-    b->setText(text);
-    b->setIcon(toolIcon(text));
-    b->setEnabled(false);
-    b->setToolTip(QStringLiteral("<b>%1</b><br>Not available in this build.<br>Planned: %2").arg(text, plannedIn));
-    // Disabled widgets do not show tooltips by default; keep the explanation reachable.
-    b->setAttribute(Qt::WA_AlwaysShowToolTips);
-    b->setProperty("planned", true);
-    buttons_->addWidget(b);
+void RibbonGroup::addSmall(const QList<QAction*>& actions) {
+    QVBoxLayout* col = nullptr;
+    for (int i = 0; i < actions.size(); ++i) {
+        if (i % 3 == 0) {
+            col = new QVBoxLayout;
+            col->setSpacing(0);
+            buttons_->addLayout(col);
+        }
+        auto* b = new QToolButton(this);
+        b->setDefaultAction(actions[i]);
+        b->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+        b->setIconSize(QSize(16, 16));
+        b->setAutoRaise(true);
+        b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        col->addWidget(b);
+    }
+    if (col)
+        while (col->count() < 3) col->addStretch(1);
 }
 
 RibbonPage::RibbonPage(QWidget* parent) : QWidget(parent) {
@@ -79,15 +88,23 @@ Ribbon::Ribbon(QWidget* parent) : QTabWidget(parent) {
 }
 
 RibbonPage* Ribbon::addPage(const QString& workspace) {
-    auto* p = new RibbonPage(this);
+    // Pages scroll horizontally when the window is narrower than their tools.
+    auto* scroll = new QScrollArea(this);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidgetResizable(true);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto* p = new RibbonPage(scroll);
     p->setObjectName(workspace);
-    addTab(p, workspace);
+    scroll->setWidget(p);
+    addTab(scroll, workspace);
     return p;
 }
 
 RibbonPage* Ribbon::page(const QString& workspace) const {
     for (int i = 0; i < count(); ++i)
-        if (tabText(i) == workspace) return qobject_cast<RibbonPage*>(widget(i));
+        if (tabText(i) == workspace)
+            if (auto* s = qobject_cast<QScrollArea*>(widget(i))) return qobject_cast<RibbonPage*>(s->widget());
     return nullptr;
 }
 

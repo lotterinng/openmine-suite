@@ -610,12 +610,19 @@ Uuid storeReport(Project& p, const ReportDocument& d, const std::string& kind, c
     if (format == "html") bytes = renderHtml(d);
     else if (format == "pdf") bytes = renderPdf(d);
     else throw ValidationError("Report format must be html or pdf");
+    return storeReportBytes(p, bytes, d.title, kind, format);
+}
+
+Uuid storeReportBytes(Project& p, const std::string& bytes, const std::string& name, const std::string& kind, const std::string& format) {
+    if (format != "pdf" && format != "html" && format != "xlsx" && format != "csv")
+        throw ValidationError("Unsupported report format '" + format + "' (pdf, html, xlsx or csv)");
+    if (bytes.empty()) throw ValidationError("The report file is empty");
     Asset a = p.assets().writeBytes(bytes, AssetKind::Report, format);
     ProjectEditor ed(p);
-    CommandStack::MacroScope macro(p.commands(), "Store report: " + d.title);
+    CommandStack::MacroScope macro(p.commands(), "Store report: " + name);
     ed.add(a);
     Report r;
-    r.name = d.title;
+    r.name = name;
     r.kind = kind;
     r.format = format;
     r.asset.id = a.id;

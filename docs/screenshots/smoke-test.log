@@ -1,73 +1,309 @@
-      > NEW Jupiter Smoke Mine 2026-11-02  →  New project 'Jupiter Smoke Mine' created (schedule start 2026-11-02).
-PASS  project created
-PASS  schedule start parsed
-PASS  CRS name edited through Properties
-PASS  CRS code edited through Properties
-      > POLYLINE -25000,2900000,1200 @-90,0,-11.25 @0,-60,-7.5  →  Polyline 4798ad8d-7e5d-4f6b-a339-4352b0fb903c created: 3 vertices, 3D length 151.167 m
-PASS  POLYLINE command
-PASS  console polyline exists
-PASS  geometry has persistent UUID 4798ad8d-7e5d-4f6b-a339-4352b0fb903c
-PASS  centreline length = 151.167
-      > LAYER Sketch #9AD06B  →  Current layer: Sketch
-PASS  polyline drawn interactively in the viewport
-PASS  drawn polyline has 3 picked vertices
-PASS  viewport pick at (529,128) selected the centreline
-PASS  rename via Properties
-PASS  name stored in model
-PASS  invalid coordinate rejected
-PASS  rejected edit left model unchanged
-PASS  layer changed via Properties
-      > HEADING LEG2_675_D3_DEC 5.5 5.5 675  →  Heading LEG2_675_D3_DEC created: 151.167 m, 5.5 × 5.5 m
-PASS  HEADING command
-PASS  development heading exists
-      > ACTIVITY 5  →  Linked activity created: 30.2 working days at 5.00 m/day, 2026-11-02 → 2026-12-14
-PASS  ACTIVITY command
-PASS  linked activity exists
-PASS  activity ↔ heading link stored
-PASS  CPM duration = length / rate = 30.233 d
-PASS  activity row present in Gantt grid
-PASS  Gantt row shows start 2026-11-02 finish 2026-12-14
-PASS  screenshot 01_vertical_slice_gantt.png
-PASS  screenshot 02_heading_properties_3d.png
-      > BASELINE Approved Nov-2026  →  Baseline 'Approved Nov-2026' captured
-PASS  baseline captured
-      > ACTUAL 40  →  Actual recorded: 26.5% complete, 111.17 m remaining
-PASS  actual advance recorded
-      > STATUSDATE 2026-11-16  →  Status date 2026-11-16 — remaining work reforecast
-PASS  status date set
-PASS  centreline vertex edited (design change)
-PASS  linked activity flagged: Design length of LEG2_675_D3_DEC changed from 151.167 m to 161.101 m; schedule quantity (151.167 m) not yet updated
-PASS  activity quantity NOT silently changed
-PASS  screenshot 03_design_change_flagged.png
-      > APPLYDESIGN  →  Activity quantity recalculated from current design (audited; baselines unchanged).
-PASS  controlled recalculation applied
-PASS  quantity updated to 161.101
-PASS  approved baseline preserved
-      > SAVE /home/claude/openmine-suite/build/linux-debug/smoke/JupiterSmoke.openmine  →  Saved JupiterSmoke.openmine
-PASS  SAVE command
-PASS  project clean after save
-      > CLOSE  →  Saved JupiterSmoke.openmine
-PASS  CLOSE command
-PASS  project closed
-      > OPEN /home/claude/openmine-suite/build/linux-debug/smoke/JupiterSmoke.openmine  →  Opened JupiterSmoke.openmine
-PASS  OPEN command
-PASS  project reopened
-PASS  geometry UUID persisted
-PASS  vertex coordinates bit-identical after reopen
-PASS  edited name persisted
-PASS  heading → geometry link persisted
-PASS  activity persisted
-PASS  activity → heading link persisted
-PASS  baseline persisted
-PASS  CRS persisted
-PASS  audit log persisted (19 entries)
-PASS  Gantt shows the reopened activity
-      > EXPORTCSV /home/claude/openmine-suite/build/linux-debug/smoke/schedule.csv  →  Schedule exported to /home/claude/openmine-suite/build/linux-debug/smoke/schedule.csv
-PASS  schedule CSV exported
-PASS  screenshot 04_reopened.png
-      > THEME LIGHT  →  Light theme
-PASS  screenshot 05_light_theme.png
-      > THEME DARK  →  Dark theme
-PASS  planned command reports unavailable instead of pretending
+OpenMine Suite GUI smoke test — 2026-10-18T15:12:10
+Qt 6.4.2, output in /home/claude/openmine-suite/build/core/gui-smoke
 
-SMOKE TEST PASSED
+== Project
+         New project 'Smoke Test Mine' created (schedule start 2026-01-05).
+      > NEW Smoke Test Mine 2026-01-05  →  New project 'Smoke Test Mine' created (schedule start 2026-01-05).
+PASS  NEW creates a project
+PASS  project name
+PASS  schedule start date
+         Project CRS: WGS 84 / UTM zone 35S
+      > CRS EPSG:32735  →  Project CRS: WGS 84 / UTM zone 35S
+PASS  CRS declares and sets the project CRS (no transformation)
+PASS  project CRS is EPSG:32735
+         Current layer: Centrelines
+      > LAYER Centrelines #3CB4FF  →  Current layer: Centrelines
+PASS  LAYER creates the current layer
+PASS  current layer is Centrelines
+PASS  action registry (152 actions)
+PASS  disabled actions say why (0 without a reason)
+
+== CAD
+         Polyline created: length 100.125 m
+      > POLYLINE 50000.000,20000.000,1000.000 50100.000,20000.000,995.000  →  Polyline created: length 100.125 m
+PASS  POLYLINE by typed coordinates
+PASS  centreline length is exact
+PASS  polyline drawn with viewport clicks
+PASS  picked vertices land on the work plane (max error 0.096 m at this zoom)
+      > 50000.000,20040.000,1000.000  →  Polyline created: length 100.125 m
+      > @20,0,0  →  Polyline created: length 100.125 m
+PASS  line from typed tool input (x,y,z then @dx,dy,dz)
+         Move: 1 object(s)
+      > MOVE 0,5,0  →  Move: 1 object(s)
+PASS  MOVE the selected line
+PASS  line moved by 5 m north
+         Undone: Move
+      > UNDO  →  Undone: Move
+PASS  UNDO
+PASS  undo restores the line
+         Redone: Move
+      > REDO  →  Redone: Move
+PASS  redo moves it again
+         Undone: Move
+      > UNDO  →  Undone: Move
+PASS  undo the move
+         Copy: 1 object(s)
+      > COPY 0,-60,0  →  Copy: 1 object(s)
+PASS  COPY adds a new object
+         Rotate: 1 object(s)
+      > ROTATE 90  →  Rotate: 1 object(s)
+         Scale: 1 object(s)
+      > SCALE 2  →  Scale: 1 object(s)
+PASS  ROTATE and SCALE
+         Line created: length 10.000 m
+      > LINE 50120.000,20000.000,1000.000 50130.000,20000.000,1000.000  →  Line created: length 10.000 m
+         Line created: length 10.000 m
+      > LINE 50130.000,20000.000,1000.000 50130.000,20010.000,1000.000  →  Line created: length 10.000 m
+         2 objects joined into 1
+      > JOIN  →  2 objects joined into 1
+PASS  JOIN two lines into one polyline
+         Rectangle created: length 36.000 m
+      > RECTANGLE 50140.000,20000.000,1000.000 50150.000,20008.000,1000.000  →  Rectangle created: length 36.000 m
+PASS  RECTANGLE
+         1 object(s) exploded into 4
+      > EXPLODE  →  1 object(s) exploded into 4
+PASS  EXPLODE a rectangle into four lines
+         Circle created: length 25.133 m
+      > CIRCLE 50160.000,20000.000,1000.000 4  →  Circle created: length 25.133 m
+PASS  CIRCLE
+         Arc created: length 15.708 m
+      > ARC 50170.000,20000.000,1000.000 50175.000,20005.000,1000.000 50180.000,20000.000,1000.000  →  Arc created: length 15.708 m
+PASS  ARC through three points
+         Text created
+      > TEXT 50000.000,19990.000,1000.000 2 Smoke test  →  Text created
+PASS  TEXT
+         Distance: slope 30.000 m · plan 30.000 m · ΔZ 0.000 m · bearing 45.0000° · grade 0.00 %
+      > DISTANCE 50000.000,20000.000,1000.000 @30<45  →  Distance: slope 30.000 m · plan 30.000 m · ΔZ 0.000 m · bearing 45.0000° · grade 0.00 %
+PASS  DISTANCE with polar input
+
+== Mine design
+         Heading DEV_675_A: 100.12 m, 2503.1 m³
+      > HEADING DEV_675_A 5 5  →  Heading DEV_675_A: 100.12 m, 2503.1 m³
+PASS  HEADING makes the centreline a 5 × 5 m heading
+PASS  development created
+PASS  design volume 2503.1 m³ = section × length
+         1 activity created at 4.00 m/day
+      > ACTIVITY 4  →  1 activity created at 4.00 m/day
+PASS  ACTIVITY creates a linked activity at 4 m/day
+PASS  activity quantity is the design length
+PASS  properties panel sets the design width
+PASS  design width is 5.5 m
+         Undone: Edit design width
+      > UNDO  →  Undone: Edit design width
+PASS  design revision captured
+         Scale: 1 object(s) — 1 schedule activities flagged for review
+      > SCALE 1.1 50000.000,20000.000,1000.000  →  Scale: 1 object(s) — 1 schedule activities flagged for review
+PASS  lengthen the centreline by 10 %
+PASS  linked activity flagged by the design change (quantity unchanged)
+PASS  activity quantity not silently altered
+      !  DEV_675_A: approved 100.12 m → current 110.14 m; 1 linked activity flagged
+      > IMPACTS  →  DEV_675_A: approved 100.12 m → current 110.14 m; 1 linked activity flagged
+         Quantities of 1 activity set from the current design
+      > APPLYDESIGN  →  Quantities of 1 activity set from the current design
+PASS  APPLYDESIGN updates the quantity and clears the flag
+PASS  decline layout generated
+         1 heading(s) created
+PASS  decline headings created (1)
+         5 crosscuts created
+PASS  crosscuts created (5)
+         0 developments assigned to levels
+PASS  level created
+         Rectangle created: length 90.000 m
+      > RECTANGLE 50030.000,20010.000,1000.000 50060.000,20025.000,1000.000  →  Rectangle created: length 90.000 m
+PASS  stope created from a closed outline
+         1 mining blocks created
+PASS  stope subdivided into 1 mining blocks
+         1 excavation solid(s), 2753.4 m³ in total
+PASS  exact excavation solid (Open CASCADE sweep)
+      scene extents 217.8 × 92.8 × 75.5 m
+PASS  every object lies within the mine area (no stray coordinates)
+      > SECTION DEV_675_A 50  →  1 excavation solid(s), 2753.4 m³ in total
+PASS  SECTION at chainage 50 opens a section view
+PASS  a view shows the section
+PASS  view image design_section.png (460 × 506) shows the scene (3.4 % drawn)
+      > LAYOUT 1  →  1 excavation solid(s), 2753.4 m³ in total
+PASS  back to one view
+
+== Survey
+         Imported 3 control points
+PASS  control points imported
+PASS  three control points
+PASS  point-cloud import started
+         Imported 'heading_scan': 33,684 points (XYZ)
+PASS  import job finished
+PASS  point-cloud dataset committed
+PASS  33684 points indexed (33684 generated)
+PASS  imported dataset keeps its stored coordinates (identity transform)
+PASS  LOD shows 3269 points
+PASS  view image survey_cloud.png (924 × 506) shows the scene (4.0 % drawn)
+         33,684 points; centroid 50050.000, 20000.006, 1000.000; mean spacing 0.2114 m, median 0.2282 m; extent 100.07 × 5.49 × 10.05 m
+PASS  statistics stored as a reproducible analysis result
+         Subsample point cloud: 33,244 points in 'heading_scan (subsampled)' — 33,244 of 33,684 points kept
+PASS  subsampled derived dataset (original untouched)
+         Estimate normals: 33,684 points in 'heading_scan (normals)'
+PASS  normals as a derived dataset
+         Surface 'heading_scan (subsampled) surface': 61,810 triangles (Delaunay 2.5D)
+PASS  Delaunay 2.5D surface
+         Report 'Point cloud — heading_scan' stored in the project
+PASS  point-cloud PDF report stored in the project
+PASS  registration computed from four pairs
+PASS  registration RMS 9.85e-14 m
+         Registration applied: the dataset transform changed; stored coordinates are unchanged
+PASS  registration applied
+PASS  dataset transform carries the registration
+         Report 'Registration — heading_scan' stored in the project
+         Registration reverted
+PASS  registration reverted (transform restored)
+PASS  the registration record is kept for the audit trail
+         ICP registration stored: Fitness 1.000, inlier RMS 0.0000 m, 1 iterations, converged
+PASS  ICP registration computed and stored (OpenMine engine)
+PASS  ICP engine: OpenMine ICP — fitness 1.000, inlier RMS 0 m
+         ICP registration stored: Fitness 1.000, inlier RMS 0.0000 m, 1 iterations, converged
+PASS  ICP registration computed and stored (Open3D engine)
+PASS  ICP engine: Open3D 0.18.0 — fitness 1.000, inlier RMS 0 m
+PASS  the Open3D ICP engine is offered
+PASS  the Open3D normals engine is offered
+         Estimate normals: 33,684 points in 'heading_scan (normals)'
+PASS  normals by Open3D stored as a derived dataset recording the engine
+         As-built 'DEV_675_A as-built': 95,339 triangles
+PASS  as-built mesh from the scan (Poisson)
+         Conformance: overbreak 57.6 m³ (2.3 %), underbreak 17.21 m³, 101 valid stations
+PASS  design conformance analysed
+PASS  the north-wall bulge is measured as overbreak (57.64 m³)
+         Exported 112 stations to stations.csv
+PASS  station table exported
+
+== Geology and geotechnical
+PASS  drillhole tables validate without errors
+         Drillholes: 9 created, 0 updated, 0 skipped (already present), 0 validation errors reported
+PASS  drillholes imported
+PASS  nine drillholes
+         675 composites of 2 m
+PASS  block model created
+PASS  experimental variogram computed and fitted
+         Estimated 20160 blocks (0 not estimated, 0 masked)
+PASS  grades estimated into 20160 of 20160 blocks (est)
+         Report 'Grade–tonnage: Block model 1' stored in the project
+PASS  grade–tonnage report
+         Imported 60 measurements (0 rows rejected: missing or invalid dip / dip direction)
+PASS  structural measurements imported
+PASS  60 measurements
+PASS  joint sets identified on the stereonet and written back
+PASS  rock-mass classification recorded (Q and RMR)
+
+== Scheduling
+         Schedule: 1 activities, finish 2026-02-11 12:49, 1 critical (0.2 ms)
+      > SCHEDULE  →  Schedule: 1 activities, finish 2026-02-11 12:49, 1 critical (0.2 ms)
+PASS  schedule calculates
+PASS  the linked activity is scheduled
+      > BASELINE Approved plan  →  Schedule: 1 activities, finish 2026-02-11 12:49, 1 critical (0.2 ms)
+PASS  baseline captured
+PASS  one immutable baseline
+         Actual 12 m recorded on 'Develop DEV_675_A' for 2026-01-08
+      > ACTUAL 12 2026-01-08 12  →  Actual 12 m recorded on 'Develop DEV_675_A' for 2026-01-08
+PASS  actual progress recorded
+PASS  dated actual stored
+         Status date 2026-01-09 00:00 — remaining work is reforecast from it
+      > STATUSDATE 2026-01-09  →  Status date 2026-01-09 00:00 — remaining work is reforecast from it
+PASS  status date set for reforecasting
+PASS  milestone added in the scheduler
+PASS  scenario with a rate override
+         Active scenario: Faster development
+      > SCENARIO Faster development  →  Active scenario: Faster development
+PASS  scenario active
+         Active scenario: base schedule
+      > SCENARIO BASE  →  Active scenario: base schedule
+PASS  the faster scenario finishes the heading earlier
+PASS  screenshot schedule_gantt.png
+         Report 'Gantt chart' stored in the project
+PASS  Gantt PDF stored
+         Schedule exported to /home/claude/openmine-suite/build/core/gui-smoke/out/schedule.xlsx
+PASS  schedule exported to XLSX
+         Schedule exported to /home/claude/openmine-suite/build/core/gui-smoke/out/schedule.csv
+PASS  schedule exported to CSV
+PASS  4D plan snapshot at the playback time
+PASS  view image schedule_4d.png (924 × 506) shows the scene (13.4 % drawn)
+
+== Data exchange
+         Exported 157171 DXF entities (all geometry) to all.dxf
+      !  Polyline 'DEC1_ centreline' has arcs and varying elevation: arcs were tessellated (3D polylines have no bulges)
+      !  Solid 'DEV_675_A excavation' was exported as its tessellation (polyface mesh); DXF has no open B-rep format
+      !  Mesh 'heading_scan (subsampled) surface' exceeds the polyface limit (32767 vertices/faces) and was written as 61810 3DFACE entities
+      !  Mesh 'DEV_675_A as-built' exceeds the polyface limit (32767 vertices/faces) and was written as 95339 3DFACE entities
+PASS  DXF export
+PASS  DXF reads back (24 objects)
+PASS  OMF export started
+         Exported OMF all.omf
+      !  'Text 12': Text objects have no OMF equivalent; skipped
+PASS  OMF reads back (26 elements)
+         Exported 1 surface(s), 95339 triangles to surface.obj
+PASS  OBJ export of a surface
+         surface.obj: 95339 triangles, area 2014.7 m²
+PASS  OBJ re-import
+PASS  OBJ round trip keeps every triangle
+         Exported 1 solid(s) to solid.step
+PASS  STEP export
+         solid.step: 1 solid(s)
+PASS  STEP re-import
+         Exported the point cloud (project coordinates) to cloud.xyz
+PASS  point-cloud export started
+PASS  point cloud written in project coordinates
+
+== Views and panels
+      > LAYOUT 4  →  Exported the point cloud (project coordinates) to cloud.xyz
+PASS  four views
+PASS  screenshot views_quad.png
+      > LAYOUT 1  →  Exported the point cloud (project coordinates) to cloud.xyz
+PASS  one view
+      > VIEW TOP  →  Exported the point cloud (project coordinates) to cloud.xyz
+PASS  plan view
+      > ZOOM EXTENTS  →  Exported the point cloud (project coordinates) to cloud.xyz
+PASS  zoom extents
+PASS  view image view_plan.png (924 × 506) shows the scene (10.0 % drawn)
+PASS  screenshot main_window_dark.png
+      > THEME LIGHT  →  Exported the point cloud (project coordinates) to cloud.xyz
+PASS  light theme
+PASS  screenshot main_window_light.png
+      > THEME DARK  →  Exported the point cloud (project coordinates) to cloud.xyz
+         Smoke test: reports panel
+PASS  screenshot reports_panel.png
+
+== Scripting and plugins
+      > PYTHON project.cad.add_layer('From Python', 0xFF8800)  →  Smoke test: reports panel
+PASS  Python statement runs against the open project
+PASS  the Python edit reached the model
+         Undone: Create layer 'From Python'
+      > UNDO  →  Undone: Create layer 'From Python'
+PASS  Python edits are undoable
+         Plugin commands: bad.invalid, bad.late, bad.open-edit, bad.throws, stations.summary, stations.traverse
+      > PLUGIN  →  Plugin commands: bad.invalid, bad.late, bad.open-edit, bad.throws, stations.summary, stations.traverse
+PASS  plugin command listing
+      > HELP  →  While a drawing tool runs: x,y,z | x,y (z = work plane) | @dx,dy[,dz] relative | @distance<bearing polar | a number (distance, radius, angle, factor)
+PASS  72 console commands
+
+== Persistence
+         Saved smoke.openmine
+         Saved /home/claude/openmine-suite/build/core/gui-smoke/out/smoke.openmine
+      > SAVE /home/claude/openmine-suite/build/core/gui-smoke/out/smoke.openmine  →  Saved /home/claude/openmine-suite/build/core/gui-smoke/out/smoke.openmine
+PASS  project saved
+PASS  no unsaved changes after saving
+         File: OK (schema v2)
+         File: OK (schema v2)
+         Model: 0 referential problem(s)
+         Assets: 12 checked, 0 with problems
+      > CHECK  →  Assets: 12 checked, 0 with problems
+PASS  integrity check
+      > CLOSE  →  Assets: 12 checked, 0 with problems
+PASS  project closed
+         Opened smoke.openmine (schema v2)
+      > OPEN /home/claude/openmine-suite/build/core/gui-smoke/out/smoke.openmine  →  Opened smoke.openmine (schema v2)
+PASS  project reopened
+PASS  every entity type round-trips through the project file
+PASS  survey dataset unchanged after reopening
+PASS  baseline preserved
+         Schedule: 2 activities, finish 2026-02-12 12:49, 1 critical (0.2 ms)
+      > SCHEDULE  →  Schedule: 2 activities, finish 2026-02-12 12:49, 1 critical (0.2 ms)
+PASS  schedule recalculates after reopening
+PASS  screenshot reopened.png
+
+148 passed, 0 failed, 0 skipped

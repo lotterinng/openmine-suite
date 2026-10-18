@@ -187,6 +187,31 @@ def test_survey_algorithms_and_point_clouds():
     assert p.reports.content(stored[0]["id"]).startswith(b"%PDF-1.7")
 
 
+def test_icp_engines_agree():
+    from openmine import FEATURES
+    engines = survey.icp_engines()
+    assert engines[0] == "OpenMine"
+    assert ("Open3D" in engines) == FEATURES["open3d"]
+    rng = np.random.default_rng(3)
+    xy = rng.uniform(0, 30, size=(12000, 2))
+    z = 2 * np.sin(xy[:, 0] / 3) * np.cos(xy[:, 1] / 4) + 0.3 * np.sin(xy[:, 1])
+    floor = np.column_stack([xy, z])
+    wall = np.column_stack([rng.uniform(0, 30, 4000), np.zeros(4000), rng.uniform(0, 6, 4000)])
+    target = np.vstack([floor, wall]) + [51234.5, 7012345.0, 1180.0]  # mine coordinates
+    shift = np.array([0.2, -0.1, 0.05])
+    p = Project.new("ICP", start="2026-11-02")
+    t = p.survey.add_point_cloud(target, "target")
+    m = p.survey.add_point_cloud(target + shift, "moving")
+    for engine in engines:
+        r = p.survey.register_icp(m, t, max_correspondence=1.0, engine=engine)
+        assert r["converged"], engine
+        tr = np.array([float(v) for v in r["transform"].split()]).reshape(4, 4)
+        assert np.allclose(tr[:3, 3], -shift, atol=2e-3), (engine, tr[:3, 3])
+        assert engine in r["notes"]
+    with pytest.raises(Exception):
+        p.survey.register_icp(m, t, engine="NoSuchEngine")
+
+
 def test_omf_round_trip(tmp_path):
     p, design, act = spec_project()
     f = tmp_path / "x.omf"

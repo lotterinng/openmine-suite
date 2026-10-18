@@ -76,6 +76,9 @@ std::vector<std::pair<std::string, std::string>> standardMeta(const Project& pro
 
 /// Stores the rendered report ("html" or "pdf") as an asset and a Report entity (one undo step).
 Uuid storeReport(Project& project, const ReportDocument& doc, const std::string& kind, const std::string& format);
+/// Stores an already produced report file (e.g. a Gantt PDF or a schedule workbook) as an asset and
+/// a Report entity (one undo step). `format` is the file extension: pdf, html, xlsx or csv.
+Uuid storeReportBytes(Project& project, const std::string& bytes, const std::string& name, const std::string& kind, const std::string& format);
 
 /// Number formatting used in reports (fixed decimals, thousands separators optional).
 std::string fmtNumber(double v, int decimals, bool thousands = false);

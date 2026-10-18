@@ -270,3 +270,59 @@ TEST(OcctSolid, ProjectSolidObjectsPersistAndUndo) {
     EXPECT_EQ(imported.size(), 2u);
     std::filesystem::remove_all(dir);
 }
+
+TEST(OcctSolid, TransformSolidObjectInPlaceAndAsCopy) {
+    auto pp = Project::createNew("Transform", Date::fromYmd(2026, 11, 2));
+    Project& p = *pp;
+    const Uuid layer = ProjectEditor(p).addLayer("Solids", 0x808080);
+    const Vec3 c{51234.5, 7012345.0, 1180.0}; // mine coordinates
+    const Uuid id = occt::addSolidObject(p, occt::makeBox(c, c + Vec3{10, 4, 5}), "Block", layer);
+    const auto before = *p.model().geometry.find(id);
+    const auto info0 = occt::analyse(occt::loadSolid(p, before));
+
+    // In place: rotation about a vertical axis through the corner — same object, new immutable B-rep.
+    const Transform3 rot = Transform3::rotation({0, 0, 1}, std::numbers::pi / 2, c);
+    EXPECT_EQ(occt::transformSolidObject(p, id, rot, false), id);
+    const auto& after = *p.model().geometry.find(id);
+    EXPECT_NE(after.brepAsset.id, before.brepAsset.id);
+    const auto info = occt::analyse(occt::loadSolid(p, after));
+    EXPECT_TRUE(info.valid);
+    EXPECT_NEAR(info.volume, info0.volume, 1e-6 * info0.volume);
+    EXPECT_NEAR(distance(info.centreOfMass, rot.apply(info0.centreOfMass)), 0.0, 1e-6);
+    EXPECT_NEAR(info.bounds.min.x, c.x - 4, 1e-6); // the 4 m side now runs west
+    EXPECT_NEAR(info.bounds.max.y, c.y + 10, 1e-6);
+    // The display mesh was re-tessellated from the transformed B-rep.
+    ASSERT_TRUE(after.mesh);
+    for (const auto& v : after.mesh->vertices) EXPECT_LE(v.x, c.x + 1e-6);
+    EXPECT_EQ(p.commands().undoText(), "Transform solid");
+
+    // Undo restores the original B-rep and mesh; redo the transform again.
+    p.commands().undo();
+    EXPECT_EQ(p.model().geometry.find(id)->brepAsset.id, before.brepAsset.id);
+    EXPECT_NEAR(occt::analyse(occt::loadSolid(p, *p.model().geometry.find(id))).bounds.max.x, c.x + 10, 1e-6);
+    p.commands().redo();
+    EXPECT_NEAR(occt::analyse(occt::loadSolid(p, *p.model().geometry.find(id))).bounds.min.x, c.x - 4, 1e-6);
+
+    // As a copy: the original is untouched; scaling multiplies the volume by the cube of the factor.
+    const auto n = p.model().geometry.size();
+    const Uuid copy = occt::transformSolidObject(p, id, Transform3::scaling(2.0, c), true);
+    EXPECT_NE(copy, id);
+    EXPECT_EQ(p.model().geometry.size(), n + 1);
+    EXPECT_EQ(p.model().geometry.find(copy)->name, "Block (copy)");
+    EXPECT_NEAR(occt::analyse(occt::loadSolid(p, *p.model().geometry.find(copy))).volume, 8 * info0.volume, 1e-6 * info0.volume);
+    EXPECT_NEAR(occt::analyse(occt::loadSolid(p, *p.model().geometry.find(id))).volume, info0.volume, 1e-6 * info0.volume);
+
+    // A mirror (negative determinant) still yields a valid, closed solid of the same volume.
+    const Uuid mirrored = occt::transformSolidObject(p, id, Transform3::mirror(c, {1, 0, 0}), true);
+    const auto mi = occt::analyse(occt::loadSolid(p, *p.model().geometry.find(mirrored)));
+    EXPECT_TRUE(mi.valid);
+    EXPECT_TRUE(mi.closed);
+    EXPECT_NEAR(mi.volume, info0.volume, 1e-6 * info0.volume);
+    EXPECT_NEAR(mi.bounds.max.x, c.x + 4, 1e-6);
+
+    // Only solid objects can be transformed this way.
+    GeometryObject line = cad::makeLine(c, c + Vec3{1, 0, 0});
+    line.layerId = layer;
+    const Uuid lineId = ProjectEditor(p).addGeometry(line);
+    EXPECT_ANY_THROW(occt::transformSolidObject(p, lineId, rot, false));
+}

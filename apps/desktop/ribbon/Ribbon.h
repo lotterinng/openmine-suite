@@ -1,8 +1,8 @@
 #pragma once
 // SPDX-License-Identifier: Apache-2.0
-// Ribbon-style workspace selector: one tab per workspace, grouped tool buttons.
-// Tools that are planned but not implemented are shown disabled and say so —
-// they never pretend to run.
+// Ribbon-style workspace selector: one tab per workspace, grouped tool buttons (large buttons
+// for primary tools, stacked small buttons for secondary ones). Actions that cannot run in the
+// current state or build are disabled by their owner and say why in their tooltip.
 
 #include <QHBoxLayout>
 #include <QTabWidget>
@@ -16,8 +16,8 @@ class RibbonGroup : public QWidget {
 public:
     RibbonGroup(const QString& title, QWidget* parent = nullptr);
     void addAction(QAction* action);
-    /// A disabled button for a tool that is not available in this build.
-    void addPlanned(const QString& text, const QString& plannedIn);
+    /// Small buttons stacked three per column.
+    void addSmall(const QList<QAction*>& actions);
 
 private:
     QHBoxLayout* buttons_;

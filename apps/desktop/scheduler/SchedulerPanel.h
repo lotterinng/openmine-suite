@@ -1,80 +1,75 @@
 #pragma once
 // SPDX-License-Identifier: Apache-2.0
-// Activity grid (expandable WBS) + Gantt chart with dependency arrows, critical path,
-// baseline and progress, driven by the CPM engine.
+// The scheduler workspace: scenario and baseline selection, the activity grid (WBS tree with
+// editable name, duration, quantity, rate and progress) beside the Gantt chart, and resource
+// histograms, production charts, baseline variances and levelling results below. Every edit is
+// a validated undo step; the schedule of the active scenario recalculates automatically.
 
-#include "../AppContext.h"
+#include "../app/AppContext.h"
 
 #include <QWidget>
 
+class QComboBox;
+class QLabel;
+class QTabWidget;
 class QTreeWidget;
 class QTreeWidgetItem;
-class QScrollBar;
+class QPlainTextEdit;
 
 namespace openmine::app {
 
 class GanttChart;
+class ResourceHistogram;
+class ProductionChart;
+class VarianceTable;
 
 class SchedulerPanel : public QWidget {
     Q_OBJECT
 public:
     explicit SchedulerPanel(AppContext& ctx, QWidget* parent = nullptr);
 
-    QTreeWidget* grid() const { return tree_; }
-    GanttChart* chart() const { return chart_; }
+    QTreeWidget* grid() const { return grid_; }
+    GanttChart* gantt() const { return gantt_; }
     QTreeWidgetItem* itemFor(const Uuid& id) const;
 
 public slots:
-    void addTask();
-    void addMilestone();
-    void addSummary();
-    void addDependencyDialog();
+    Uuid addActivity(ActivityKind kind, const QString& name = {});
+    void addDependency();
     void deleteSelected();
-    void calculate();
-    void captureBaseline();
+    void indent();
+    void outdent();
+    void moveSelected(int delta);
+    void captureBaseline(const QString& name = {});
     void applyDesignQuantities();
-    void exportCsv(const QString& path = {});
-    void zoom(double factor);
+    void recordActual();
+    void editScenario(bool create);
+    void optimise();
+    bool exportFile(const QString& path);
 
 private:
-    void rebuild();
     void scheduleRebuild();
-    void syncSelection();
+    void rebuild();
+    void rebuildScenarios();
+    void updateStatus();
+    void syncSelectionFromContext();
+    void onItemChanged(QTreeWidgetItem* item, int column);
     Uuid selectedActivity() const;
-    Uuid newActivityParent() const;
+    Uuid parentForNew() const;
 
     AppContext& ctx_;
-    QTreeWidget* tree_ = nullptr;
-    GanttChart* chart_ = nullptr;
+    QComboBox* scenario_ = nullptr;
+    QLabel* status_ = nullptr;
+    QTreeWidget* grid_ = nullptr;
+    GanttChart* gantt_ = nullptr;
+    QTabWidget* tabs_ = nullptr;
+    ResourceHistogram* histogram_ = nullptr;
+    ProductionChart* production_ = nullptr;
+    VarianceTable* variance_ = nullptr;
+    QPlainTextEdit* log_ = nullptr;
+    std::unordered_map<Uuid, QTreeWidgetItem*> items_;
     bool building_ = false;
     bool pending_ = false;
-};
-
-class GanttChart : public QWidget {
-    Q_OBJECT
-public:
-    GanttChart(AppContext& ctx, QTreeWidget* tree, QWidget* parent = nullptr);
-    void setPixelsPerDay(double ppd);
-    double pixelsPerDay() const { return ppd_; }
-    void resetRange();
-
-protected:
-    void paintEvent(QPaintEvent*) override;
-    void mousePressEvent(QMouseEvent*) override;
-    void wheelEvent(QWheelEvent*) override;
-    void resizeEvent(QResizeEvent*) override;
-
-private:
-    double xOf(Date d) const;
-    int headerHeight() const;
-    void updateScrollRange();
-
-    AppContext& ctx_;
-    QTreeWidget* tree_;
-    QScrollBar* hbar_;
-    Date origin_;
-    long spanDays_ = 120;
-    double ppd_ = 14.0;
+    bool syncing_ = false;
 };
 
 } // namespace openmine::app

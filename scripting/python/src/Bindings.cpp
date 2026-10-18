@@ -52,6 +52,12 @@
 #ifdef OPENMINE_PY_HAVE_OCCT
 #include "openmine/occt/SolidObjects.h"
 #endif
+#ifdef OPENMINE_PY_HAVE_PDAL
+#include "openmine/pdalio/Pdal.h"
+#endif
+#ifdef OPENMINE_PY_HAVE_OPEN3D
+#include "openmine/o3d/Open3d.h"
+#endif
 
 #include <nlohmann/json.hpp>
 #include <pybind11/numpy.h>
@@ -462,7 +468,20 @@ void defineBindings(py::module_& m) {
 #else
     features["solids"] = false;
 #endif
+#ifdef OPENMINE_PY_HAVE_PDAL
+    features["pdal"] = true;
+    pdalio::registerFormats(); // LAS/LAZ/E57/PLY point clouds
+#else
+    features["pdal"] = false;
+#endif
+#ifdef OPENMINE_PY_HAVE_OPEN3D
+    features["open3d"] = true;
+    o3d::registerEngines(); // Open3D ICP engine
+#else
+    features["open3d"] = false;
+#endif
     m.attr("FEATURES") = features;
+    m.def("icp_engines", [] { return survey::icpEngines(); }, "Available ICP engines (\"OpenMine\" first; \"Open3D\" when built).");
 
     py::register_exception<ValidationError>(m, "ValidationError", PyExc_ValueError);
     py::register_exception<persistence::PersistenceError>(m, "PersistenceError", PyExc_IOError);
@@ -933,6 +952,7 @@ void defineBindings(py::module_& m) {
             if (o.contains("max_iterations")) opt.maxIterations = o["max_iterations"].cast<int>();
             if (o.contains("sample_size")) opt.sampleSize = o["sample_size"].cast<std::size_t>();
             if (o.contains("trim_fraction")) opt.trimFraction = o["trim_fraction"].cast<double>();
+            if (o.contains("engine")) opt.engine = o["engine"].cast<std::string>();
             Registration r;
             {
                 py::gil_scoped_release rel;
@@ -942,6 +962,9 @@ void defineBindings(py::module_& m) {
             d["transform"] = r.transform.toString();
             d["fitness"] = r.icpFitness;
             d["inlier_rms"] = r.icpInlierRms;
+            d["iterations"] = r.icpIterations;
+            d["converged"] = r.icpConverged;
+            d["notes"] = r.notes;
             d["registration"] = survey::commitRegistration(s.get(), r, apply).toString();
             return d;
         }, py::arg("moving"), py::arg("target"), py::arg("options") = py::dict(), py::arg("apply") = false, py::arg("progress") = nullptr)

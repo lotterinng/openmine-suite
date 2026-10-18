@@ -7,6 +7,11 @@ import numpy as np
 from . import _core
 
 
+def icp_engines() -> list:
+    """ICP engines available in this build ("OpenMine" first; "Open3D" when built with Open3D)."""
+    return list(_core.icp_engines())
+
+
 def fit_transform(source, target, allow_scale: bool = False) -> dict:
     """Least-squares rigid (or similarity) transform from paired points; residuals included."""
     return _core.fit_transform(np.asarray(source, dtype=float), np.asarray(target, dtype=float), allow_scale)

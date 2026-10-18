@@ -53,3 +53,32 @@ TEST(PythonConsole, ScriptsAndRebinding) {
     EXPECT_NE(r.error.find("bad.py"), std::string::npos);
     EXPECT_FALSE(PythonConsole::pythonVersion().empty());
 }
+
+TEST(PythonConsole, StreamsOutputPumpsAndInterrupts) {
+    auto p = Project::createNew("Stream", Date::fromYmd(2026, 11, 2));
+    PythonConsole c(p.get());
+    std::string streamed;
+    c.setOutputSink([&](int stream, const std::string& t) {
+        if (stream == 0) streamed += t;
+    });
+    int pumps = 0;
+    bool runningInPump = false;
+    c.setPump([&] {
+        ++pumps;
+        runningInPump = PythonConsole::isRunning();
+        // Interrupt a runaway loop from the pump (as the application's Interrupt button does).
+        if (pumps == 5) PythonConsole::interrupt();
+    }, 20);
+    auto r = c.run("print('start')\nwhile True:\n    pass\n", "loop.py");
+    EXPECT_FALSE(r.ok);
+    EXPECT_NE(r.error.find("KeyboardInterrupt"), std::string::npos) << r.error;
+    EXPECT_EQ(streamed.substr(0, 6), "start\n"); // seen while running, not only at the end
+    EXPECT_GE(pumps, 5);
+    EXPECT_TRUE(runningInPump);
+    EXPECT_FALSE(PythonConsole::isRunning());
+    // The console still works afterwards.
+    streamed.clear();
+    r = c.push("print(project.name)");
+    EXPECT_TRUE(r.ok) << r.error;
+    EXPECT_EQ(streamed, "Stream\n");
+}

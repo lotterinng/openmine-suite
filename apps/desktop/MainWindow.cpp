@@ -1,440 +1,1069 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "MainWindow.h"
-#include "MainWindowActions.h"
 
+#include "app/EntityInfo.h"
 #include "console/CommandConsole.h"
-#include "openmine/geometry/Polyline.h"
-#include "openmine/mine_design/Development.h"
-#include "openmine/persistence/ProjectFile.h"
-#include "openmine/project/ProjectEditor.h"
-#include "project_explorer/ProjectExplorer.h"
-#include "properties/PropertiesPanel.h"
+#include "dialogs/DataDialogs.h"
+#include "dialogs/DesignDialogs.h"
+#include "dialogs/DialogUtil.h"
+#include "dialogs/GeologyDialogs.h"
+#include "dialogs/SurveyDialogs.h"
+#include "panels/JobsPanel.h"
+#include "panels/LayerManager.h"
+#include "panels/PlaybackPanel.h"
+#include "panels/ProjectExplorer.h"
+#include "panels/PropertiesPanel.h"
+#include "panels/PythonConsolePanel.h"
+#include "panels/ReportsPanel.h"
+#include "panels/StereonetPanel.h"
 #include "ribbon/Ribbon.h"
+#include "scheduler/GanttChart.h"
+#include "scheduler/ScheduleDialogs.h"
 #include "scheduler/SchedulerPanel.h"
 #include "theme/Theme.h"
-#include "viewport/Viewport3D.h"
+#include "viewport/ViewportArea.h"
+#include "vtk/QtVtkWidget.h"
+
+#include "openmine/geometry/Polyline.h"
+#include "openmine/mine_design/Development.h"
+
+#include "openmine/persistence/EntityCodec.h"
+#include "openmine/persistence/ProjectFile.h"
+#include "openmine/project/ProjectEditor.h"
+
+#ifdef OPENMINE_APP_HAVE_REPOSITORY
+#include "openmine/repository/PgRepository.h"
+#endif
 
 #include <QAction>
 #include <QActionGroup>
 #include <QApplication>
 #include <QCloseEvent>
-#include <QDialog>
-#include <QDialogButtonBox>
 #include <QDockWidget>
-#include <QDoubleSpinBox>
 #include <QFileDialog>
-#include <QFormLayout>
+#include <QFileInfo>
 #include <QInputDialog>
 #include <QLabel>
-#include <QLineEdit>
+#include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QSettings>
 #include <QStatusBar>
-#include <QVBoxLayout>
+#include <QTimer>
 
 namespace openmine::app {
 
-// (MainWindow::Actions is defined in MainWindowActions.h)
-
-MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent), a_(new Actions) {
-    setObjectName("OpenMineMainWindow");
+MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
+    setWindowIcon(toolIcon("iso"));
     resize(1600, 980);
     setDockNestingEnabled(true);
-    viewport_ = new Viewport3D(ctx_, this);
-    setCentralWidget(nullptr);
-    createActions();
+    setDockOptions(QMainWindow::AnimatedDocks | QMainWindow::AllowNestedDocks | QMainWindow::AllowTabbedDocks);
+
+    viewports_ = new ViewportArea(ctx_, this);
+    setCentralWidget(viewports_);
     createDocks();
-    createRibbon();
+    createActions();
     createMenus();
+    createRibbon();
     createStatusBar();
     registerCommands();
 
-    connect(viewport_, &Viewport3D::drawingFinished, this, &MainWindow::onDrawingFinished);
-    connect(&ctx_, &AppContext::undoStackChanged, this, [this] {
-        updateTitle();
-        updateActions();
-    });
     connect(&ctx_, &AppContext::projectReplaced, this, [this] {
         updateTitle();
         updateActions();
     });
-    connect(&ctx_, &AppContext::modelChanged, this, &MainWindow::updateTitle);
-    connect(&ctx_, &AppContext::selectionChanged, this, &MainWindow::updateActions);
-    connect(&ctx_, &AppContext::message, this, [this](const QString& t, bool err) {
-        statusBar()->showMessage(t, err ? 8000 : 4000);
+    connect(&ctx_, &AppContext::undoStackChanged, this, [this] {
+        updateTitle();
+        updateActions();
     });
+    connect(&ctx_, &AppContext::selectionChanged, this, &MainWindow::updateActions);
+    connect(&ctx_, &AppContext::message, this, [this](const QString& t, int level) {
+        statusBar()->showMessage(t, level == static_cast<int>(MessageLevel::Error) ? 12000 : 6000);
+    });
+    connect(&ctx_, &AppContext::scenarioChanged, this, [this] {
+        const auto* s = ctx_.activeScenario();
+        scenarioLabel_->setText(s ? tr("Scenario: %1").arg(qstr(s->name)) : tr("Base schedule"));
+    });
+    connect(explorer_, &ProjectExplorer::actionRequested, this, &MainWindow::handleEntityAction);
+    connect(viewports_, &ViewportArea::contextMenuRequested, this, [this](QPoint global, std::optional<PickHit> hit) {
+        QMenu m(this);
+        if (hit) {
+            if (!ctx_.isSelected(hit->owner.kind, hit->owner.id)) ctx_.select(hit->owner.kind, hit->owner.id);
+            m.addSection(describe(ctx_.project().model(), hit->owner));
+            m.addAction(toolIcon("fit"), tr("Zoom to"), this, [this] { handleEntityAction("zoom", ctx_.selection()); });
+            m.addAction(toolIcon("properties"), tr("Properties"), this, [this] { handleEntityAction("properties", ctx_.selection()); });
+            if (hit->owner.kind == EntityKind::Development) {
+                m.addAction(toolIcon("section"), tr("Section here"), this, [this, hit] {
+                    const auto* d = ctx_.project().model().developments.find(hit->owner.id);
+                    if (!d) return;
+                    const auto cl = mine_design::centrelinePoints(ctx_.project(), *d);
+                    if (auto pr = geometry::projectOntoPolyline(hit->world, cl)) {
+                        const double ch = d->chainageFrom + pr->chainage;
+                        for (auto* v : viewports_->views())
+                            if (v != viewports_->active() && v->mode() == ViewMode::Section) {
+                                v->sectionAtChainage(d->id, ch);
+                                return;
+                            }
+                        viewports_->setLayoutKind(viewports_->layoutKind() == ViewportArea::Layout::Single ? ViewportArea::Layout::TwoColumns : viewports_->layoutKind());
+                        for (auto* v : viewports_->views())
+                            if (v != viewports_->active()) {
+                                v->sectionAtChainage(d->id, ch);
+                                return;
+                            }
+                    }
+                });
+            }
+            if (hit->onPointCloud)
+                m.addAction(tr("Copy point (project) %1, %2, %3").arg(hit->world.x, 0, 'f', 3).arg(hit->world.y, 0, 'f', 3).arg(hit->world.z, 0, 'f', 3),
+                            this, [this, hit] { ctx_.report(tr("Point %1, %2, %3 (stored %4, %5, %6)").arg(hit->world.x, 0, 'f', 4).arg(hit->world.y, 0, 'f', 4).arg(hit->world.z, 0, 'f', 4).arg(hit->stored.x, 0, 'f', 4).arg(hit->stored.y, 0, 'f', 4).arg(hit->stored.z, 0, 'f', 4)); });
+            m.addSeparator();
+            m.addAction(toolIcon("delete"), tr("Delete"), this, [this] { action("edit.delete")->trigger(); });
+        } else {
+            m.addAction(toolIcon("fit"), tr("Zoom extents"), this, [this] { activeView()->fitAll(); });
+            m.addAction(toolIcon("plan"), tr("Plan view"), this, [this] { activeView()->setNamedView("top"); });
+            m.addAction(toolIcon("iso"), tr("3D view"), this, [this] { activeView()->setNamedView("iso"); });
+        }
+        m.exec(global);
+    });
+    connect(&viewports_->tools(), &ToolController::polygonDefined, this, [this](std::vector<Vec3> poly, Vec3 n) {
+        const auto clouds = ctx_.selected(EntityKind::PointCloud);
+        if (clouds.empty()) {
+            ctx_.report(tr("Select the point cloud to crop, then draw the polygon"), MessageLevel::Warning);
+            return;
+        }
+        for (const auto& id : clouds) startCropJob(ctx_, id, poly, n, true);
+    });
+
+    QSettings& s = ctx_.settings();
+    restoreGeometry(s.value("window/geometry").toByteArray());
+    if (!restoreState(s.value("window/state").toByteArray())) {
+        // First start: give the viewport most of the window once the layout has its real size.
+        QTimer::singleShot(0, this, [this] {
+            resizeDocks({dock("explorer"), dock("properties")}, {290, 380}, Qt::Horizontal);
+            resizeDocks({dock("scheduler")}, {height() / 4}, Qt::Vertical);
+        });
+    }
     updateTitle();
     updateActions();
+    QTimer::singleShot(0, this, &MainWindow::loadPlugins);
 }
 
-MainWindow::~MainWindow() { delete a_; }
+MainWindow::~MainWindow() = default;
 
-// ---------------------------------------------------------------------------
-void MainWindow::createActions() {
-    auto mk = [this](const QString& text, const QString& icon, auto slot, const QKeySequence& ks = {}) {
-        auto* a = new QAction(icon.isEmpty() ? QIcon() : toolIcon(icon), text, this);
-        if (!ks.isEmpty()) a->setShortcut(ks);
-        a->setProperty("iconName", icon);
-        connect(a, &QAction::triggered, this, slot);
-        return a;
+Viewport3D* MainWindow::activeView() const { return viewports_->active(); }
+
+QDockWidget* MainWindow::dock(const QString& name) const {
+    auto it = docks_.find(name);
+    return it == docks_.end() ? nullptr : it->second;
+}
+
+QAction* MainWindow::action(const QString& id) const {
+    auto it = actions_.find(id);
+    return it == actions_.end() ? nullptr : it->second;
+}
+
+QStringList MainWindow::actionIds() const {
+    QStringList l;
+    for (const auto& [k, v] : actions_) l << k;
+    return l;
+}
+
+void MainWindow::setNonInteractive(bool on) {
+    nonInteractive_ = on;
+    explorer_->setProperty("nonInteractive", on);
+}
+
+// ---- docks -----------------------------------------------------------------------------------------
+
+void MainWindow::createDocks() {
+    auto add = [this](const QString& name, const QString& title, QWidget* w, Qt::DockWidgetArea area) {
+        auto* d = new QDockWidget(title, this);
+        d->setObjectName(name);
+        d->setWidget(w);
+        addDockWidget(area, d);
+        docks_[name] = d;
+        return d;
     };
-    auto& A = *a_;
-    A.newProject = mk("New", "new", [this] {
+    explorer_ = new ProjectExplorer(ctx_, viewports_->scene(), this);
+    layers_ = new LayerManager(ctx_, this);
+    properties_ = new PropertiesPanel(ctx_, this);
+    jobs_ = new JobsPanel(ctx_, this);
+    python_ = new PythonConsolePanel(ctx_, this);
+    console_ = new CommandConsole(ctx_, this);
+    console_->setToolController(&viewports_->tools());
+    scheduler_ = new SchedulerPanel(ctx_, this);
+    playback_ = new PlaybackPanel(ctx_, this);
+    playback_->setFrameGrabber([this] { return activeView() ? activeView()->grab() : QImage(); });
+    connect(playback_, &PlaybackPanel::ghostFutureChanged, this, [this](bool on) {
+        viewports_->forEach([on](Viewport3D& v) {
+            v.options().ghostFuture = on;
+            v.applyOptions();
+        });
+    });
+    stereonet_ = new StereonetPanel(ctx_, this);
+    reports_ = new ReportsPanel(ctx_, this);
+
+    auto* ex = add("explorer", tr("Project"), explorer_, Qt::LeftDockWidgetArea);
+    auto* ly = add("layers", tr("Layers"), layers_, Qt::LeftDockWidgetArea);
+    tabifyDockWidget(ex, ly);
+    ex->raise();
+    add("properties", tr("Properties"), properties_, Qt::RightDockWidgetArea);
+    auto* sc = add("scheduler", tr("Scheduler"), scheduler_, Qt::BottomDockWidgetArea);
+    auto* cs = add("console", tr("Command console"), console_, Qt::BottomDockWidgetArea);
+    auto* py = add("python", tr("Python"), python_, Qt::BottomDockWidgetArea);
+    auto* jb = add("jobs", tr("Jobs"), jobs_, Qt::BottomDockWidgetArea);
+    auto* pb = add("playback", tr("4D playback"), playback_, Qt::BottomDockWidgetArea);
+    tabifyDockWidget(sc, cs);
+    tabifyDockWidget(cs, py);
+    tabifyDockWidget(py, jb);
+    tabifyDockWidget(jb, pb);
+    cs->raise();
+    auto* st = add("stereonet", tr("Stereonet"), stereonet_, Qt::RightDockWidgetArea);
+    auto* rp = add("reports", tr("Reports"), reports_, Qt::RightDockWidgetArea);
+    // Right side: one tabbed column, so the viewport keeps the width.
+    tabifyDockWidget(dock("properties"), st);
+    tabifyDockWidget(st, rp);
+    st->hide();
+    rp->hide();
+    dock("properties")->raise();
+    resizeDocks({ex, dock("properties")}, {290, 380}, Qt::Horizontal);
+    resizeDocks({sc}, {270}, Qt::Vertical);
+}
+
+// ---- actions ---------------------------------------------------------------------------------------
+
+QAction* MainWindow::addAction(const QString& id, const QString& text, const QString& icon, std::function<void()> slot, const QKeySequence& key,
+                               const QString& tip) {
+    auto* a = new QAction(icon.isEmpty() ? QIcon() : toolIcon(icon), text, this);
+    if (!key.isEmpty()) a->setShortcut(key);
+    a->setToolTip(tip.isEmpty() ? text : QStringLiteral("<b>%1</b><br>%2").arg(text, tip));
+    a->setStatusTip(tip.isEmpty() ? text : tip);
+    a->setObjectName(id);
+    a->setProperty("iconName", icon);
+    connect(a, &QAction::triggered, this, [this, slot, text] {
+        try {
+            slot();
+        } catch (const std::exception& e) {
+            ctx_.report(tr("%1 failed: %2").arg(text, qstr(e.what())), MessageLevel::Error);
+        }
+    });
+    QWidget::addAction(a);
+    actions_[id] = a;
+    return a;
+}
+
+Uuid MainWindow::primaryOf(EntityKind kind) const {
+    const auto p = ctx_.primary();
+    if (p.kind == kind) return p.id;
+    const auto s = ctx_.selected(kind);
+    return s.empty() ? Uuid{} : s.back();
+}
+
+void MainWindow::requireSelection(EntityKind kind, const QString& what, const std::function<void(const Uuid&)>& f) {
+    if (!ctx_.hasProject()) return;
+    Uuid id = primaryOf(kind);
+    if (id.isNil()) {
+        // Offer a choice when exactly one exists.
+        const auto& m = ctx_.project().model();
+        std::vector<Uuid> all;
+#define OPENMINE_COLLECT(T, member, Kind) \
+    if (kind == EntityKind::Kind)         \
+        for (const auto& e : m.member.all()) all.push_back(e.id);
+        OPENMINE_ENTITY_TYPES(OPENMINE_COLLECT)
+#undef OPENMINE_COLLECT
+        if (all.size() == 1) id = all.front();
+    }
+    if (id.isNil()) {
+        ctx_.report(tr("%1: select a %2 first").arg(what, kindLabel(kind).toLower()), MessageLevel::Warning);
+        return;
+    }
+    f(id);
+}
+
+void MainWindow::startTool(int tool) {
+    viewports_->tools().setTool(static_cast<Tool>(tool));
+    if (auto* v = activeView()) v->vtkWidget()->setFocus();
+}
+
+void MainWindow::showLayoutPreview(const std::vector<std::vector<Vec3>>& lines) {
+    for (auto* v : viewports_->views()) {
+        if (lines.empty()) v->clearOverlay("layout");
+        else {
+            Overlay o;
+            o.lines = lines;
+            o.color = 0x00E5FF;
+            o.lineWidth = 3;
+            v->setOverlay("layout", o);
+        }
+    }
+}
+
+void MainWindow::createActions() {
+    auto& tools = viewports_->tools();
+    // ---- file
+    addAction("file.new", tr("New project"), "new", [this] {
         if (!maybeSave()) return;
-        bool ok = false;
-        const QString name = QInputDialog::getText(this, "New project", "Project name:", QLineEdit::Normal, "New Mine Project", &ok);
-        if (ok && !name.isEmpty()) ctx_.newProject(name, Date::todayUtc());
+        bool ok = nonInteractive_;
+        QString name = tr("New mine project");
+        if (!nonInteractive_) name = QInputDialog::getText(this, tr("New project"), tr("Project name:"), QLineEdit::Normal, name, &ok);
+        if (!ok) return;
+        ctx_.newProject(name, Date::todayUtc());
     }, QKeySequence::New);
-    A.open = mk("Open", "open", [this] {
+    addAction("file.open", tr("Open…"), "open", [this] {
         if (!maybeSave()) return;
-        const QString p = QFileDialog::getOpenFileName(this, "Open project", {}, "OpenMine project (*.openmine)");
-        if (!p.isEmpty()) openProjectFrom(p);
+        const QString f = chooseOpenFile(tr("Open project"), tr("OpenMine projects (*.openmine)"), "project");
+        if (!f.isEmpty()) openProjectFrom(f);
     }, QKeySequence::Open);
-    A.save = mk("Save", "save", [this] {
-        if (!ctx_.hasProject()) return;
-        if (ctx_.project().filePath().empty()) a_->saveAs->trigger();
+    addAction("file.save", tr("Save"), "save", [this] {
+        if (ctx_.project().filePath().empty()) action("file.saveAs")->trigger();
         else saveProjectTo(QString::fromStdU16String(ctx_.project().filePath().u16string()));
     }, QKeySequence::Save);
-    A.saveAs = mk("Save As…", "", [this] {
-        if (!ctx_.hasProject()) return;
-        QString p = QFileDialog::getSaveFileName(this, "Save project", qstr(ctx_.project().model().info.name) + ".openmine",
-                                                 "OpenMine project (*.openmine)");
-        if (p.isEmpty()) return;
-        if (!p.endsWith(".openmine")) p += ".openmine";
-        saveProjectTo(p);
+    addAction("file.saveAs", tr("Save as…"), "save", [this] {
+        const QString f = chooseSaveFile(tr("Save project"), tr("OpenMine projects (*.openmine)"), "project", qstr(ctx_.project().model().info.name) + ".openmine");
+        if (!f.isEmpty()) saveProjectTo(f.endsWith(".openmine") ? f : f + ".openmine");
     }, QKeySequence::SaveAs);
-    A.close = mk("Close", "", [this] { closeProject(); });
-    A.exit = mk("Exit", "", [this] { close(); }, QKeySequence::Quit);
-
-    A.undo = mk("Undo", "undo", [this] {
-        if (ctx_.hasProject()) ctx_.project().commands().undo();
+    addAction("file.close", tr("Close project"), {}, [this] { closeProject(); });
+    addAction("file.import", tr("Import…"), "import", [this] {
+        const QString f = chooseOpenFile(tr("Import"),
+                                         tr("All supported (*.las *.laz *.e57 *.ply *.xyz *.csv *.txt *.pts *.ptx *.dxf *.omf *.obj *.stl *.step *.stp *.iges *.igs *.shp *.gpkg *.geojson *.kml *.tif *.tiff *.asc);;All files (*)"),
+                                         "import");
+        if (!f.isEmpty()) importFile(f);
+    }, QKeySequence(Qt::CTRL | Qt::Key_I), tr("Point clouds, DXF, OMF, meshes, STEP/IGES, GIS vector and raster data, and formats added by plugins"));
+    addAction("file.export", tr("Export…"), "export", [this] {
+        const QString f = chooseSaveFile(tr("Export"), tr("DXF (*.dxf);;OMF (*.omf);;Mesh (*.obj *.stl *.ply);;STEP (*.step);;IGES (*.iges);;GIS (*.shp *.gpkg *.geojson *.kml);;DEM (*.tif);;Point cloud (*.las *.laz *.e57 *.xyz *.pts);;Schedule (*.csv *.xlsx *.pdf)"), "export");
+        if (!f.isEmpty()) exportFile(f);
+    }, QKeySequence(Qt::CTRL | Qt::Key_E), tr("Exports the selection (or everything applicable) by file type"));
+    addAction("file.check", tr("Check project integrity"), "info", [this] { projectCheck(); });
+    addAction("file.repository", tr("Shared repository…"), "link", [this] {
+        RepositoryDialog dlg(ctx_, this);
+        dlg.exec();
+    }, {}, RepositoryDialog::available() ? QString() : tr("Not available: built without libpq"));
+    addAction("file.exit", tr("Exit"), {}, [this] { close(); }, QKeySequence::Quit);
+    // ---- edit
+    addAction("edit.undo", tr("Undo"), "undo", [this] {
+        if (ctx_.project().commands().canUndo()) ctx_.project().commands().undo();
     }, QKeySequence::Undo);
-    A.redo = mk("Redo", "redo", [this] {
-        if (ctx_.hasProject()) ctx_.project().commands().redo();
+    addAction("edit.redo", tr("Redo"), "redo", [this] {
+        if (ctx_.project().commands().canRedo()) ctx_.project().commands().redo();
     }, QKeySequence::Redo);
-    A.del = mk("Delete", "delete", [this] { console_->execute("DELETE"); }, QKeySequence::Delete);
+    addAction("edit.delete", tr("Delete"), "delete", [this] {
+        auto sel = ctx_.selection();
+        std::erase_if(sel, [](const SelectionItem& s) { return s.kind == EntityKind::ProjectInfo; });
+        if (sel.empty()) return;
+        if (!nonInteractive_ &&
+            QMessageBox::question(this, tr("Delete"), tr("Delete %1 item(s)? This can be undone.").arg(sel.size())) != QMessageBox::Yes)
+            return;
+        ctx_.tryEdit(tr("Delete"), [&] {
+            auto& p = ctx_.project();
+            CommandStack::MacroScope macro(p.commands(), "Delete " + std::to_string(sel.size()) + " items");
+            for (const auto& s : sel)
+                if (findKind(p.model(), s.id)) persistence::removeDocument(p, documentType(s.kind), s.id.toString());
+            macro.commit();
+        });
+    }, QKeySequence::Delete);
+    addAction("edit.selectAll", tr("Select all visible objects"), "select", [this] {
+        std::vector<SelectionItem> items;
+        viewports_->scene().forEachItem([&](const SceneItem& it) {
+            if (it.pickable && !it.ghost) items.push_back(it.owner);
+        });
+        std::sort(items.begin(), items.end());
+        items.erase(std::unique(items.begin(), items.end()), items.end());
+        ctx_.selectMany(items);
+    }, QKeySequence::SelectAll);
+    addAction("edit.clearSelection", tr("Clear selection"), {}, [this] { ctx_.clearSelection(); });
+    addAction("edit.properties", tr("Properties"), "properties", [this] {
+        dock("properties")->show();
+        dock("properties")->raise();
+    });
+    // ---- view
+    addAction("view.fit", tr("Zoom extents"), "fit", [this] { activeView()->fitAll(); }, QKeySequence(Qt::Key_Home));
+    addAction("view.fitSelection", tr("Zoom to selection"), "zoomin", [this] { activeView()->fitSelection(); });
+    addAction("view.top", tr("Plan"), "top", [this] { activeView()->setNamedView("top"); });
+    addAction("view.north", tr("Looking south"), "front", [this] { activeView()->setNamedView("north"); });
+    addAction("view.east", tr("Looking west"), "side", [this] { activeView()->setNamedView("east"); });
+    addAction("view.iso", tr("3D (south-east)"), "iso", [this] { activeView()->setNamedView("iso"); });
+    addAction("view.isoNw", tr("3D (north-west)"), "iso", [this] { activeView()->setNamedView("iso-nw"); });
+    auto* persp = addAction("view.perspective", tr("Perspective"), "perspective", [this] { activeView()->setPerspective(action("view.perspective")->isChecked()); });
+    persp->setCheckable(true);
+    persp->setChecked(true);
+    addAction("view.section", tr("Section view"), "section", [this] { activeView()->setMode(ViewMode::Section); }, {}, tr("Clip a slab of the scene and look along its normal; PgUp/PgDn step"));
+    addAction("view.sectionLine", tr("Section from line"), "section", [this] { startTool(static_cast<int>(Tool::SectionLine)); }, {},
+              tr("Draw a line in plan: a vertical section along it opens in another view"));
+    addAction("view.sectionWidth", tr("Section width…"), {}, [this] {
+        auto s = activeView()->section();
+        bool ok = false;
+        const double w = QInputDialog::getDouble(this, tr("Section"), tr("Half width (m):"), s.halfWidth, 0.01, 1000, 2, &ok);
+        if (!ok) return;
+        s.halfWidth = w;
+        activeView()->setSection(s);
+    });
+    addAction("view.layout1", tr("One view"), "view1", [this] { viewports_->setLayoutKind(ViewportArea::Layout::Single); });
+    addAction("view.layout2", tr("Two views side by side"), "view2", [this] { viewports_->setLayoutKind(ViewportArea::Layout::TwoColumns); });
+    addAction("view.layout2h", tr("Two views stacked"), "view2h", [this] { viewports_->setLayoutKind(ViewportArea::Layout::TwoRows); });
+    addAction("view.layout4", tr("Four views"), "view4", [this] { viewports_->setLayoutKind(ViewportArea::Layout::Quad); });
+    addAction("view.workplane", tr("Work-plane elevation…"), "grid", [this] {
+        bool ok = false;
+        const double z = QInputDialog::getDouble(this, tr("Work plane"), tr("Elevation (m):"), activeView()->workPlaneZ(), -1e5, 1e5, 3, &ok);
+        if (ok) viewports_->forEach([z](Viewport3D& v) { v.setWorkPlaneZ(z); });
+    });
+    auto toggle = [this](const QString& id, const QString& text, bool initial, std::function<void(bool)> f) {
+        auto* a = addAction(id, text, {}, {});
+        a->setCheckable(true);
+        a->setChecked(initial);
+        disconnect(a, &QAction::triggered, nullptr, nullptr);
+        connect(a, &QAction::toggled, this, f);
+        return a;
+    };
+    toggle("view.grid", tr("Grid"), true, [this](bool on) { viewports_->forEach([on](Viewport3D& v) { v.options().grid = on; v.applyOptions(); }); });
+    toggle("view.labels", tr("Labels"), true, [this](bool on) { viewports_->forEach([on](Viewport3D& v) { v.options().labels = on; v.applyOptions(); }); });
+    toggle("view.clouds", tr("Point clouds"), true, [this](bool on) { viewports_->forEach([on](Viewport3D& v) { v.options().pointClouds = on; v.applyOptions(); }); });
+    toggle("view.legend", tr("Colour legend"), true, [this](bool on) { viewports_->forEach([on](Viewport3D& v) { v.options().legend = on; v.applyOptions(); }); });
+    toggle("view.envelopes", tr("Excavation envelopes"), true, [this](bool on) {
+        auto s = viewports_->scene().settings();
+        s.developmentEnvelopes = on;
+        viewports_->scene().setSettings(s);
+    });
+    toggle("view.stations", tr("Chainage stations"), false, [this](bool on) {
+        auto s = viewports_->scene().settings();
+        s.developmentStations = on;
+        viewports_->scene().setSettings(s);
+    });
+    toggle("view.meshEdges", tr("Mesh edges"), false, [this](bool on) {
+        auto s = viewports_->scene().settings();
+        s.meshEdges = on;
+        viewports_->scene().setSettings(s);
+    });
+    toggle("view.statusColours", tr("Colour headings by status"), true, [this](bool on) {
+        auto s = viewports_->scene().settings();
+        s.colorDevelopmentsByStatus = on;
+        viewports_->scene().setSettings(s);
+    });
+    addAction("view.drillholeField", tr("Colour drillholes by…"), "drillhole", [this] {
+        const auto fields = viewports_->scene().drillholeFields();
+        QStringList l{tr("(hole type)")};
+        for (const auto& f : fields) l << qstr(f);
+        bool ok = false;
+        const QString f = QInputDialog::getItem(this, tr("Drillholes"), tr("Colour traces by:"), l, 0, false, &ok);
+        if (!ok) return;
+        auto s = viewports_->scene().settings();
+        s.drillholeField = f == l.front() ? std::string() : sstr(f);
+        viewports_->scene().setSettings(s);
+    });
+    addAction("view.pointBudget", tr("Point budget…"), "cloud", [this] {
+        bool ok = false;
+        const int m = QInputDialog::getInt(this, tr("Point clouds"), tr("Points displayed per view (millions):"),
+                                           static_cast<int>(activeView()->options().pointBudget / 1000000), 1, 100, 1, &ok);
+        if (ok) viewports_->forEach([m](Viewport3D& v) { v.options().pointBudget = static_cast<std::size_t>(m) * 1000000; v.applyOptions(); });
+    });
+    addAction("view.showAll", tr("Show all hidden"), "eye", [this] { viewports_->scene().showAll(); });
+    addAction("view.dark", tr("Dark theme"), "theme", [this] { setTheme(true); });
+    addAction("view.light", tr("Light theme"), "theme", [this] { setTheme(false); });
+    addAction("view.screenshot", tr("Save view image…"), "export", [this] {
+        const QString f = chooseSaveFile(tr("Save view image"), tr("PNG (*.png)"), "image", "view.png");
+        if (!f.isEmpty() && activeView()->grab().save(f)) ctx_.report(tr("Saved %1").arg(f));
+    });
 
-    A.select = mk("Select", "select", [this] { viewport_->setTool(Viewport3D::Tool::Select); }, QKeySequence(Qt::Key_Escape));
-    A.line = mk("Line", "line", [this] {
-        measuring_ = false;
-        viewport_->setTool(Viewport3D::Tool::DrawLine);
-    }, QKeySequence(Qt::Key_L));
-    A.polyline = mk("Polyline", "polyline", [this] {
-        measuring_ = false;
-        viewport_->setTool(Viewport3D::Tool::DrawPolyline);
-    }, QKeySequence(Qt::Key_P));
-    A.measure = mk("Distance", "distance", [this] {
-        viewport_->setTool(Viewport3D::Tool::DrawLine);
-        measuring_ = true;
-        ctx_.report("DISTANCE: click two points (snaps apply).");
-    }, QKeySequence(Qt::Key_D));
-    for (QAction* x : {A.select, A.line, A.polyline, A.measure}) x->setCheckable(true);
+    // ---- draw / modify (tools)
+    struct ToolDef {
+        const char* id;
+        const char* text;
+        const char* icon;
+        Tool tool;
+        QKeySequence key;
+    };
+    const ToolDef toolDefs[] = {
+        {"draw.select", "Select", "select", Tool::Select, QKeySequence(Qt::Key_Escape)},
+        {"draw.point", "Point", "point", Tool::Point, {}},
+        {"draw.line", "Line", "line", Tool::Line, QKeySequence(Qt::Key_L)},
+        {"draw.polyline", "Polyline", "polyline", Tool::Polyline, QKeySequence(Qt::Key_P)},
+        {"draw.polygon", "Polygon", "polygon", Tool::Polygon, {}},
+        {"draw.rectangle", "Rectangle", "rectangle", Tool::Rectangle, {}},
+        {"draw.circle", "Circle", "circle", Tool::Circle, QKeySequence(Qt::Key_C)},
+        {"draw.arc", "Arc (3 points)", "arc", Tool::Arc3, {}},
+        {"draw.spline", "Spline", "spline", Tool::Spline, {}},
+        {"draw.text", "Text", "text", Tool::Text, {}},
+        {"draw.dimension", "Dimension", "dimension", Tool::Dimension, {}},
+        {"measure.distance", "Distance", "distance", Tool::Measure, QKeySequence(Qt::Key_D)},
+        {"measure.area", "Area", "area", Tool::MeasureArea, {}},
+        {"modify.move", "Move", "move", Tool::Move, QKeySequence(Qt::Key_M)},
+        {"modify.copy", "Copy", "copy", Tool::Copy, {}},
+        {"modify.rotate", "Rotate", "rotate", Tool::Rotate, {}},
+        {"modify.mirror", "Mirror", "mirror", Tool::Mirror, {}},
+        {"modify.scale", "Scale", "scale", Tool::Scale, {}},
+        {"modify.offset", "Offset", "offset", Tool::Offset, QKeySequence(Qt::Key_O)},
+        {"modify.trim", "Trim", "trim", Tool::Trim, QKeySequence(Qt::Key_T)},
+        {"modify.extend", "Extend", "extend", Tool::Extend, {}},
+        {"modify.fillet", "Fillet", "fillet", Tool::Fillet, QKeySequence(Qt::Key_F) },
+        {"modify.split", "Split", "split", Tool::Split, {}},
+        {"survey.crop", "Crop by polygon", "polygon", Tool::CropPolygon, {}},
+    };
     auto* toolGroup = new QActionGroup(this);
-    for (QAction* x : {A.select, A.line, A.polyline, A.measure}) toolGroup->addAction(x);
-    A.select->setChecked(true);
-    connect(viewport_, &Viewport3D::toolChanged, this, [this] {
-        const auto t = viewport_->tool();
-        if (t == Viewport3D::Tool::Select) {
-            a_->select->setChecked(true);
-            measuring_ = false;
+    for (const auto& t : toolDefs) {
+        const int tool = static_cast<int>(t.tool);
+        auto* a = addAction(t.id, tr(t.text), t.icon, [this, tool] { startTool(tool); }, t.key);
+        a->setCheckable(true);
+        a->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+        toolGroup->addAction(a);
+    }
+    // Single-key tool shortcuts only act while a viewport has the focus.
+    for (const auto& t : toolDefs)
+        if (!t.key.isEmpty()) {
+            removeAction(action(t.id));
+            viewports_->addAction(action(t.id));
         }
-        toolLabel_->setText(t == Viewport3D::Tool::Select ? "Select" : t == Viewport3D::Tool::DrawLine ? (measuring_ ? "Distance" : "Line") : "Polyline");
+    action("modify.fillet")->setShortcut(QKeySequence(Qt::SHIFT | Qt::Key_F));
+    action("draw.select")->setChecked(true);
+    connect(&tools, &ToolController::toolChanged, this, [this](Tool t) {
+        static const std::map<Tool, const char*> ids = {
+            {Tool::Select, "draw.select"},   {Tool::Point, "draw.point"},        {Tool::Line, "draw.line"},        {Tool::Polyline, "draw.polyline"},
+            {Tool::Polygon, "draw.polygon"}, {Tool::Rectangle, "draw.rectangle"}, {Tool::Circle, "draw.circle"},   {Tool::Arc3, "draw.arc"},
+            {Tool::Spline, "draw.spline"},   {Tool::Text, "draw.text"},          {Tool::Dimension, "draw.dimension"}, {Tool::Measure, "measure.distance"},
+            {Tool::MeasureArea, "measure.area"}, {Tool::Move, "modify.move"},   {Tool::Copy, "modify.copy"},      {Tool::Rotate, "modify.rotate"},
+            {Tool::Mirror, "modify.mirror"}, {Tool::Scale, "modify.scale"},      {Tool::Offset, "modify.offset"},  {Tool::Trim, "modify.trim"},
+            {Tool::Extend, "modify.extend"}, {Tool::Fillet, "modify.fillet"},    {Tool::Split, "modify.split"},    {Tool::CropPolygon, "survey.crop"}};
+        if (auto it = ids.find(t); it != ids.end()) action(it->second)->setChecked(true);
+        else action("draw.select")->setChecked(false);
+        promptLabel_->setText(viewports_->tools().prompt());
     });
-
-    A.gridSnap = mk("Grid Snap", "fit", [this](bool on) {
-        viewport_->setGridSnap(on ? 1.0 : 0.0);
-        snapLabel_->setText(QStringLiteral("Grid %1 · Endpoint %2").arg(on ? "1 m" : "off", viewport_->endpointSnap() ? "on" : "off"));
+    auto* snap = addAction("draw.snap", tr("Object snap"), "snap", {}, QKeySequence(Qt::Key_F3));
+    snap->setCheckable(true);
+    snap->setChecked(true);
+    connect(snap, &QAction::toggled, &tools, &ToolController::setSnapEnabled);
+    auto* surf = addAction("draw.surfaceSnap", tr("Snap to surfaces and points"), "cloud", {});
+    surf->setCheckable(true);
+    surf->setChecked(true);
+    connect(surf, &QAction::toggled, &tools, &ToolController::setSurfaceSnap);
+    auto* ortho = addAction("draw.ortho", tr("Ortho"), "ortho", {}, QKeySequence(Qt::Key_F8));
+    ortho->setCheckable(true);
+    connect(ortho, &QAction::toggled, &tools, &ToolController::setOrtho);
+    auto* gsnap = addAction("draw.gridSnap", tr("Grid snap"), "grid", {}, QKeySequence(Qt::Key_F9));
+    gsnap->setCheckable(true);
+    connect(gsnap, &QAction::toggled, this, [this](bool on) {
+        auto& s = viewports_->tools().snapSettings();
+        if (on) s.modes |= static_cast<unsigned>(cad::SnapMode::Grid);
+        else s.modes &= ~static_cast<unsigned>(cad::SnapMode::Grid);
     });
-    A.gridSnap->setCheckable(true);
-    A.gridSnap->setIconText("Grid");
-    A.gridSnap->setChecked(true);
-    A.endSnap = mk("Endpoint Snap", "polyline", [this](bool on) {
-        viewport_->setEndpointSnap(on);
-        snapLabel_->setText(QStringLiteral("Grid %1 · Endpoint %2").arg(viewport_->gridSnap() > 0 ? "1 m" : "off", on ? "on" : "off"));
-    });
-    A.endSnap->setCheckable(true);
-    A.endSnap->setIconText("Endpoint");
-    A.endSnap->setChecked(true);
-    A.workPlane = mk("Work Plane Z…", "top", [this] {
+    addAction("draw.gridSpacing", tr("Grid spacing…"), {}, [this] {
         bool ok = false;
-        const double z = QInputDialog::getDouble(this, "Work plane", "Drawing elevation Z (m):", viewport_->workPlaneZ(), -1e7, 1e7, 3, &ok);
-        if (ok) console_->execute(QStringLiteral("ELEV %1").arg(z, 0, 'f', 3));
+        const double v = QInputDialog::getDouble(this, tr("Grid snap"), tr("Spacing (m):"), viewports_->tools().snapSettings().gridSpacing, 0.001, 10000, 3, &ok);
+        if (ok) viewports_->tools().snapSettings().gridSpacing = v;
     });
-    A.workPlane->setIconText("Plane Z");
-    A.newLayer = mk("New Layer…", "new", [this] {
-        bool ok = false;
-        const QString n = QInputDialog::getText(this, "New layer", "Layer name:", QLineEdit::Normal, {}, &ok);
-        if (ok && !n.isEmpty()) console_->execute("LAYER " + n);
+    addAction("modify.join", tr("Join"), "join", [this] { handleEntityAction("join", ctx_.selection()); });
+    addAction("modify.explode", tr("Explode"), "explode", [this] { handleEntityAction("explode", ctx_.selection()); });
+    addAction("modify.union", tr("Union solids"), "boolean", [this] { handleEntityAction("union", ctx_.selection()); });
+    addAction("modify.subtract", tr("Subtract solids"), "boolean", [this] { handleEntityAction("subtract", ctx_.selection()); });
+    addAction("modify.intersect", tr("Intersect solids"), "boolean", [this] { handleEntityAction("intersect", ctx_.selection()); });
+    addAction("modify.meshToSolid", tr("Mesh to solid"), "solid", [this] { handleEntityAction("mesh-to-solid", ctx_.selection()); });
+    addAction("modify.newLayer", tr("New layer…"), "layer", [this] { handleEntityAction("new-layer", {}); });
+
+    // ---- survey
+    addAction("survey.importCloud", tr("Import point cloud…"), "cloud", [this] { handleEntityAction("import-cloud", {}); });
+    addAction("survey.importControl", tr("Import control points…"), "control", [this] { handleEntityAction("import-control", {}); });
+    const std::pair<const char*, const char*> cloudOps[] = {
+        {"survey.subsample", "cloud-subsample"}, {"survey.outliers", "cloud-outliers"}, {"survey.normals", "cloud-normals"},
+        {"survey.ground", "cloud-ground"},       {"survey.delaunay", "cloud-delaunay"}, {"survey.poisson", "cloud-poisson"},
+        {"survey.distance", "cloud-distance"},   {"survey.stats", "cloud-stats"},       {"survey.planes", "cloud-planes"},
+        {"survey.register", "register-pairs"},   {"survey.icp", "register-icp"},        {"survey.asbuilt", "asbuilt"},
+        {"survey.conformance", "conformance"},   {"survey.face", "face-advance"},       {"survey.volume", "surface-volume"},
+        {"survey.reportCloud", "report-cloud"},
+    };
+    const char* cloudTexts[] = {"Subsample…", "Remove outliers…", "Estimate normals…", "Classify ground…", "Surface (Delaunay)…", "Surface (Poisson)…",
+                                "Distance to reference…", "Statistics", "Extract planes…", "Register (pairs / control)…", "Register (ICP)…", "As-built from scan…",
+                                "Design conformance…", "Face position and actuals…", "Volume…", "Point-cloud report"};
+    const char* cloudIcons[] = {"filter", "filter", "normals", "ground", "surface", "mesh", "distance", "chart", "structure", "register", "icp", "mesh",
+                                "conformance", "face", "volume", "report"};
+    for (std::size_t i = 0; i < std::size(cloudOps); ++i) {
+        const QString act = cloudOps[i].second;
+        addAction(cloudOps[i].first, tr(cloudTexts[i]), cloudIcons[i], [this, act] { handleEntityAction(act, ctx_.selection()); });
+    }
+    // ---- design
+    using LK = LayoutDialog::Kind;
+    auto layoutAction = [this](const QString& id, const QString& text, const QString& icon, LK kind) {
+        addAction(id, text, icon, [this, kind] {
+            auto* d = new LayoutDialog(ctx_, viewports_->tools(), kind, [this](const auto& lines) { showLayoutPreview(lines); }, this);
+            d->show();
+        });
+    };
+    layoutAction("design.decline", tr("Decline…"), "decline", LK::Decline);
+    layoutAction("design.ramp", tr("Ramp…"), "ramp", LK::Ramp);
+    layoutAction("design.alignment", tr("Alignment through PIs…"), "polyline", LK::Alignment);
+    layoutAction("design.oredrive", tr("Ore drive…"), "oredrive", LK::OreDrive);
+    layoutAction("design.access", tr("Access drive…"), "access", LK::AccessDrive);
+    addAction("design.crosscuts", tr("Crosscuts…"), "crosscut", [this] { handleEntityAction("crosscuts", ctx_.selection()); });
+    addAction("design.heading", tr("Heading from centreline…"), "heading", [this] { handleEntityAction("heading-from-geometry", ctx_.selection()); },
+              QKeySequence(Qt::CTRL | Qt::Key_H));
+    addAction("design.linkedActivity", tr("Linked activity…"), "link", [this] { handleEntityAction("linked-activity", ctx_.selection()); });
+    addAction("design.stope", tr("Stope…"), "stope", [this] { handleEntityAction("stope-from-geometry", ctx_.selection()); });
+    addAction("design.subdivide", tr("Subdivide stope…"), "stope", [this] { handleEntityAction("subdivide-stope", ctx_.selection()); });
+    addAction("design.level", tr("New level…"), "level", [this] { handleEntityAction("new-level", {}); });
+    addAction("design.revision", tr("Capture revision…"), "revision", [this] { handleEntityAction("capture-revision", ctx_.selection()); });
+    addAction("design.gradient", tr("Gradient and design rules"), "chart", [this] { handleEntityAction("gradient", ctx_.selection()); });
+    addAction("design.impacts", tr("Design impacts"), "impacts", [this] { handleEntityAction("impacts", {}); });
+    addAction("design.applyQuantities", tr("Apply design quantities"), "calc", [this] { scheduler_->applyDesignQuantities(); });
+    addAction("design.solid", tr("Excavation solid"), "solid", [this] { handleEntityAction("development-solid", ctx_.selection()); });
+    addAction("design.sectionChainage", tr("Section at chainage…"), "section", [this] { handleEntityAction("section-chainage", ctx_.selection()); });
+    addAction("design.quantities", tr("Development quantities report"), "report", [this] { reports_->generate("quantities", "pdf"); });
+    // ---- geology / geotech
+    addAction("geology.drillholes", tr("Import drillholes…"), "drillhole", [this] { handleEntityAction("import-drillholes", {}); });
+    addAction("geology.composite", tr("Composite…"), "drillhole", [this] { handleEntityAction("composite", {}); });
+    addAction("geology.blockModel", tr("New block model…"), "blocks", [this] {
+        BlockModelDialog d(ctx_, this);
+        d.exec();
+    });
+    addAction("geology.code", tr("Code blocks by solid…"), "solid", [this] { handleEntityAction("block-code", ctx_.selection()); });
+    addAction("geology.estimate", tr("Estimate grades…"), "estimate", [this] { handleEntityAction("estimate", ctx_.selection()); });
+    addAction("geology.display", tr("Block display…"), "blocks", [this] { handleEntityAction("block-display", ctx_.selection()); });
+    addAction("geology.gradeTonnage", tr("Grade–tonnage report"), "chart", [this] { handleEntityAction("grade-tonnage", ctx_.selection()); });
+    addAction("geotech.structures", tr("Import structures…"), "structure", [this] { handleEntityAction("import-structures", {}); });
+    addAction("geotech.stereonet", tr("Stereonet"), "stereonet", [this] { handleEntityAction("stereonet", {}); });
+    addAction("geotech.classify", tr("Rock-mass classification…"), "geotech", [this] { handleEntityAction("classify", ctx_.selection()); });
+    // ---- schedule
+    addAction("schedule.show", tr("Scheduler"), "gantt", [this] {
+        dock("scheduler")->show();
+        dock("scheduler")->raise();
+    });
+    addAction("schedule.task", tr("Add task"), "task", [this] { scheduler_->addActivity(ActivityKind::Task); });
+    addAction("schedule.milestone", tr("Add milestone"), "milestone", [this] { scheduler_->addActivity(ActivityKind::Milestone); });
+    addAction("schedule.summary", tr("Add summary"), "summary", [this] { scheduler_->addActivity(ActivityKind::Summary); });
+    addAction("schedule.dependency", tr("Add dependency…"), "dependency", [this] { scheduler_->addDependency(); });
+    addAction("schedule.actual", tr("Record actual…"), "actual", [this] { scheduler_->recordActual(); });
+    addAction("schedule.calculate", tr("Recalculate"), "calc", [this] { ctx_.recalculateSchedule(); }, QKeySequence(Qt::Key_F5));
+    addAction("schedule.baseline", tr("Capture baseline…"), "baseline", [this] { scheduler_->captureBaseline(); });
+    addAction("schedule.scenario", tr("New scenario…"), "scenario", [this] { scheduler_->editScenario(true); });
+    addAction("schedule.optimise", tr("Optimise sequence…"), "optimise", [this] { scheduler_->optimise(); }, {},
+              OptimiserDialog::available() ? tr("OR-Tools CP-SAT") : tr("Not available: built without OR-Tools"));
+    addAction("schedule.playback", tr("4D playback"), "4d", [this] {
+        dock("playback")->show();
+        dock("playback")->raise();
+    });
+    addAction("schedule.gantt", tr("Gantt chart PDF"), "pdf", [this] { reports_->generate("gantt", "pdf"); });
+    addAction("schedule.export", tr("Export schedule…"), "xlsx", [this] {
+        const QString f = chooseSaveFile(tr("Export schedule"), tr("Excel (*.xlsx);;CSV (*.csv);;Gantt PDF (*.pdf)"), "schedule", "schedule.xlsx");
+        if (!f.isEmpty()) scheduler_->exportFile(f);
+    });
+    // ---- tools
+    addAction("tools.python", tr("Python console"), "python", [this] {
+        dock("python")->show();
+        dock("python")->raise();
+    }, {}, PythonConsolePanel::available() ? QString() : tr("Not available: built without Python"));
+    addAction("tools.runScript", tr("Run Python script…"), "python", [this] {
+        const QString f = chooseOpenFile(tr("Run Python script"), tr("Python (*.py)"), "python");
+        if (!f.isEmpty()) python_->runFile(f);
+    });
+    addAction("tools.plugins", tr("Plugins…"), "plugin", [this] {
+        PluginsDialog d(ctx_, this);
+        d.exec();
+        rebuildPluginMenu();
+    });
+    addAction("tools.crs", tr("Coordinate systems…"), "crs", [this] {
+        CrsDialog d(ctx_, this);
+        d.exec();
+    }, {}, CrsDialog::available() ? QString() : tr("Not available: built without PROJ"));
+    addAction("tools.localGrid", tr("Local mine grid…"), "grid", [this] {
+        LocalGridDialog d(ctx_, this);
+        d.exec();
+    });
+    addAction("tools.transform", tr("Transform objects to another CRS…"), "crs", [this] {
+        TransformDialog d(ctx_, this);
+        d.exec();
+    });
+    addAction("tools.jobs", tr("Jobs"), "jobs", [this] {
+        dock("jobs")->show();
+        dock("jobs")->raise();
+    });
+    addAction("tools.reports", tr("Reports"), "report", [this] {
+        dock("reports")->show();
+        dock("reports")->raise();
+    });
+    addAction("tools.console", tr("Command console"), "console", [this] {
+        dock("console")->show();
+        dock("console")->raise();
+    });
+    addAction("help.about", tr("About OpenMine Suite"), "info", [this] { showAbout(); });
+    addAction("help.commands", tr("Command reference"), "help", [this] {
+        dock("console")->show();
+        console_->execute("HELP");
     });
 
-    A.newLayer->setIconText("Layer");
-    A.fit = mk("Fit", "fit", [this] { viewport_->fitAll(); }, QKeySequence(Qt::Key_F));
-    A.top = mk("Top", "top", [this] { viewport_->setView("top"); });
-    A.front = mk("Front", "front", [this] { viewport_->setView("front"); });
-    A.side = mk("Side", "side", [this] { viewport_->setView("side"); });
-    A.iso = mk("Isometric", "iso", [this] { viewport_->setView("iso"); });
-    A.perspective = mk("Perspective", "iso", [this](bool on) { viewport_->setPerspective(on); });
-    A.perspective->setCheckable(true);
-    A.perspective->setChecked(true);
-    A.dark = mk("Dark Theme", "theme", [this] { setTheme(true); });
-    A.light = mk("Light Theme", "theme", [this] { setTheme(false); });
-
-    A.heading = mk("Create Heading", "heading", [this] { createHeadingInteractive(); });
-    A.linkedActivity = mk("Linked Activity", "activity", [this] { createLinkedActivityInteractive(); });
-    A.impacts = mk("Design Impacts", "link", [this] { console_->execute("IMPACTS"); });
-
-    A.task = mk("Task", "activity", [this] { scheduler_->addTask(); });
-    A.milestone = mk("Milestone", "baseline", [this] { scheduler_->addMilestone(); });
-    A.summary = mk("WBS Group", "gantt", [this] { scheduler_->addSummary(); });
-    A.dependency = mk("Dependency", "link", [this] { scheduler_->addDependencyDialog(); });
-    A.calc = mk("Calculate", "calc", [this] {
-        schedulerDock_->raise();
-        scheduler_->calculate();
-    }, QKeySequence(Qt::Key_F9));
-    A.baseline = mk("Baseline", "baseline", [this] { scheduler_->captureBaseline(); });
-    A.applyDesign = mk("Apply Design Qty", "calc", [this] { scheduler_->applyDesignQuantities(); });
-    A.exportCsv = mk("Export CSV", "save", [this] { scheduler_->exportCsv(); });
-
-    A.about = mk("About OpenMine Suite", "", [this] {
-        QMessageBox::about(this, "About OpenMine Suite",
-                           "<b>OpenMine Suite 0.1.0</b><br>Open-source integrated mine survey, CAD/design and scheduling.<br>"
-                           "Licensed under Apache-2.0. Built with Qt, VTK, Open CASCADE and SQLite (see THIRD_PARTY_NOTICES.md).");
-    });
-    A.commands = mk("Command Reference", "", [this] { console_->execute("HELP"); });
+    // Availability of optional features is fixed for the build.
+    action("file.repository")->setEnabled(RepositoryDialog::available());
+    action("schedule.optimise")->setEnabled(OptimiserDialog::available());
+    action("tools.crs")->setEnabled(CrsDialog::available());
+    action("tools.localGrid")->setEnabled(CrsDialog::available());
+    action("tools.transform")->setEnabled(CrsDialog::available());
+    action("tools.python")->setEnabled(PythonConsolePanel::available());
+    action("tools.runScript")->setEnabled(PythonConsolePanel::available());
+#ifndef OPENMINE_APP_HAVE_OCCT
+    for (const char* id : {"modify.union", "modify.subtract", "modify.intersect", "modify.meshToSolid", "design.solid"}) {
+        action(id)->setEnabled(false);
+        action(id)->setToolTip(tr("Not available: built without Open CASCADE"));
+    }
+#endif
+#ifndef OPENMINE_APP_HAVE_PDAL
+    for (const char* id : {"survey.ground", "survey.poisson", "survey.asbuilt"}) {
+        action(id)->setEnabled(false);
+        action(id)->setToolTip(tr("Not available: built without PDAL"));
+    }
+#endif
 }
 
+// ---- menus and ribbon ----------------------------------------------------------------------------
+
 void MainWindow::createMenus() {
-    auto& A = *a_;
-    auto* file = menuBar()->addMenu("&File");
-    file->addActions({A.newProject, A.open, A.save, A.saveAs});
-    file->addSeparator();
-    file->addAction(A.close);
-    file->addSeparator();
-    file->addAction(A.exit);
-    auto* edit = menuBar()->addMenu("&Edit");
-    edit->addActions({A.undo, A.redo});
-    edit->addSeparator();
-    edit->addAction(A.del);
-    auto* view = menuBar()->addMenu("&View");
-    view->addActions({A.fit, A.top, A.front, A.side, A.iso});
-    view->addSeparator();
-    view->addAction(A.perspective);
-    view->addSeparator();
-    view->addActions({A.dark, A.light});
-    auto* tools = menuBar()->addMenu("&Tools");
-    tools->addActions({A.select, A.line, A.polyline, A.measure});
-    tools->addSeparator();
-    tools->addActions({A.heading, A.linkedActivity, A.impacts});
-    tools->addSeparator();
-    tools->addActions({A.calc, A.baseline, A.applyDesign});
-    auto* win = menuBar()->addMenu("&Window");
-    for (auto* d : findChildren<QDockWidget*>()) win->addAction(d->toggleViewAction());
-    auto* settings = menuBar()->addMenu("&Settings");
-    settings->addActions({A.gridSnap, A.endSnap, A.workPlane});
-    auto* help = menuBar()->addMenu("&Help");
-    help->addActions({A.commands, A.about});
+    // Our own menu bar: it is placed above the ribbon in the main window's menu widget.
+    auto* mb = new QMenuBar(this);
+    menuBar_ = mb;
+    auto add = [this](QMenu* m, std::initializer_list<const char*> ids) {
+        for (const char* id : ids) {
+            if (std::string_view(id) == "-") m->addSeparator();
+            else if (auto* a = action(id)) m->addAction(a);
+        }
+    };
+    auto* file = mb->addMenu(tr("&File"));
+    add(file, {"file.new", "file.open"});
+    recentMenu_ = file->addMenu(tr("Recent projects"));
+    add(file, {"file.save", "file.saveAs", "file.close", "-", "file.import", "file.export", "-", "file.repository", "file.check", "-", "file.exit"});
+    connect(recentMenu_, &QMenu::aboutToShow, this, &MainWindow::rebuildRecentMenu);
+    auto* edit = mb->addMenu(tr("&Edit"));
+    add(edit, {"edit.undo", "edit.redo", "-", "edit.delete", "edit.selectAll", "edit.clearSelection", "-", "edit.properties"});
+    auto* view = mb->addMenu(tr("&View"));
+    add(view, {"view.fit", "view.fitSelection", "-", "view.top", "view.north", "view.east", "view.iso", "view.isoNw", "view.perspective", "-",
+               "view.section", "view.sectionLine", "view.sectionWidth", "view.workplane", "-", "view.layout1", "view.layout2", "view.layout2h", "view.layout4", "-",
+               "view.grid", "view.labels", "view.legend", "view.clouds", "view.envelopes", "view.statusColours", "view.stations", "view.meshEdges",
+               "view.drillholeField", "view.pointBudget", "view.showAll", "-", "view.dark", "view.light", "view.screenshot"});
+    auto* panels = view->addMenu(tr("Panels"));
+    for (const auto& [name, d] : docks_) panels->addAction(d->toggleViewAction());
+    auto* draw = mb->addMenu(tr("&Draw"));
+    add(draw, {"draw.select", "-", "draw.point", "draw.line", "draw.polyline", "draw.polygon", "draw.rectangle", "draw.circle", "draw.arc", "draw.spline",
+               "draw.text", "draw.dimension", "-", "measure.distance", "measure.area", "-", "draw.snap", "draw.surfaceSnap", "draw.ortho", "draw.gridSnap",
+               "draw.gridSpacing"});
+    auto* modify = mb->addMenu(tr("&Modify"));
+    add(modify, {"modify.move", "modify.copy", "modify.rotate", "modify.mirror", "modify.scale", "-", "modify.offset", "modify.trim", "modify.extend",
+                 "modify.fillet", "modify.split", "modify.join", "modify.explode", "-", "modify.union", "modify.subtract", "modify.intersect",
+                 "modify.meshToSolid", "-", "modify.newLayer"});
+    auto* survey = mb->addMenu(tr("&Survey"));
+    add(survey, {"survey.importCloud", "survey.importControl", "-", "survey.subsample", "survey.outliers", "survey.normals", "survey.ground", "survey.crop",
+                 "survey.planes", "survey.stats", "-", "survey.register", "survey.icp", "-", "survey.delaunay", "survey.poisson", "survey.distance",
+                 "survey.volume", "-", "survey.asbuilt", "survey.conformance", "survey.face", "-", "survey.reportCloud"});
+    auto* design = mb->addMenu(tr("D&esign"));
+    add(design, {"design.decline", "design.ramp", "design.alignment", "design.oredrive", "design.access", "design.crosscuts", "-", "design.heading",
+                 "design.linkedActivity", "design.level", "-", "design.stope", "design.subdivide", "-", "design.revision", "design.gradient",
+                 "design.sectionChainage", "design.solid", "-", "design.impacts", "design.applyQuantities", "design.quantities"});
+    auto* geology = mb->addMenu(tr("&Geology"));
+    add(geology, {"geology.drillholes", "geology.composite", "-", "geology.blockModel", "geology.code", "geology.estimate", "geology.display",
+                  "geology.gradeTonnage", "-", "geotech.structures", "geotech.stereonet", "geotech.classify"});
+    auto* schedule = mb->addMenu(tr("S&chedule"));
+    add(schedule, {"schedule.show", "-", "schedule.task", "schedule.milestone", "schedule.summary", "schedule.dependency", "schedule.actual", "-",
+                   "schedule.calculate", "schedule.scenario", "schedule.optimise", "schedule.baseline", "-", "schedule.playback", "schedule.gantt",
+                   "schedule.export"});
+    auto* tools = mb->addMenu(tr("&Tools"));
+    add(tools, {"tools.python", "tools.runScript", "tools.console", "-", "tools.crs", "tools.localGrid", "tools.transform", "-", "tools.jobs", "tools.reports",
+                "-", "tools.plugins"});
+    pluginMenu_ = tools->addMenu(toolIcon("plugin"), tr("Plugin commands"));
+    auto* help = mb->addMenu(tr("&Help"));
+    add(help, {"help.commands", "help.about"});
 }
 
 void MainWindow::createRibbon() {
-    auto& A = *a_;
     ribbon_ = new Ribbon(this);
     auto* holder = new QWidget(this);
     auto* lay = new QVBoxLayout(holder);
     lay->setContentsMargins(0, 0, 0, 0);
     lay->setSpacing(0);
+    lay->addWidget(menuBar_);
     lay->addWidget(ribbon_);
-    lay->addWidget(viewport_, 1);
-    setCentralWidget(holder);
-
-    const QString p2 = "Phase 2 — Initial CAD", p3 = "Phase 3 — Initial Survey", p4 = "Phase 4 — Scheduler",
-                  p6 = "Phase 6 — Advanced";
-    {
-        auto* pg = ribbon_->addPage("Home");
-        auto* g = pg->addGroup("Project");
-        for (auto* x : {A.newProject, A.open, A.save}) g->addAction(x);
-        g = pg->addGroup("Edit");
-        for (auto* x : {A.undo, A.redo, A.del}) g->addAction(x);
-        g = pg->addGroup("View");
-        for (auto* x : {A.fit, A.top, A.front, A.side, A.iso}) g->addAction(x);
-        g = pg->addGroup("Appearance");
-        g->addAction(A.dark);
-        g->addAction(A.light);
-        pg->finish();
-    }
-    {
-        auto* pg = ribbon_->addPage("Survey");
-        auto* g = pg->addGroup("Import");
-        g->addPlanned("LAS/LAZ", p3);
-        g->addPlanned("E57", p3);
-        g->addPlanned("CSV Points", p3);
-        g = pg->addGroup("Point Cloud");
-        g->addPlanned("Crop", p3);
-        g->addPlanned("Filter", p3);
-        g->addPlanned("Register", p3);
-        g->addPlanned("Mesh", p3);
-        g = pg->addGroup("Measure");
-        g->addAction(A.measure);
-        g = pg->addGroup("Conformance");
-        g->addPlanned("Overbreak", p6);
-        g->addPlanned("Sections", p6);
-        pg->finish();
-    }
-    {
-        auto* pg = ribbon_->addPage("CAD");
-        auto* g = pg->addGroup("Draw");
-        for (auto* x : {A.select, A.line, A.polyline}) g->addAction(x);
-        g->addPlanned("Arc", p2);
-        g->addPlanned("Circle", p2);
-        g->addPlanned("Text", p2);
-        g = pg->addGroup("Modify");
-        g->addAction(A.del);
-        g->addPlanned("Offset", p2);
-        g->addPlanned("Trim", p2);
-        g->addPlanned("Extend", p2);
-        g->addPlanned("Fillet", p2);
-        g = pg->addGroup("Snap");
-        g->addAction(A.gridSnap);
-        g->addAction(A.endSnap);
-        g->addAction(A.workPlane);
-        g = pg->addGroup("Layers");
-        g->addAction(A.newLayer);
-        g = pg->addGroup("Exchange");
-        g->addPlanned("DXF", p2);
-        pg->finish();
-    }
-    {
-        auto* pg = ribbon_->addPage("Mine Design");
-        auto* g = pg->addGroup("Development");
-        g->addAction(A.heading);
-        g->addAction(A.linkedActivity);
-        g->addPlanned("Decline", p6);
-        g->addPlanned("Profile", p6);
-        g = pg->addGroup("Stopes");
-        g->addPlanned("Stope", p6);
-        g->addPlanned("Block", p6);
-        g = pg->addGroup("Revisions");
-        g->addAction(A.impacts);
-        pg->finish();
-    }
-    {
-        auto* pg = ribbon_->addPage("Scheduler");
-        auto* g = pg->addGroup("Activities");
-        for (auto* x : {A.task, A.milestone, A.summary, A.dependency}) g->addAction(x);
-        g = pg->addGroup("Calculate");
-        for (auto* x : {A.calc, A.baseline, A.applyDesign}) g->addAction(x);
-        g = pg->addGroup("Resources");
-        g->addPlanned("Resources", p6);
-        g->addPlanned("Levelling", p6);
-        g->addPlanned("Optimise", p6 + " (OR-Tools)");
-        g = pg->addGroup("4D");
-        g->addPlanned("Playback", p6);
-        g = pg->addGroup("Export");
-        g->addAction(A.exportCsv);
-        g->addPlanned("PDF", p4);
-        pg->finish();
-    }
-    for (const auto& [name, tools] : std::vector<std::pair<QString, QStringList>>{
-             {"Geology", {"Drillholes", "Surfaces", "Block Model"}},
-             {"Geotechnical", {"Support", "Stability", "Joints"}},
-             {"Analysis", {"Volumes", "Compare", "Clearance"}},
-             {"Reporting", {"Survey Rpt", "Schedule Rpt", "Templates"}},
-             {"Automation", {"Python", "Macros", "Plugins"}}}) {
-        auto* pg = ribbon_->addPage(name);
-        auto* g = pg->addGroup(name);
-        for (const auto& t : tools) g->addPlanned(t, p6);
-        if (name == "Reporting") pg->addGroup("Available")->addAction(A.exportCsv);
-        pg->finish();
-    }
-    ribbon_->setCurrentIndex(2); // CAD
-}
-
-void MainWindow::createDocks() {
-    auto dock = [this](const QString& title, QWidget* w, Qt::DockWidgetArea area) {
-        auto* d = new QDockWidget(title, this);
-        d->setObjectName(title);
-        d->setWidget(w);
-        addDockWidget(area, d);
-        return d;
+    setMenuWidget(holder);
+    auto big = [this](RibbonGroup* g, std::initializer_list<const char*> ids) {
+        for (const char* id : ids)
+            if (auto* a = action(id)) g->addAction(a);
     };
-    explorer_ = new ProjectExplorer(ctx_, this);
-    properties_ = new PropertiesPanel(ctx_, this);
-    console_ = new CommandConsole(ctx_, this);
-    scheduler_ = new SchedulerPanel(ctx_, this);
-    auto* ex = dock("Project Explorer", explorer_, Qt::LeftDockWidgetArea);
-    auto* pr = dock("Properties", properties_, Qt::RightDockWidgetArea);
-    schedulerDock_ = dock("Scheduler — Gantt", scheduler_, Qt::BottomDockWidgetArea);
-    auto* co = dock("Command Console", console_, Qt::BottomDockWidgetArea);
-    tabifyDockWidget(co, schedulerDock_);
-    schedulerDock_->raise();
-    resizeDocks({ex, pr}, {300, 360}, Qt::Horizontal);
-    resizeDocks({schedulerDock_}, {320}, Qt::Vertical);
-}
-
-void MainWindow::createStatusBar() {
-    coordLabel_ = new QLabel("X — Y — Z —", this);
-    coordLabel_->setMinimumWidth(330);
-    crsLabel_ = new QLabel(this);
-    snapLabel_ = new QLabel("Grid 1 m · Endpoint on", this);
-    toolLabel_ = new QLabel("Select", this);
-    statusBar()->addPermanentWidget(toolLabel_);
-    statusBar()->addPermanentWidget(snapLabel_);
-    statusBar()->addPermanentWidget(crsLabel_);
-    statusBar()->addPermanentWidget(coordLabel_);
-    connect(viewport_, &Viewport3D::cursorMoved, this, [this](Vec3 w, bool ok) {
-        coordLabel_->setText(ok ? QStringLiteral("X %1   Y %2   Z %3").arg(formatNumber(w.x), formatNumber(w.y), formatNumber(w.z))
-                                : QStringLiteral("cursor not on work plane"));
+    auto small = [this](RibbonGroup* g, std::initializer_list<const char*> ids) {
+        QList<QAction*> l;
+        for (const char* id : ids)
+            if (auto* a = action(id)) l << a;
+        g->addSmall(l);
+    };
+    auto* home = ribbon_->addPage(tr("Home"));
+    big(home->addGroup(tr("Project")), {"file.new", "file.open", "file.save"});
+    small(home->addGroup(tr("Data")), {"file.import", "file.export", "file.check", "file.repository", "tools.crs", "tools.localGrid"});
+    big(home->addGroup(tr("Edit")), {"edit.undo", "edit.redo", "edit.delete"});
+    big(home->addGroup(tr("View")), {"view.fit", "view.top", "view.iso", "view.section"});
+    small(home->addGroup(tr("Layout")), {"view.layout1", "view.layout2", "view.layout4", "view.perspective", "view.dark", "view.light"});
+    home->finish();
+    auto* cad = ribbon_->addPage(tr("CAD"));
+    big(cad->addGroup(tr("Select")), {"draw.select"});
+    small(cad->addGroup(tr("Draw")), {"draw.point", "draw.line", "draw.polyline", "draw.polygon", "draw.rectangle", "draw.circle", "draw.arc", "draw.spline", "draw.text",
+                                      "draw.dimension"});
+    small(cad->addGroup(tr("Modify")), {"modify.move", "modify.copy", "modify.rotate", "modify.mirror", "modify.scale", "modify.offset", "modify.trim", "modify.extend",
+                                        "modify.fillet", "modify.split", "modify.join", "modify.explode"});
+    small(cad->addGroup(tr("Solids")), {"modify.union", "modify.subtract", "modify.intersect", "modify.meshToSolid"});
+    small(cad->addGroup(tr("Measure")), {"measure.distance", "measure.area"});
+    small(cad->addGroup(tr("Snaps")), {"draw.snap", "draw.surfaceSnap", "draw.ortho", "draw.gridSnap", "draw.gridSpacing", "view.workplane"});
+    big(cad->addGroup(tr("Layers")), {"modify.newLayer"});
+    cad->finish();
+    auto* survey = ribbon_->addPage(tr("Survey"));
+    big(survey->addGroup(tr("Data")), {"survey.importCloud", "survey.importControl"});
+    small(survey->addGroup(tr("Process")), {"survey.subsample", "survey.outliers", "survey.normals", "survey.ground", "survey.crop", "survey.planes"});
+    big(survey->addGroup(tr("Register")), {"survey.register", "survey.icp"});
+    small(survey->addGroup(tr("Surfaces")), {"survey.delaunay", "survey.poisson", "survey.distance", "survey.volume", "survey.stats"});
+    big(survey->addGroup(tr("As-built")), {"survey.asbuilt", "survey.conformance", "survey.face"});
+    big(survey->addGroup(tr("Report")), {"survey.reportCloud"});
+    survey->finish();
+    auto* design = ribbon_->addPage(tr("Design"));
+    big(design->addGroup(tr("Layout")), {"design.decline", "design.ramp"});
+    small(design->addGroup(tr("Drives")), {"design.alignment", "design.oredrive", "design.access", "design.crosscuts", "design.heading", "design.level"});
+    small(design->addGroup(tr("Stopes")), {"design.stope", "design.subdivide", "design.solid"});
+    small(design->addGroup(tr("Check")), {"design.gradient", "design.sectionChainage", "design.revision", "design.impacts", "design.applyQuantities",
+                                          "design.quantities"});
+    big(design->addGroup(tr("Schedule link")), {"design.linkedActivity"});
+    design->finish();
+    auto* geology = ribbon_->addPage(tr("Geology"));
+    big(geology->addGroup(tr("Drillholes")), {"geology.drillholes", "geology.composite"});
+    small(geology->addGroup(tr("Block models")), {"geology.blockModel", "geology.code", "geology.estimate", "geology.display", "geology.gradeTonnage"});
+    big(geology->addGroup(tr("Geotechnical")), {"geotech.structures", "geotech.stereonet", "geotech.classify"});
+    geology->finish();
+    auto* schedule = ribbon_->addPage(tr("Schedule"));
+    big(schedule->addGroup(tr("Scheduler")), {"schedule.show", "schedule.calculate"});
+    small(schedule->addGroup(tr("Activities")), {"schedule.task", "schedule.milestone", "schedule.summary", "schedule.dependency", "schedule.actual"});
+    small(schedule->addGroup(tr("Scenarios")), {"schedule.scenario", "schedule.optimise", "schedule.baseline"});
+    big(schedule->addGroup(tr("4D")), {"schedule.playback"});
+    small(schedule->addGroup(tr("Output")), {"schedule.gantt", "schedule.export"});
+    schedule->finish();
+    auto* tools = ribbon_->addPage(tr("Tools"));
+    big(tools->addGroup(tr("Scripting")), {"tools.python", "tools.runScript", "tools.console"});
+    big(tools->addGroup(tr("Extend")), {"tools.plugins"});
+    big(tools->addGroup(tr("Monitor")), {"tools.jobs", "tools.reports"});
+    tools->finish();
+    connect(ribbon_, &QTabWidget::currentChanged, this, [this](int i) {
+        const QString t = ribbon_->tabText(i);
+        if (t == tr("Schedule")) {
+            dock("scheduler")->show();
+            dock("scheduler")->raise();
+        } else if (t == tr("Survey")) {
+            dock("jobs")->show();
+        } else if (t == tr("Geology")) {
+            if (ctx_.hasProject() && !ctx_.project().model().structures.empty()) {
+                dock("stereonet")->show();
+                dock("stereonet")->raise();
+            }
+        }
     });
 }
 
+void MainWindow::createStatusBar() {
+    auto mk = [this](int minWidth) {
+        auto* l = new QLabel(this);
+        l->setMinimumWidth(minWidth);
+        statusBar()->addPermanentWidget(l);
+        return l;
+    };
+    promptLabel_ = new QLabel(this);
+    statusBar()->addWidget(promptLabel_, 1);
+    snapLabel_ = mk(90);
+    coordLabel_ = mk(330);
+    pointsLabel_ = mk(120);
+    jobsLabel_ = mk(80);
+    scenarioLabel_ = mk(140);
+    crsLabel_ = mk(160);
+    connect(viewports_, &ViewportArea::cursorMoved, this, [this](Vec3 w, bool valid) {
+        if (!valid || !ctx_.hasProject()) {
+            coordLabel_->clear();
+            return;
+        }
+        const auto& info = ctx_.project().model().info;
+        const int d = info.coordinateDisplayDecimals;
+        if (info.southOrientatedAxes)
+            coordLabel_->setText(tr("Y %1  X %2  Z %3").arg(-w.x, 0, 'f', d).arg(-w.y, 0, 'f', d).arg(w.z, 0, 'f', d));
+        else
+            coordLabel_->setText(tr("E %1  N %2  Z %3").arg(w.x, 0, 'f', d).arg(w.y, 0, 'f', d).arg(w.z, 0, 'f', d));
+        pointsLabel_->setText(activeView() && activeView()->displayedPoints() ? tr("%L1 pts").arg(static_cast<qulonglong>(activeView()->displayedPoints())) : QString());
+    });
+    connect(&viewports_->tools(), &ToolController::snapped, this, [this](const QString& label, Vec3) { snapLabel_->setText(label); });
+    connect(&viewports_->tools(), &ToolController::promptChanged, promptLabel_, &QLabel::setText);
+    connect(&ctx_.jobs(), &JobManager::jobsChanged, this, [this] {
+        const int n = ctx_.jobs().runningCount();
+        jobsLabel_->setText(n ? tr("%1 job(s)").arg(n) : QString());
+        updateActions();
+    });
+    connect(&ctx_.jobs(), &JobManager::jobFinished, this, [this](int, bool ok, const QString& msg) {
+        if (!ok) ctx_.report(msg, MessageLevel::Error);
+    });
+    auto updateCrs = [this] {
+        if (!ctx_.hasProject()) return;
+        const auto* c = ctx_.project().model().projectCrs();
+        crsLabel_->setText(c ? (c->authorityCode.empty() ? qstr(c->name) : qstr(c->authorityCode)) : tr("CRS not declared"));
+        crsLabel_->setToolTip(c ? qstr(c->name + "\n" + c->axisDescription) : QString());
+    };
+    connect(&ctx_, &AppContext::modelChanged, this, updateCrs);
+    connect(&ctx_, &AppContext::projectReplaced, this, updateCrs);
+    scenarioLabel_->setText(tr("Base schedule"));
+}
+
+// ---- state --------------------------------------------------------------------------------------
+
 void MainWindow::updateTitle() {
     if (!ctx_.hasProject()) {
-        setWindowTitle("OpenMine Suite");
-        crsLabel_->setText("No project");
+        setWindowTitle(tr("OpenMine Suite"));
         return;
     }
     const auto& p = ctx_.project();
-    const QString file = p.filePath().empty() ? "unsaved" : QString::fromStdU16String(p.filePath().filename().u16string());
-    setWindowTitle(QStringLiteral("%1 — %2%3 — OpenMine Suite").arg(qstr(p.model().info.name), file, p.isModified() ? " •" : ""));
-    crsLabel_->setText("CRS: " + qstr(p.model().info.crs.name));
+    const QString file = p.filePath().empty() ? tr("unsaved") : QFileInfo(QString::fromStdU16String(p.filePath().u16string())).fileName();
+    setWindowTitle(QStringLiteral("%1[*] — %2 — OpenMine Suite").arg(qstr(p.model().info.name), file));
+    setWindowModified(p.isModified());
 }
 
 void MainWindow::updateActions() {
     const bool has = ctx_.hasProject();
-    auto& A = *a_;
-    A.undo->setEnabled(has && ctx_.project().commands().canUndo());
-    A.redo->setEnabled(has && ctx_.project().commands().canRedo());
-    A.undo->setToolTip(has && A.undo->isEnabled() ? "Undo: " + qstr(ctx_.project().commands().undoText()) : "Undo");
-    A.redo->setToolTip(has && A.redo->isEnabled() ? "Redo: " + qstr(ctx_.project().commands().redoText()) : "Redo");
-    for (auto* x : {A.save, A.saveAs, A.close, A.line, A.polyline, A.measure, A.task, A.milestone, A.summary, A.dependency,
-                    A.calc, A.baseline, A.exportCsv, A.impacts, A.newLayer})
-        x->setEnabled(has);
-    const auto sel = ctx_.selection();
-    A.heading->setEnabled(has && sel.kind == EntityKind::Geometry);
-    A.linkedActivity->setEnabled(has && sel.kind == EntityKind::Development);
-    A.applyDesign->setEnabled(has && sel.kind == EntityKind::Activity);
-    A.del->setEnabled(has && !sel.isEmpty() && sel.kind != EntityKind::ProjectInfo);
+    for (auto& [id, a] : actions_) {
+        if (id == "file.new" || id == "file.open" || id == "file.exit" || id.startsWith("help.") || id.startsWith("view.") || id == "tools.plugins") continue;
+        if (a->toolTip().contains(tr("Not available"))) continue;
+        a->setEnabled(has);
+    }
+    if (!has) return;
+    auto& cmd = ctx_.project().commands();
+    action("edit.undo")->setEnabled(cmd.canUndo());
+    action("edit.redo")->setEnabled(cmd.canRedo());
+    action("edit.undo")->setText(cmd.canUndo() ? tr("Undo %1").arg(qstr(cmd.undoText())) : tr("Undo"));
+    action("edit.redo")->setText(cmd.canRedo() ? tr("Redo %1").arg(qstr(cmd.redoText())) : tr("Redo"));
+    action("edit.delete")->setEnabled(!ctx_.selection().empty());
+    // Saving while a job writes assets could copy a half-written file.
+    action("file.save")->setEnabled(!ctx_.jobs().assetJobsRunning());
+    action("file.saveAs")->setEnabled(!ctx_.jobs().assetJobsRunning());
 }
 
 void MainWindow::setTheme(bool dark) {
     Theme::apply(*qApp, dark ? ThemeKind::Dark : ThemeKind::Light);
-    viewport_->refreshTheme();
+    viewports_->forEach([](Viewport3D& v) { v.refreshTheme(); });
+    // Icons are drawn in the theme's colours: redraw them for the new theme.
+    for (auto& [id, a] : actions_) {
+        const QString icon = a->property("iconName").toString();
+        if (!icon.isEmpty()) a->setIcon(toolIcon(icon));
+    }
     properties_->refresh();
-    scheduler_->update();
-    // Icons are drawn from theme colours; re-create them.
-    for (auto* act : findChildren<QAction*>())
-        if (const QString n = act->property("iconName").toString(); !n.isEmpty()) act->setIcon(toolIcon(n));
-    ctx_.report(dark ? "Dark theme" : "Light theme");
+    ctx_.settings().setValue("ui/theme", dark ? "dark" : "light");
 }
 
-// ---------------------------------------------------------------------------
+void MainWindow::rebuildRecentMenu() {
+    recentMenu_->clear();
+    for (const auto& f : ctx_.settings().value("recent/files").toStringList()) {
+        auto* a = recentMenu_->addAction(QFileInfo(f).fileName(), this, [this, f] {
+            if (maybeSave()) openProjectFrom(f);
+        });
+        a->setToolTip(f);
+        a->setEnabled(QFileInfo::exists(f));
+    }
+    if (recentMenu_->isEmpty()) recentMenu_->addAction(tr("(none)"))->setEnabled(false);
+}
+
+void MainWindow::loadPlugins() {
+    std::vector<std::string> disabled;
+    for (const auto& id : ctx_.settings().value("plugins/disabled").toStringList()) disabled.push_back(sstr(id));
+    const int n = ctx_.plugins().loadAll(ctx_.pluginDirectories(), disabled);
+    for (const auto& s : ctx_.plugins().plugins())
+        if (!s.loaded && std::find(disabled.begin(), disabled.end(), s.manifest.id) == disabled.end())
+            ctx_.report(tr("Plugin %1 not loaded: %2").arg(qstr(s.manifest.id), qstr(s.error)), MessageLevel::Warning);
+    if (n) ctx_.report(tr("%1 plugin(s) loaded").arg(n));
+    rebuildPluginMenu();
+}
+
+void MainWindow::rebuildPluginMenu() {
+    pluginMenu_->clear();
+    const auto cmds = ctx_.plugins().commands();
+    for (const auto& c : cmds) {
+        const QString name = qstr(c.name);
+        auto* a = pluginMenu_->addAction(name, this, [this, name] {
+            QString args = "{}";
+            if (!nonInteractive_) {
+                bool ok = false;
+                args = QInputDialog::getText(this, name, tr("Arguments (JSON):"), QLineEdit::Normal, "{}", &ok);
+                if (!ok) return;
+            }
+            const auto r = ctx_.plugins().runCommand(ctx_.project(), sstr(name), sstr(args));
+            for (const auto& l : r.log) ctx_.report(qstr(l));
+            if (r.ok) ctx_.report(tr("%1: %2").arg(name, qstr(r.text)));
+            else ctx_.report(tr("%1 failed: %2%3").arg(name, qstr(r.error), r.rolledBack ? tr(" (its open edit was rolled back)") : QString()), MessageLevel::Error);
+        });
+        a->setToolTip(qstr(c.description + " [" + c.pluginId + "]"));
+    }
+    if (cmds.empty()) pluginMenu_->addAction(tr("(no plugin commands)"))->setEnabled(false);
+}
+
+void MainWindow::showAbout() {
+    QMessageBox::about(this, tr("About OpenMine Suite"),
+                       tr("<h3>OpenMine Suite %1</h3><p>Open-source integrated mine survey, design and scheduling.</p>"
+                          "<p>Licensed under the Apache License 2.0. Third-party components and their licences are listed in THIRD_PARTY_NOTICES.</p>"
+                          "<p>Qt %2 · VTK · Open CASCADE · PDAL · PROJ · GDAL · OR-Tools · SQLite · PostgreSQL/PostGIS · Python</p>")
+                           .arg(qstr(persistence::kAppVersion), qVersion()));
+}
+
+void MainWindow::projectCheck() {
+    QStringList lines;
+    if (!ctx_.project().filePath().empty()) {
+        const auto r = persistence::checkProjectFile(ctx_.project().filePath(), true);
+        lines << tr("File: %1 (schema v%2)").arg(r.ok ? tr("OK") : tr("PROBLEMS")).arg(r.schemaVersion);
+        for (const auto& p : r.problems) lines << "  " + qstr(p);
+    } else {
+        lines << tr("The project has not been saved yet (file checks skipped).");
+    }
+    const auto problems = persistence::checkModel(ctx_.project());
+    lines << tr("Model: %1 referential problem(s)").arg(problems.size());
+    for (const auto& p : problems) lines << "  " + qstr(p);
+    int assetsBad = 0;
+    for (const auto& a : ctx_.project().model().assets.all()) {
+        const auto v = ctx_.project().assets().verify(a, true);
+        if (!v.ok) {
+            ++assetsBad;
+            for (const auto& p : v.problems) lines << "  " + qstr(p);
+        }
+    }
+    lines << tr("Assets: %1 checked, %2 with problems").arg(ctx_.project().model().assets.size()).arg(assetsBad);
+    ctx_.report(lines.front());
+    if (nonInteractive_) {
+        for (const auto& l : lines) ctx_.report(l);
+        return;
+    }
+    QMessageBox box(this);
+    box.setWindowTitle(tr("Project integrity"));
+    box.setText(lines.join("\n"));
+    box.exec();
+}
+
+// ---- project lifecycle ----------------------------------------------------------------------------
+
+QString MainWindow::chooseOpenFile(const QString& title, const QString& filter, const QString& key) {
+    if (nonInteractive_) return {};
+    const QString dir = ctx_.settings().value("dirs/" + key).toString();
+    const QString f = QFileDialog::getOpenFileName(this, title, dir, filter);
+    if (!f.isEmpty()) ctx_.settings().setValue("dirs/" + key, QFileInfo(f).absolutePath());
+    return f;
+}
+
+QString MainWindow::chooseSaveFile(const QString& title, const QString& filter, const QString& key, const QString& suggestion) {
+    if (nonInteractive_) return {};
+    const QString dir = ctx_.settings().value("dirs/" + key).toString();
+    const QString f = QFileDialog::getSaveFileName(this, title, QDir(dir).filePath(suggestion), filter);
+    if (!f.isEmpty()) ctx_.settings().setValue("dirs/" + key, QFileInfo(f).absolutePath());
+    return f;
+}
+
 bool MainWindow::saveProjectTo(const QString& path) {
+    if (ctx_.jobs().assetJobsRunning()) {
+        ctx_.report(tr("Wait for the running jobs to finish (or cancel them) before saving"), MessageLevel::Warning);
+        return false;
+    }
     try {
         ctx_.saveProject(path);
+#ifdef OPENMINE_APP_HAVE_REPOSITORY
+        if (!ctx_.pendingWorkingCopy().empty()) {
+            repository::WorkingCopy::fromJson(ctx_.pendingWorkingCopy()).save(std::filesystem::path(path.toStdU16String()));
+            ctx_.setPendingWorkingCopy({});
+        }
+#endif
         updateTitle();
         return true;
     } catch (const std::exception& e) {
-        ctx_.report(e.what(), true);
-        if (!nonInteractive_) QMessageBox::critical(this, "Save failed", e.what());
+        ctx_.report(tr("Save failed: %1").arg(qstr(e.what())), MessageLevel::Error);
+        if (!nonInteractive_) QMessageBox::critical(this, tr("Save failed"), qstr(e.what()));
         return false;
     }
 }
@@ -444,8 +1073,8 @@ bool MainWindow::openProjectFrom(const QString& path) {
         ctx_.openProject(path);
         return true;
     } catch (const std::exception& e) {
-        ctx_.report(e.what(), true);
-        if (!nonInteractive_) QMessageBox::critical(this, "Open failed", e.what());
+        ctx_.report(tr("Open failed: %1").arg(qstr(e.what())), MessageLevel::Error);
+        if (!nonInteractive_) QMessageBox::critical(this, tr("Open failed"), qstr(e.what()));
         return false;
     }
 }
@@ -457,128 +1086,34 @@ bool MainWindow::closeProject() {
 }
 
 bool MainWindow::maybeSave() {
-    if (nonInteractive_ || !ctx_.hasProject() || !ctx_.project().isModified()) return true;
-    const auto r = QMessageBox::warning(this, "Unsaved changes", "The project has unsaved changes. Save them?",
-                                        QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
+    if (!ctx_.hasProject() || !ctx_.project().isModified() || nonInteractive_) return true;
+    const auto r = QMessageBox::question(this, tr("Unsaved changes"), tr("Save the changes to '%1'?").arg(qstr(ctx_.project().model().info.name)),
+                                         QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel);
     if (r == QMessageBox::Cancel) return false;
     if (r == QMessageBox::Save) {
-        a_->save->trigger();
+        action("file.save")->trigger();
         return !ctx_.project().isModified();
     }
     return true;
 }
 
 void MainWindow::closeEvent(QCloseEvent* e) {
-    if (maybeSave()) e->accept();
-    else e->ignore();
-}
-
-void MainWindow::onDrawingFinished(const std::vector<Vec3>& pts, bool isLine) {
-    if (!ctx_.hasProject()) return;
-    if (measuring_) {
-        measuring_ = false;
-        const Vec3 d = pts.back() - pts.front();
-        ctx_.report(QStringLiteral("Distance: 3D %1 m · plan %2 m · ΔX %3 · ΔY %4 · ΔZ %5")
-                        .arg(formatNumber(d.length()), formatNumber(d.horizontalLength()), formatNumber(d.x), formatNumber(d.y),
-                             formatNumber(d.z)));
+    if (ctx_.jobs().runningCount() > 0 && !nonInteractive_) {
+        if (QMessageBox::question(this, tr("Jobs running"), tr("%1 background job(s) are running. Cancel them and exit?").arg(ctx_.jobs().runningCount())) !=
+            QMessageBox::Yes) {
+            e->ignore();
+            return;
+        }
+    }
+    if (!maybeSave()) {
+        e->ignore();
         return;
     }
-    try {
-        GeometryObject g;
-        g.type = isLine ? GeometryType::Line : GeometryType::Polyline;
-        g.vertices = pts;
-        // Draw on the selected layer, else the first unlocked layer.
-        const auto& m = ctx_.project().model();
-        for (const auto& l : m.layers.all())
-            if (!l.locked) {
-                g.layerId = l.id;
-                break;
-            }
-        if (ctx_.selection().kind == EntityKind::Layer) g.layerId = ctx_.selection().id;
-        const Uuid id = ProjectEditor(ctx_.project()).addGeometry(g);
-        ctx_.select(EntityKind::Geometry, id);
-        ctx_.report(QStringLiteral("%1 created: %2 vertices, length %3 m")
-                        .arg(isLine ? "Line" : "Polyline")
-                        .arg(pts.size())
-                        .arg(formatNumber(geometry::length3d(pts))));
-    } catch (const std::exception& e) {
-        ctx_.report(e.what(), true);
-    }
-}
-
-bool MainWindow::createHeadingFromSelection(const QString& headingId, double width, double height, const QString& level) {
-    if (!ctx_.hasProject() || ctx_.selection().kind != EntityKind::Geometry) {
-        ctx_.report("Select a line or polyline centreline first", true);
-        return false;
-    }
-    try {
-        mine_design::NewDevelopment spec;
-        spec.headingId = sstr(headingId);
-        spec.width = width;
-        spec.height = height;
-        spec.level = sstr(level);
-        const Uuid id = mine_design::createDevelopment(ctx_.project(), ctx_.selection().id, spec);
-        ctx_.select(EntityKind::Development, id);
-        const auto mt = mine_design::computeMetrics(ctx_.project(), *ctx_.project().model().developments.find(id));
-        ctx_.report(QStringLiteral("Heading %1 created: %2 m, %3 × %4 m").arg(headingId, formatNumber(mt.length3d)).arg(width).arg(height));
-        return true;
-    } catch (const std::exception& e) {
-        ctx_.report(e.what(), true);
-        return false;
-    }
-}
-
-bool MainWindow::createLinkedActivityForSelection(double ratePerDay) {
-    if (!ctx_.hasProject() || ctx_.selection().kind != EntityKind::Development) {
-        ctx_.report("Select a development heading first", true);
-        return false;
-    }
-    try {
-        const Uuid id = mine_design::createLinkedActivity(ctx_.project(), ctx_.selection().id, ratePerDay);
-        ctx_.recalculateSchedule();
-        ctx_.select(EntityKind::Activity, id);
-        const auto& t = ctx_.schedule().timings.at(id);
-        ctx_.report(QStringLiteral("Linked activity created: %1 working days at %2 m/day, %3 → %4")
-                        .arg(formatNumber(t.duration, 1), formatNumber(ratePerDay, 2), qstr(t.startDate.toString()),
-                             qstr(t.finishDate.toString())));
-        schedulerDock_->raise();
-        return true;
-    } catch (const std::exception& e) {
-        ctx_.report(e.what(), true);
-        return false;
-    }
-}
-
-void MainWindow::createHeadingInteractive() {
-    QDialog dlg(this);
-    dlg.setWindowTitle("Create development heading");
-    auto* form = new QFormLayout(&dlg);
-    auto* id = new QLineEdit(&dlg);
-    id->setPlaceholderText("e.g. LEG2_675_D3_DEC");
-    auto* level = new QLineEdit(&dlg);
-    auto* w = new QDoubleSpinBox(&dlg);
-    auto* h = new QDoubleSpinBox(&dlg);
-    for (auto* s : {w, h}) {
-        s->setRange(0.5, 50);
-        s->setDecimals(2);
-        s->setValue(5.5);
-        s->setSuffix(" m");
-    }
-    form->addRow("Heading ID", id);
-    form->addRow("Level", level);
-    form->addRow("Design width", w);
-    form->addRow("Design height", h);
-    auto* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    form->addRow(bb);
-    connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    if (dlg.exec() == QDialog::Accepted) createHeadingFromSelection(id->text().trimmed(), w->value(), h->value(), level->text().trimmed());
-}
-
-void MainWindow::createLinkedActivityInteractive() {
-    bool ok = false;
-    const double rate = QInputDialog::getDouble(this, "Linked schedule activity", "Development rate (m per working day):", 5.0, 0.01, 1000, 2, &ok);
-    if (ok) createLinkedActivityForSelection(rate);
+    ctx_.jobs().cancelAll();
+    ctx_.jobs().waitAll(15000);
+    ctx_.settings().setValue("window/geometry", saveGeometry());
+    ctx_.settings().setValue("window/state", saveState());
+    e->accept();
 }
 
 } // namespace openmine::app

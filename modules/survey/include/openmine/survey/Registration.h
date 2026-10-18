@@ -10,6 +10,9 @@
 #include "openmine/project/Project.h"
 #include "openmine/survey/PointBuffer.h"
 
+#include <functional>
+#include <string>
+
 namespace openmine::survey {
 
 struct RigidFit {
@@ -36,6 +39,7 @@ struct IcpOptions {
     std::size_t sampleSize = 50000;    ///< moving points used (random subset; 0 = all)
     unsigned seed = 1;
     int normalNeighbours = 12;         ///< for target normals when the target has none
+    std::string engine = "OpenMine";   ///< ICP engine (see icpEngines(); e.g. "Open3D" when built)
 };
 
 struct IcpResult {
@@ -49,6 +53,20 @@ struct IcpResult {
 
 IcpResult icp(const PointBuffer& source, const PointBuffer& target, const Transform3& initial = {}, const IcpOptions& options = {},
               jobs::Progress& progress = jobs::nullProgress());
+
+// ---- Engines --------------------------------------------------------------------------------------------
+/// ICP implementations by name. "OpenMine" (survey::icp) is always available; integrations
+/// register others (o3d::registerEngines adds "Open3D").
+using IcpEngine = std::function<IcpResult(const PointBuffer& source, const PointBuffer& target, const Transform3& initial,
+                                          const IcpOptions& options, jobs::Progress& progress)>;
+void registerIcpEngine(const std::string& name, IcpEngine engine, const std::string& description = {});
+/// Names of the available engines ("OpenMine" first).
+std::vector<std::string> icpEngines();
+/// Description recorded with results (e.g. "Open3D 0.18.0"); the name when none was given.
+std::string icpEngineDescription(const std::string& name);
+/// Runs ICP with the named engine (throws PointCloudError for an unknown engine).
+IcpResult runIcp(const PointBuffer& source, const PointBuffer& target, const Transform3& initial = {}, const IcpOptions& options = {},
+                 jobs::Progress& progress = jobs::nullProgress());
 
 // ---- Project integration ------------------------------------------------------------------------------
 

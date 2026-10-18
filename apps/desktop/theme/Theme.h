@@ -27,5 +27,7 @@ public:
 
 /// Original, programmatically drawn tool icons (no third-party artwork).
 QIcon toolIcon(const QString& name);
+/// True when an icon drawing exists for `name` (otherwise toolIcon draws its initials).
+bool hasToolIcon(const QString& name);
 
 } // namespace openmine::app

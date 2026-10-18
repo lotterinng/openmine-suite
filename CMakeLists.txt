@@ -89,6 +89,17 @@ if(OPENMINE_WITH_PDAL)
     endif()
 endif()
 
+option(OPENMINE_WITH_OPEN3D "Build the Open3D point-cloud engines (ICP, normals, Poisson, voxel filtering)" ON)
+if(OPENMINE_WITH_OPEN3D)
+    find_package(Open3D QUIET CONFIG)
+    if(Open3D_FOUND)
+        add_subdirectory(integrations/open3d)
+    else()
+        message(WARNING "Open3D not found: the Open3D engines will be reported as unavailable (built-in engines remain)")
+        set(OPENMINE_WITH_OPEN3D OFF)
+    endif()
+endif()
+
 option(OPENMINE_WITH_POSTGRES "Build the PostgreSQL/PostGIS shared repository" ON)
 if(OPENMINE_WITH_POSTGRES)
     find_package(PostgreSQL QUIET)
@@ -110,12 +121,13 @@ if(OPENMINE_WITH_OCCT)
     endif()
 endif()
 
-if(OPENMINE_BUILD_APP)
-    add_subdirectory(apps/desktop)
-endif()
-
 if(OPENMINE_BUILD_PYTHON)
     add_subdirectory(scripting/python)
+endif()
+
+# The application embeds Python and loads plugins: configured after the scripting layer.
+if(OPENMINE_BUILD_APP)
+    add_subdirectory(apps/desktop)
 endif()
 
 if(OPENMINE_BUILD_TESTS)

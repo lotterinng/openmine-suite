@@ -6,9 +6,13 @@
 #include <pybind11/embed.h>
 #include <pybind11/stl.h>
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <fstream>
 #include <mutex>
 #include <sstream>
+#include <thread>
 
 namespace py = pybind11;
 
@@ -16,6 +20,49 @@ namespace openmine::python {
 
 namespace {
 Project* gCurrent = nullptr;
+std::function<void(int, const std::string&)>* gSink = nullptr;
+std::atomic<bool> gRunning{false};
+std::function<void()>* gPump = nullptr;
+
+int pumpTrampoline(void*) {
+    // Runs on the interpreter's thread with the GIL held, between bytecodes.
+    if (gRunning.load() && gPump && *gPump) {
+        try {
+            (*gPump)();
+        } catch (...) {
+        }
+    }
+    return 0;
+}
+
+/// While alive, schedules the pump periodically (Py_AddPendingCall is safe from any thread).
+class PumpTicker {
+public:
+    explicit PumpTicker(int intervalMs) : interval_(intervalMs) {
+        gRunning = true;
+        if (gPump && *gPump && interval_ > 0)
+            thread_ = std::thread([this] {
+                std::unique_lock lk(m_);
+                while (!cv_.wait_for(lk, std::chrono::milliseconds(interval_), [this] { return stop_; })) Py_AddPendingCall(&pumpTrampoline, nullptr);
+            });
+    }
+    ~PumpTicker() {
+        {
+            std::lock_guard lk(m_);
+            stop_ = true;
+        }
+        cv_.notify_all();
+        if (thread_.joinable()) thread_.join();
+        gRunning = false;
+    }
+
+private:
+    int interval_;
+    std::mutex m_;
+    std::condition_variable cv_;
+    bool stop_ = false;
+    std::thread thread_;
+};
 
 std::unique_ptr<py::scoped_interpreter>& interpreter() {
     static std::unique_ptr<py::scoped_interpreter> i;
@@ -27,6 +74,9 @@ PYBIND11_EMBEDDED_MODULE(_openmine_embedded, m) {
     m.doc() = "OpenMine native core (embedded in the application)";
     m.attr("__version__") = "0.3.0";
     defineBindings(m);
+    m.def("_emit", [](int stream, const std::string& text) {
+        if (gSink && *gSink) (*gSink)(stream, text);
+    }, "Forwards console output to the application while code runs.");
     m.def("current_project", []() -> py::object {
         if (!gCurrent) return py::none();
         return py::cast(PyProject::borrow(*gCurrent));
@@ -50,8 +100,18 @@ class _OpenMineConsole(code.InteractiveConsole):
         self.ok = False
         super().showsyntaxerror(filename)
 
+class _Tee(io.StringIO):
+    def __init__(self, stream):
+        super().__init__()
+        self._stream = stream
+    def write(self, s):
+        n = super().write(s)
+        if s:
+            _openmine_embedded._emit(self._stream, s)
+        return n
+
 def _capture(fn):
-    out, err = io.StringIO(), io.StringIO()
+    out, err = _Tee(0), _Tee(1)
     so, se = sys.stdout, sys.stderr
     sys.stdout, sys.stderr = out, err
     try:
@@ -101,6 +161,22 @@ def _complete(text):
 
 struct PythonConsole::Impl {
     py::object push, run, rebind, complete;
+    std::function<void(int, const std::string&)> sink;
+    std::function<void()> pump;
+    int interval = 100;
+    /// Makes this console's sink and pump the active ones for the duration of a call.
+    struct Active {
+        explicit Active(Impl& i) : prevSink(gSink), prevPump(gPump) {
+            gSink = &i.sink;
+            gPump = &i.pump;
+        }
+        ~Active() {
+            gSink = prevSink;
+            gPump = prevPump;
+        }
+        std::function<void(int, const std::string&)>* prevSink;
+        std::function<void()>* prevPump;
+    };
 };
 
 PythonConsole::PythonConsole(Project* project, std::vector<std::filesystem::path> paths) : impl_(std::make_unique<Impl>()) {
@@ -124,8 +200,19 @@ void PythonConsole::setProject(Project* p) {
     impl_->rebind();
 }
 
+void PythonConsole::setOutputSink(std::function<void(int, const std::string&)> sink) { impl_->sink = std::move(sink); }
+
+void PythonConsole::setPump(std::function<void()> pump, int intervalMs) {
+    impl_->pump = std::move(pump);
+    impl_->interval = intervalMs;
+}
+
+bool PythonConsole::isRunning() { return gRunning.load(); }
+
 PythonConsole::Result PythonConsole::push(const std::string& line) {
     Result r;
+    Impl::Active active(*impl_);
+    PumpTicker ticker(impl_->interval);
     const auto t = impl_->push(line).cast<py::tuple>();
     r.needsMore = t[0].cast<bool>();
     r.output = t[1].cast<std::string>();
@@ -136,6 +223,8 @@ PythonConsole::Result PythonConsole::push(const std::string& line) {
 
 PythonConsole::Result PythonConsole::run(const std::string& source, const std::string& filename) {
     Result r;
+    Impl::Active active(*impl_);
+    PumpTicker ticker(impl_->interval);
     const auto t = impl_->run(source, filename).cast<py::tuple>();
     r.output = t[0].cast<std::string>();
     r.error = t[1].cast<std::string>();

@@ -30,6 +30,11 @@ Shape shapeOfObject(const Project& project, const GeometryObject& g);
 Uuid booleanObjects(Project& project, const Uuid& a, const Uuid& b, BooleanOp op, bool removeInputs, const std::string& name,
                     double fuzzy = 0.0);
 
+/// Applies a transform to a Solid object exactly (B-rep transformed by the kernel, re-tessellated).
+/// With `copy` a new object is added and returned; otherwise the object is updated in place (new
+/// immutable BREP asset, one undo step) and its id returned.
+Uuid transformSolidObject(Project& project, const Uuid& solidId, const Transform3& t, bool copy, const TessellationSettings& ts = {});
+
 /// Converts a mesh object into a Solid object (sewn, coplanar faces merged). Throws if the mesh is
 /// not closed and `requireClosed`.
 Uuid solidFromMeshObject(Project& project, const Uuid& meshId, bool requireClosed = true);

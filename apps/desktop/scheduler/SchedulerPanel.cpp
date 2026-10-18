@@ -1,44 +1,57 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "SchedulerPanel.h"
 
+#include "GanttChart.h"
+#include "ScheduleCharts.h"
+#include "ScheduleDialogs.h"
+#include "../app/EntityInfo.h"
 #include "../theme/Theme.h"
-#include "openmine/mine_design/Development.h"
-#include "openmine/project/ProjectEditor.h"
-#include "openmine/scheduling/WorkingTime.h"
 
-#include <QApplication>
+#include "openmine/mine_design/Development.h"
+#include "openmine/objects/EnumNames.h"
+#include "openmine/project/ProjectEditor.h"
+#include "openmine/reporting/ScheduleExport.h"
+#include "openmine/scheduling/ScheduleTable.h"
+
 #include <QComboBox>
-#include <QDialog>
-#include <QDialogButtonBox>
-#include <QDoubleSpinBox>
-#include <QFile>
-#include <QFileDialog>
-#include <QFormLayout>
+#include <QFileInfo>
+#include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
-#include <QMouseEvent>
-#include <QPainter>
-#include <QPainterPath>
+#include <QLabel>
+#include <QMenu>
+#include <QPlainTextEdit>
 #include <QScrollBar>
 #include <QSplitter>
-#include <QTextStream>
+#include <QTabWidget>
 #include <QTimer>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QVBoxLayout>
 
-#include <functional>
+#include <fstream>
 
 namespace openmine::app {
 
 namespace {
-constexpr int RoleId = Qt::UserRole + 1;
-enum Col { ColName, ColWbs, ColDur, ColStart, ColFinish, ColQty, ColRate, ColActual, ColTf, ColDesign, ColCount };
+enum Col { CName, CWbs, CKind, CDuration, CStart, CFinish, CFloat, CPercent, CQuantity, CRate, CResources, CDesign, CCalendar, CBasis, CImpact, NCols };
+constexpr int kIdRole = GanttChart::kIdRole;
 
-const ScheduleBaseline* latestBaseline(const ProjectModel& m) { return m.baselines.empty() ? nullptr : &m.baselines.back(); }
+double standardDayHours(const ProjectModel& m, const ScheduleActivity& a) {
+    if (const auto* c = m.calendarFor(a)) return c->standardHoursPerDay > 0 ? c->standardHoursPerDay : 24.0;
+    return 24.0;
+}
+double ratePerDay(const ScheduleActivity& a, double dayHours) {
+    switch (a.rateUnit) {
+    case RateUnit::PerDay: return a.rate;
+    case RateUnit::PerHour: return a.rate * dayHours;
+    case RateUnit::PerShift: return a.rate; // shown as entered (per shift)
+    }
+    return a.rate;
+}
 } // namespace
 
-// ===========================================================================
 SchedulerPanel::SchedulerPanel(AppContext& ctx, QWidget* parent) : QWidget(parent), ctx_(ctx) {
     auto* lay = new QVBoxLayout(this);
     lay->setContentsMargins(0, 0, 0, 0);
@@ -46,69 +59,108 @@ SchedulerPanel::SchedulerPanel(AppContext& ctx, QWidget* parent) : QWidget(paren
 
     auto* tb = new QToolBar(this);
     tb->setIconSize(QSize(18, 18));
-    tb->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    tb->addAction(toolIcon("activity"), "Task", this, &SchedulerPanel::addTask);
-    tb->addAction(toolIcon("baseline"), "Milestone", this, &SchedulerPanel::addMilestone);
-    tb->addAction(toolIcon("gantt"), "Summary", this, &SchedulerPanel::addSummary);
-    tb->addAction(toolIcon("link"), "Dependency…", this, &SchedulerPanel::addDependencyDialog);
-    tb->addAction(toolIcon("delete"), "Delete", this, &SchedulerPanel::deleteSelected);
+    tb->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    tb->addWidget(new QLabel(tr(" Scenario "), tb));
+    scenario_ = new QComboBox(tb);
+    scenario_->setMinimumWidth(180);
+    tb->addWidget(scenario_);
+    tb->addAction(toolIcon("scenario"), tr("New scenario…"), this, [this] { editScenario(true); });
+    tb->addAction(toolIcon("properties"), tr("Edit scenario…"), this, [this] { editScenario(false); });
+    auto* opt = tb->addAction(toolIcon("optimise"), tr("Optimise sequence (OR-Tools CP-SAT)…"), this, &SchedulerPanel::optimise);
+    opt->setEnabled(OptimiserDialog::available());
+    if (!OptimiserDialog::available()) opt->setToolTip(tr("Not available: this build has no OR-Tools"));
     tb->addSeparator();
-    tb->addAction(toolIcon("calc"), "Calculate", this, &SchedulerPanel::calculate);
-    tb->addAction(toolIcon("baseline"), "Baseline", this, &SchedulerPanel::captureBaseline);
+    tb->addAction(toolIcon("task"), tr("Add task"), this, [this] { addActivity(ActivityKind::Task); });
+    tb->addAction(toolIcon("milestone"), tr("Add milestone"), this, [this] { addActivity(ActivityKind::Milestone); });
+    tb->addAction(toolIcon("summary"), tr("Add summary"), this, [this] { addActivity(ActivityKind::Summary); });
+    tb->addAction(toolIcon("dependency"), tr("Add dependency (first selected → last selected)"), this, &SchedulerPanel::addDependency);
+    tb->addAction(toolIcon("delete"), tr("Delete selected"), this, &SchedulerPanel::deleteSelected);
+    tb->addAction(toolIcon("redo"), tr("Indent (make child of the summary above)"), this, &SchedulerPanel::indent);
+    tb->addAction(toolIcon("undo"), tr("Outdent"), this, &SchedulerPanel::outdent);
+    tb->addAction(tr("▲"), this, [this] { moveSelected(-1); })->setToolTip(tr("Move up"));
+    tb->addAction(tr("▼"), this, [this] { moveSelected(+1); })->setToolTip(tr("Move down"));
     tb->addSeparator();
-    tb->addAction("Zoom +", this, [this] { zoom(1.4); });
-    tb->addAction("Zoom −", this, [this] { zoom(1 / 1.4); });
-    tb->addAction("Export CSV…", this, [this] { exportCsv(); });
-    auto* pdf = tb->addAction("Export PDF");
-    pdf->setEnabled(false);
-    pdf->setToolTip("Not available in this build (planned: Phase 4)");
+    tb->addAction(toolIcon("actual"), tr("Record actual…"), this, &SchedulerPanel::recordActual);
+    tb->addAction(toolIcon("baseline"), tr("Capture baseline…"), this, [this] { captureBaseline(); });
+    tb->addAction(toolIcon("impacts"), tr("Apply design quantities to flagged activities"), this, &SchedulerPanel::applyDesignQuantities);
+    tb->addSeparator();
+    tb->addAction(toolIcon("zoomin"), tr("Zoom in"), this, [this] { gantt_->zoom(1.5); });
+    tb->addAction(toolIcon("zoomout"), tr("Zoom out"), this, [this] { gantt_->zoom(1 / 1.5); });
+    tb->addAction(toolIcon("fit"), tr("Fit schedule"), this, [this] { gantt_->fitSchedule(); });
+    status_ = new QLabel(tb);
+    status_->setContentsMargins(8, 0, 4, 0);
+    tb->addWidget(status_);
     lay->addWidget(tb);
 
-    auto* split = new QSplitter(Qt::Horizontal, this);
-    tree_ = new QTreeWidget(split);
-    tree_->setColumnCount(ColCount);
-    tree_->setHeaderLabels({"Activity", "WBS", "Dur (d)", "Start", "Finish", "Qty", "Rate/d", "Actual", "TF (d)", "Design"});
-    tree_->setUniformRowHeights(true);
-    tree_->setAlternatingRowColors(true);
-    tree_->setRootIsDecorated(true);
-    tree_->header()->setStretchLastSection(false);
-    tree_->setColumnWidth(ColName, 220);
-    for (int c = ColWbs; c < ColCount; ++c) tree_->setColumnWidth(c, c == ColStart || c == ColFinish ? 86 : 62);
-    tree_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
-    chart_ = new GanttChart(ctx_, tree_, split);
-    split->addWidget(tree_);
-    split->addWidget(chart_);
-    split->setStretchFactor(0, 1);
-    split->setStretchFactor(1, 2);
-    split->setSizes({560, 900});
-    lay->addWidget(split, 1);
+    auto* vsplit = new QSplitter(Qt::Vertical, this);
+    auto* hsplit = new QSplitter(Qt::Horizontal, vsplit);
+    grid_ = new QTreeWidget(hsplit);
+    grid_->setColumnCount(NCols);
+    grid_->setHeaderLabels({tr("Activity"), tr("WBS"), tr("Kind"), tr("Duration (d)"), tr("Start"), tr("Finish"), tr("Total float (d)"), tr("%"), tr("Quantity"),
+                            tr("Rate (/d)"), tr("Resources"), tr("Design"), tr("Calendar"), tr("Duration basis"), tr("Design impact")});
+    grid_->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    grid_->setUniformRowHeights(true);
+    grid_->setAlternatingRowColors(true);
+    grid_->header()->setSectionResizeMode(QHeaderView::Interactive);
+    grid_->setColumnWidth(CName, 230);
+    grid_->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
+    grid_->setContextMenuPolicy(Qt::CustomContextMenu);
+    gantt_ = new GanttChart(ctx_, grid_, hsplit);
+    hsplit->addWidget(grid_);
+    hsplit->addWidget(gantt_);
+    hsplit->setStretchFactor(0, 2);
+    hsplit->setStretchFactor(1, 3);
+    tabs_ = new QTabWidget(vsplit);
+    histogram_ = new ResourceHistogram(ctx_, tabs_);
+    production_ = new ProductionChart(ctx_, tabs_);
+    variance_ = new VarianceTable(ctx_, tabs_);
+    log_ = new QPlainTextEdit(tabs_);
+    log_->setReadOnly(true);
+    tabs_->addTab(histogram_, toolIcon("histogram"), tr("Resources"));
+    tabs_->addTab(production_, toolIcon("chart"), tr("Production"));
+    tabs_->addTab(variance_, toolIcon("baseline"), tr("Baseline variance"));
+    tabs_->addTab(log_, toolIcon("info"), tr("Calculation"));
+    vsplit->addWidget(hsplit);
+    vsplit->addWidget(tabs_);
+    vsplit->setStretchFactor(0, 3);
+    vsplit->setStretchFactor(1, 1);
+    lay->addWidget(vsplit, 1);
 
-    connect(tree_->verticalScrollBar(), &QScrollBar::valueChanged, chart_, qOverload<>(&QWidget::update));
-    connect(tree_, &QTreeWidget::itemExpanded, chart_, qOverload<>(&QWidget::update));
-    connect(tree_, &QTreeWidget::itemCollapsed, chart_, qOverload<>(&QWidget::update));
-    connect(tree_, &QTreeWidget::itemSelectionChanged, this, [this] {
-        if (building_) return;
-        const Uuid id = selectedActivity();
-        if (id) ctx_.select(EntityKind::Activity, id);
-        chart_->update();
+    connect(scenario_, &QComboBox::activated, this, [this](int) { ctx_.setActiveScenario(uuidFrom(scenario_->currentData().toString())); });
+    connect(grid_, &QTreeWidget::itemChanged, this, &SchedulerPanel::onItemChanged);
+    connect(grid_, &QTreeWidget::itemSelectionChanged, this, [this] {
+        if (syncing_ || building_) return;
+        syncing_ = true;
+        std::vector<SelectionItem> sel;
+        for (auto* it : grid_->selectedItems()) sel.push_back({EntityKind::Activity, uuidFrom(it->data(0, kIdRole).toString())});
+        if (auto* cur = grid_->currentItem(); cur && cur->isSelected()) {
+            SelectionItem c{EntityKind::Activity, uuidFrom(cur->data(0, kIdRole).toString())};
+            std::erase(sel, c);
+            sel.push_back(c);
+        }
+        ctx_.selectMany(sel);
+        syncing_ = false;
     });
-    connect(&ctx_, &AppContext::projectReplaced, this, [this] {
-        rebuild();
-        chart_->resetRange();
+    connect(gantt_, &GanttChart::activityClicked, this, [this](Uuid id, Qt::KeyboardModifiers mods) {
+        ctx_.select(EntityKind::Activity, id, mods & Qt::ControlModifier ? SelectMode::Toggle : mods & Qt::ShiftModifier ? SelectMode::Add : SelectMode::Replace);
+    });
+    connect(grid_, &QTreeWidget::customContextMenuRequested, this, [this](const QPoint& pos) {
+        QMenu m(this);
+        m.addAction(toolIcon("task"), tr("Add task"), this, [this] { addActivity(ActivityKind::Task); });
+        m.addAction(toolIcon("milestone"), tr("Add milestone"), this, [this] { addActivity(ActivityKind::Milestone); });
+        m.addAction(toolIcon("summary"), tr("Add summary"), this, [this] { addActivity(ActivityKind::Summary); });
+        m.addAction(toolIcon("dependency"), tr("Add dependency…"), this, &SchedulerPanel::addDependency);
+        m.addAction(toolIcon("actual"), tr("Record actual…"), this, &SchedulerPanel::recordActual);
+        m.addSeparator();
+        m.addAction(toolIcon("delete"), tr("Delete"), this, &SchedulerPanel::deleteSelected);
+        m.exec(grid_->viewport()->mapToGlobal(pos));
     });
     connect(&ctx_, &AppContext::scheduleRecalculated, this, &SchedulerPanel::scheduleRebuild);
-    connect(&ctx_, &AppContext::selectionChanged, this, &SchedulerPanel::syncSelection);
+    connect(&ctx_, &AppContext::modelChanged, this, &SchedulerPanel::scheduleRebuild);
+    connect(&ctx_, &AppContext::projectReplaced, this, &SchedulerPanel::scheduleRebuild);
+    connect(&ctx_, &AppContext::scenarioChanged, this, &SchedulerPanel::rebuildScenarios);
+    connect(&ctx_, &AppContext::selectionChanged, this, &SchedulerPanel::syncSelectionFromContext);
     rebuild();
-}
-
-QTreeWidgetItem* SchedulerPanel::itemFor(const Uuid& id) const {
-    const QString key = qstr(id.toString());
-    QTreeWidgetItemIterator it(tree_);
-    while (*it) {
-        if ((*it)->data(0, RoleId).toString() == key) return *it;
-        ++it;
-    }
-    return nullptr;
 }
 
 void SchedulerPanel::scheduleRebuild() {
@@ -120,497 +172,436 @@ void SchedulerPanel::scheduleRebuild() {
     });
 }
 
+QTreeWidgetItem* SchedulerPanel::itemFor(const Uuid& id) const {
+    auto it = items_.find(id);
+    return it == items_.end() ? nullptr : it->second;
+}
+
+void SchedulerPanel::rebuildScenarios() {
+    const QSignalBlocker b(scenario_);
+    scenario_->clear();
+    scenario_->addItem(tr("Base schedule"), QString());
+    if (!ctx_.hasProject()) return;
+    for (const auto& s : ctx_.project().model().scenarios.all()) {
+        QString label = qstr(s.name);
+        if (s.levelling == LevellingMode::Heuristic) label += tr(" (levelled)");
+        if (s.levelling == LevellingMode::Optimised) label += tr(" (optimised)");
+        scenario_->addItem(label, uuidText(s.id));
+    }
+    const auto* a = ctx_.activeScenario();
+    scenario_->setCurrentIndex(a ? std::max(0, scenario_->findData(uuidText(a->id))) : 0);
+}
+
 void SchedulerPanel::rebuild() {
     building_ = true;
-    const int scroll = tree_->verticalScrollBar()->value();
-    tree_->clear();
+    rebuildScenarios();
+    std::set<QString> collapsed;
+    for (auto& [id, it] : items_)
+        if (it->childCount() && !it->isExpanded()) collapsed.insert(uuidText(id));
+    const int scroll = grid_->verticalScrollBar()->value();
+    grid_->clear();
+    items_.clear();
     if (!ctx_.hasProject()) {
         building_ = false;
-        chart_->update();
+        updateStatus();
         return;
     }
     const auto& m = ctx_.project().model();
-    const auto& sched = ctx_.schedule();
-    const auto& c = Theme::colors();
-
-    std::function<void(QTreeWidgetItem*, const Uuid&)> add = [&](QTreeWidgetItem* parent, const Uuid& parentId) {
-        std::vector<const ScheduleActivity*> kids;
-        for (const auto& a : m.activities.all())
-            if (a.parentId == parentId) kids.push_back(&a);
-        std::stable_sort(kids.begin(), kids.end(), [](auto* x, auto* y) { return x->sortOrder < y->sortOrder; });
-        for (const auto* a : kids) {
-            auto* it = parent ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(tree_);
-            it->setData(0, RoleId, qstr(a->id.toString()));
-            it->setText(ColName, qstr(a->name));
-            it->setText(ColWbs, qstr(a->wbsCode));
-            if (a->kind == ActivityKind::Summary) {
-                QFont f = it->font(0);
-                f.setBold(true);
-                it->setFont(ColName, f);
+    const auto& sch = ctx_.schedule();
+    std::vector<const ScheduleActivity*> ordered;
+    for (const auto& a : m.activities.all()) ordered.push_back(&a);
+    std::stable_sort(ordered.begin(), ordered.end(), [](auto* a, auto* b) { return a->sortOrder < b->sortOrder; });
+    std::map<Uuid, std::vector<std::string>> resources;
+    for (const auto& as : m.assignments.all())
+        if (const auto* r = m.resources.find(as.resourceId))
+            resources[as.activityId].push_back(r->name + (as.units != 1 ? " ×" + QString::number(as.units).toStdString() : std::string()));
+    auto pendingA = ordered;
+    for (int pass = 0; pass < 64 && !pendingA.empty(); ++pass) {
+        std::vector<const ScheduleActivity*> next;
+        for (const auto* a : pendingA) {
+            QTreeWidgetItem* parent = nullptr;
+            if (!a->parentId.isNil() && m.activities.contains(a->parentId)) {
+                auto it = items_.find(a->parentId);
+                if (it == items_.end()) {
+                    next.push_back(a);
+                    continue;
+                }
+                parent = it->second;
             }
-            if (a->kind == ActivityKind::Task && a->quantity > 0) {
-                it->setText(ColQty, formatNumber(a->quantity, 1) + " " + qstr(a->quantityUnit));
-                it->setText(ColActual, formatNumber(a->actualQuantity, 1));
+            auto* it = parent ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(grid_);
+            items_[a->id] = it;
+            it->setData(0, kIdRole, uuidText(a->id));
+            const double dayH = standardDayHours(m, *a);
+            it->setText(CName, qstr(a->name));
+            it->setIcon(CName, toolIcon(a->kind == ActivityKind::Milestone ? "milestone" : a->kind == ActivityKind::Summary ? "summary" : "task"));
+            it->setText(CWbs, qstr(a->wbsCode));
+            it->setText(CKind, qstr(toString(a->kind)));
+            auto t = sch.result.timings.find(a->id);
+            if (t != sch.result.timings.end()) {
+                const auto& tt = t->second;
+                it->setText(CDuration, QString::number(tt.totalHours / dayH, 'f', 2));
+                it->setText(CStart, formatDateTimeMinutes(tt.es));
+                it->setText(CFinish, formatDateTimeMinutes(tt.ef));
+                it->setText(CFloat, QString::number(tt.totalFloatHours / dayH, 'f', 2));
+                it->setText(CPercent, QString::number(tt.percentComplete, 'f', 1));
+                it->setText(CBasis, qstr(tt.durationBasis));
+                if (tt.critical) it->setForeground(CName, Theme::colors().ganttCritical);
+            } else {
+                it->setText(CDuration, QString::number(a->durationHours / dayH, 'f', 2));
             }
-            if (a->durationFromRate) it->setText(ColRate, formatNumber(a->ratePerDay, 2));
-            if (auto t = sched.timings.find(a->id); sched.ok && t != sched.timings.end()) {
-                it->setText(ColDur, formatNumber(t->second.duration, 1));
-                it->setText(ColStart, qstr(t->second.startDate.toString()));
-                it->setText(ColFinish, qstr(t->second.finishDate.toString()));
-                it->setText(ColTf, formatNumber(t->second.totalFloat, 1));
-                if (t->second.critical && a->kind != ActivityKind::Summary) it->setForeground(ColTf, c.ganttCritical);
+            it->setText(CQuantity, a->quantity != 0 ? QStringLiteral("%1 %2").arg(a->quantity, 0, 'f', 2).arg(qstr(a->quantityUnit)) : QString());
+            it->setText(CRate, a->rate != 0 ? QString::number(ratePerDay(*a, dayH), 'f', 3) + (a->rateUnit == RateUnit::PerShift ? tr(" /shift") : QString()) : QString());
+            QStringList rl;
+            for (const auto& r : resources[a->id]) rl << qstr(r);
+            it->setText(CResources, rl.join(", "));
+            QStringList dl;
+            for (const auto& d : m.designsForActivity(a->id)) {
+                if (const auto* dev = m.developments.find(d)) dl << qstr(dev->headingId);
+                else if (const auto* st = m.stopes.find(d)) dl << qstr(st->name);
+                else if (const auto* b = m.miningBlocks.find(d)) dl << qstr(b->name);
             }
-            const auto devs = m.developmentsForActivity(a->id);
-            if (!devs.empty()) {
-                QStringList names;
-                for (const auto& d : devs)
-                    if (const auto* dev = m.developments.find(d)) names << qstr(dev->headingId);
-                it->setText(ColDesign, (a->designImpactFlag ? "⚠ " : "🔗 ") + names.join(", "));
-                it->setToolTip(ColDesign, a->designImpactFlag ? qstr(a->designImpactNote) : "Linked to " + names.join(", "));
-                if (a->designImpactFlag) it->setForeground(ColDesign, c.warning);
+            it->setText(CDesign, dl.join(", "));
+            if (const auto* c = m.calendarFor(*a)) it->setText(CCalendar, qstr(c->name));
+            if (a->designImpactFlag) {
+                it->setText(CImpact, qstr(a->designImpactNote.empty() ? std::string("Design changed") : a->designImpactNote));
+                it->setForeground(CImpact, Theme::colors().warning);
+                it->setIcon(CImpact, toolIcon("impacts"));
             }
-            add(it, a->id);
+            Qt::ItemFlags f = Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable;
+            it->setFlags(f);
+            it->setExpanded(!collapsed.count(uuidText(a->id)));
         }
-    };
-    add(nullptr, Uuid{});
-    tree_->expandAll();
-    tree_->verticalScrollBar()->setValue(scroll);
+        pendingA = std::move(next);
+    }
     building_ = false;
-    syncSelection();
-    chart_->update();
+    grid_->verticalScrollBar()->setValue(scroll);
+    syncSelectionFromContext();
+    updateStatus();
+    gantt_->update();
 }
 
-void SchedulerPanel::syncSelection() {
-    building_ = true;
-    tree_->clearSelection();
-    if (ctx_.hasProject() && ctx_.selection().kind == EntityKind::Activity)
-        if (auto* it = itemFor(ctx_.selection().id)) {
-            it->setSelected(true);
-            tree_->scrollToItem(it);
+void SchedulerPanel::updateStatus() {
+    const auto& s = ctx_.schedule();
+    log_->clear();
+    if (!ctx_.hasProject()) {
+        status_->clear();
+        return;
+    }
+    if (!s.result.ok) {
+        status_->setText(tr("<span style='color:#d32f2f'>Not calculated</span>"));
+        for (const auto& e : s.result.errors) log_->appendPlainText(tr("Error: %1").arg(qstr(e)));
+    } else {
+        int crit = 0;
+        for (const auto& [id, t] : s.result.timings) crit += t.critical ? 1 : 0;
+        status_->setText(tr("Finish <b>%1</b> · %2 days · %3 critical · %4 ms")
+                             .arg(qstr(s.result.projectFinishDate.toString()))
+                             .arg(s.result.makespanHours() / 24.0, 0, 'f', 1)
+                             .arg(crit)
+                             .arg(s.milliseconds, 0, 'f', 0));
+        log_->appendPlainText(tr("Calculated %1 activities in %2 ms (%3).").arg(s.result.timings.size()).arg(s.milliseconds, 0, 'f', 1)
+                                  .arg(ctx_.activeScenario() ? tr("scenario %1").arg(qstr(ctx_.activeScenario()->name)) : tr("base schedule")));
+        if (s.levelling)
+            log_->appendPlainText(tr("Resource levelling: %1 activities delayed, total delay %2 h, makespan +%3 h.")
+                                      .arg(s.levelling->delayedActivities)
+                                      .arg(s.levelling->totalDelayHours, 0, 'f', 1)
+                                      .arg(s.levelling->makespanIncreaseHours, 0, 'f', 1));
+        if (!s.result.levellingSummary.empty()) log_->appendPlainText(qstr(s.result.levellingSummary));
+    }
+    for (const auto& w : s.result.warnings) log_->appendPlainText(tr("Warning: %1").arg(qstr(w)));
+    for (const auto& w : s.input.warnings) log_->appendPlainText(tr("Input: %1").arg(qstr(w)));
+}
+
+void SchedulerPanel::syncSelectionFromContext() {
+    if (syncing_) return;
+    syncing_ = true;
+    grid_->clearSelection();
+    QTreeWidgetItem* last = nullptr;
+    for (const auto& s : ctx_.selection()) {
+        Uuid act;
+        if (s.kind == EntityKind::Activity) act = s.id;
+        // A selected design object selects its linked activities.
+        else if (ctx_.hasProject() && (s.kind == EntityKind::Development || s.kind == EntityKind::Stope || s.kind == EntityKind::MiningBlock)) {
+            for (const auto& a : ctx_.project().model().activitiesForDesign(s.id))
+                if (auto* it = itemFor(a)) {
+                    it->setSelected(true);
+                    last = it;
+                }
+            continue;
         }
-    building_ = false;
-    chart_->update();
+        if (auto* it = itemFor(act)) {
+            it->setSelected(true);
+            last = it;
+        }
+    }
+    if (last) grid_->scrollToItem(last);
+    syncing_ = false;
+    gantt_->update();
 }
 
 Uuid SchedulerPanel::selectedActivity() const {
-    auto items = tree_->selectedItems();
-    if (items.isEmpty()) return {};
-    auto id = Uuid::parse(items.front()->data(0, RoleId).toString().toStdString());
-    return id ? *id : Uuid{};
+    const auto p = ctx_.primary();
+    return p.kind == EntityKind::Activity ? p.id : Uuid{};
 }
 
-Uuid SchedulerPanel::newActivityParent() const {
+Uuid SchedulerPanel::parentForNew() const {
     const Uuid sel = selectedActivity();
-    if (!sel) return {};
+    if (sel.isNil() || !ctx_.hasProject()) return {};
     const auto* a = ctx_.project().model().activities.find(sel);
     if (!a) return {};
     return a->kind == ActivityKind::Summary ? a->id : a->parentId;
 }
 
-void SchedulerPanel::addTask() {
-    if (!ctx_.hasProject()) return;
-    try {
-        ScheduleActivity a;
-        a.name = "New task";
-        a.durationDays = 5;
-        a.parentId = newActivityParent();
-        ctx_.select(EntityKind::Activity, ProjectEditor(ctx_.project()).addActivity(a));
-    } catch (const std::exception& e) {
-        ctx_.report(e.what(), true);
+void SchedulerPanel::onItemChanged(QTreeWidgetItem* item, int col) {
+    if (building_ || !ctx_.hasProject()) return;
+    const Uuid id = uuidFrom(item->data(0, kIdRole).toString());
+    const auto* a = ctx_.project().model().activities.find(id);
+    if (!a) return;
+    ScheduleActivity n = *a;
+    const QString text = item->text(col).trimmed();
+    const double dayH = standardDayHours(ctx_.project().model(), *a);
+    auto number = [&](double& out) {
+        bool ok = false;
+        // Accept a trailing unit ("120 m").
+        const double v = QLocale::c().toDouble(text.section(' ', 0, 0), &ok);
+        if (!ok) {
+            ctx_.report(tr("'%1' is not a number").arg(text), MessageLevel::Error);
+            return false;
+        }
+        out = v;
+        return true;
+    };
+    QString what;
+    switch (col) {
+    case CName:
+        n.name = sstr(text);
+        what = tr("Rename activity");
+        break;
+    case CWbs:
+        n.wbsCode = sstr(text);
+        what = tr("Edit WBS code");
+        break;
+    case CDuration: {
+        double d;
+        if (!number(d)) break;
+        if (n.durationFromRate) {
+            ctx_.report(tr("The duration of '%1' follows from its quantity and rate; edit those instead").arg(qstr(n.name)), MessageLevel::Warning);
+            break;
+        }
+        n.durationHours = d * dayH;
+        what = tr("Edit duration");
+        break;
     }
+    case CPercent: {
+        double d;
+        if (!number(d)) break;
+        n.manualPercentComplete = d;
+        what = tr("Edit percent complete");
+        break;
+    }
+    case CQuantity: {
+        double d;
+        if (!number(d)) break;
+        n.quantity = d;
+        what = tr("Edit quantity");
+        break;
+    }
+    case CRate: {
+        double d;
+        if (!number(d)) break;
+        n.rate = n.rateUnit == RateUnit::PerHour ? d / dayH : d;
+        what = tr("Edit rate");
+        break;
+    }
+    default:
+        ctx_.report(tr("This column is calculated; edit the activity's inputs in Properties"), MessageLevel::Warning);
+        break;
+    }
+    if (what.isEmpty() || !ctx_.tryEdit(what, [&] { ProjectEditor(ctx_.project()).updateActivity(n, sstr(what)); })) scheduleRebuild();
 }
 
-void SchedulerPanel::addMilestone() {
-    if (!ctx_.hasProject()) return;
-    try {
-        ScheduleActivity a;
-        a.name = "New milestone";
-        a.kind = ActivityKind::Milestone;
-        a.parentId = newActivityParent();
-        ctx_.select(EntityKind::Activity, ProjectEditor(ctx_.project()).addActivity(a));
-    } catch (const std::exception& e) {
-        ctx_.report(e.what(), true);
-    }
-}
-
-void SchedulerPanel::addSummary() {
-    if (!ctx_.hasProject()) return;
-    try {
-        ScheduleActivity a;
-        a.name = "New WBS group";
-        a.kind = ActivityKind::Summary;
-        a.parentId = newActivityParent();
-        ctx_.select(EntityKind::Activity, ProjectEditor(ctx_.project()).addActivity(a));
-    } catch (const std::exception& e) {
-        ctx_.report(e.what(), true);
-    }
-}
-
-void SchedulerPanel::addDependencyDialog() {
-    if (!ctx_.hasProject()) return;
+Uuid SchedulerPanel::addActivity(ActivityKind kind, const QString& name) {
+    if (!ctx_.hasProject()) return {};
     const auto& m = ctx_.project().model();
-    QDialog dlg(this);
-    dlg.setWindowTitle("Add dependency");
-    auto* form = new QFormLayout(&dlg);
-    auto* pred = new QComboBox(&dlg);
-    auto* succ = new QComboBox(&dlg);
-    for (const auto& a : m.activities.all()) {
-        if (a.kind == ActivityKind::Summary) continue;
-        pred->addItem(qstr(a.name), qstr(a.id.toString()));
-        succ->addItem(qstr(a.name), qstr(a.id.toString()));
-    }
-    if (pred->count() < 2) {
-        ctx_.report("At least two non-summary activities are needed for a dependency", true);
-        return;
-    }
-    const int selIdx = pred->findData(qstr(selectedActivity().toString()));
-    pred->setCurrentIndex(selIdx >= 0 ? selIdx : 0);
-    succ->setCurrentIndex(pred->currentIndex() + 1 < succ->count() ? pred->currentIndex() + 1 : 0);
-    auto* type = new QComboBox(&dlg);
-    type->addItems({"FS", "SS", "FF", "SF"});
-    auto* lag = new QDoubleSpinBox(&dlg);
-    lag->setRange(-1000, 1000);
-    lag->setSuffix(" working days");
-    form->addRow("Predecessor", pred);
-    form->addRow("Successor", succ);
-    form->addRow("Type", type);
-    form->addRow("Lag", lag);
-    auto* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
-    form->addRow(bb);
-    connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
-    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    if (dlg.exec() != QDialog::Accepted) return;
-    try {
-        ActivityDependency d;
-        d.predecessorId = *Uuid::parse(pred->currentData().toString().toStdString());
-        d.successorId = *Uuid::parse(succ->currentData().toString().toStdString());
-        d.type = *dependencyTypeFromString(sstr(type->currentText()));
-        d.lagDays = lag->value();
-        ProjectEditor(ctx_.project()).addDependency(d);
-    } catch (const std::exception& e) {
-        ctx_.report(e.what(), true);
-    }
+    ScheduleActivity a;
+    a.kind = kind;
+    a.parentId = parentForNew();
+    a.name = sstr(name.isEmpty() ? (kind == ActivityKind::Milestone ? tr("Milestone %1") : kind == ActivityKind::Summary ? tr("Summary %1") : tr("Task %1")).arg(m.activities.size() + 1) : name);
+    a.durationHours = kind == ActivityKind::Milestone || kind == ActivityKind::Summary ? 0 : 24;
+    int maxOrder = 0;
+    for (const auto& x : m.activities.all()) maxOrder = std::max(maxOrder, x.sortOrder);
+    a.sortOrder = maxOrder + 10;
+    if (const auto* sel = m.activities.find(selectedActivity()); sel && sel->kind != ActivityKind::Summary) a.sortOrder = sel->sortOrder + 1;
+    Uuid id;
+    if (ctx_.tryEdit(tr("Add activity"), [&] { id = ProjectEditor(ctx_.project()).addActivity(a); })) ctx_.select(EntityKind::Activity, id);
+    return id;
+}
+
+void SchedulerPanel::addDependency() {
+    const auto sel = ctx_.selected(EntityKind::Activity);
+    Uuid pred = sel.size() >= 2 ? sel[sel.size() - 2] : (sel.empty() ? Uuid{} : sel.back());
+    Uuid succ = sel.size() >= 2 ? sel.back() : Uuid{};
+    DependencyDialog dlg(ctx_, pred, succ, this);
+    dlg.exec();
 }
 
 void SchedulerPanel::deleteSelected() {
+    const auto sel = ctx_.selected(EntityKind::Activity);
+    if (sel.empty()) return;
+    ctx_.tryEdit(tr("Delete activities"), [&] {
+        auto& p = ctx_.project();
+        CommandStack::MacroScope macro(p.commands(), "Delete activities");
+        ProjectEditor ed(p);
+        for (const auto& id : sel)
+            if (p.model().activities.contains(id)) ed.removeActivity(id);
+        macro.commit();
+    });
+}
+
+void SchedulerPanel::indent() {
     const Uuid id = selectedActivity();
-    if (!id) return;
-    try {
-        ProjectEditor(ctx_.project()).removeActivity(id);
-    } catch (const std::exception& e) {
-        ctx_.report(e.what(), true);
+    auto* it = itemFor(id);
+    if (!it) return;
+    QTreeWidgetItem* above = it->parent() ? it->parent()->child(it->parent()->indexOfChild(it) - 1) : grid_->topLevelItem(grid_->indexOfTopLevelItem(it) - 1);
+    if (!above) {
+        ctx_.report(tr("There is no activity above to indent under"), MessageLevel::Warning);
+        return;
     }
+    const auto& m = ctx_.project().model();
+    const auto* parent = m.activities.find(uuidFrom(above->data(0, kIdRole).toString()));
+    const auto* a = m.activities.find(id);
+    if (!parent || !a) return;
+    if (parent->kind != ActivityKind::Summary) {
+        ctx_.report(tr("'%1' is not a summary activity; only summaries can have children").arg(qstr(parent->name)), MessageLevel::Warning);
+        return;
+    }
+    ScheduleActivity n = *a;
+    n.parentId = parent->id;
+    ctx_.tryEdit(tr("Indent"), [&] { ProjectEditor(ctx_.project()).updateActivity(n, "Indent " + n.name); });
 }
 
-void SchedulerPanel::calculate() {
+void SchedulerPanel::outdent() {
+    const auto& m = ctx_.project().model();
+    const auto* a = m.activities.find(selectedActivity());
+    if (!a || a->parentId.isNil()) return;
+    const auto* parent = m.activities.find(a->parentId);
+    ScheduleActivity n = *a;
+    n.parentId = parent ? parent->parentId : Uuid{};
+    ctx_.tryEdit(tr("Outdent"), [&] { ProjectEditor(ctx_.project()).updateActivity(n, "Outdent " + n.name); });
+}
+
+void SchedulerPanel::moveSelected(int delta) {
+    const auto& m = ctx_.project().model();
+    const auto* a = m.activities.find(selectedActivity());
+    if (!a) return;
+    // Siblings in display order.
+    std::vector<const ScheduleActivity*> sib;
+    for (const auto& x : m.activities.all())
+        if (x.parentId == a->parentId) sib.push_back(&x);
+    std::stable_sort(sib.begin(), sib.end(), [](auto* x, auto* y) { return x->sortOrder < y->sortOrder; });
+    const auto pos = std::find(sib.begin(), sib.end(), a) - sib.begin();
+    const long other = pos + delta;
+    if (other < 0 || other >= static_cast<long>(sib.size())) return;
+    ScheduleActivity x = *a, y = *sib[static_cast<std::size_t>(other)];
+    std::swap(x.sortOrder, y.sortOrder);
+    if (x.sortOrder == y.sortOrder) x.sortOrder += delta;
+    ctx_.tryEdit(tr("Move activity"), [&] {
+        auto& p = ctx_.project();
+        CommandStack::MacroScope macro(p.commands(), "Move activity");
+        ProjectEditor ed(p);
+        ed.updateActivity(x);
+        ed.updateActivity(y);
+        macro.commit();
+    });
+}
+
+void SchedulerPanel::captureBaseline(const QString& nameIn) {
     if (!ctx_.hasProject()) return;
-    ctx_.recalculateSchedule();
-    const auto& r = ctx_.schedule();
+    const auto& r = ctx_.schedule().result;
     if (!r.ok) {
-        ctx_.report("Schedule NOT calculated: " + qstr(r.errors.empty() ? "unknown error" : r.errors.front()), true);
+        ctx_.report(tr("The schedule must calculate before a baseline can be captured"), MessageLevel::Error);
         return;
     }
-    int critical = 0;
-    for (const auto& [id, t] : r.timings)
-        if (t.critical) ++critical;
-    ctx_.report(QStringLiteral("CPM calculated: %1 activities, project %2 → %3 (%4 working days), %5 critical.")
-                    .arg(r.timings.size())
-                    .arg(qstr(r.projectStartDate.toString()), qstr(r.projectFinishDate.toString()))
-                    .arg(formatNumber(r.projectFinish, 1))
-                    .arg(critical));
-    for (const auto& w : r.warnings) ctx_.report("Warning: " + qstr(w), false);
-}
-
-void SchedulerPanel::captureBaseline() {
-    if (!ctx_.hasProject()) return;
-    ctx_.recalculateSchedule();
-    if (!ctx_.schedule().ok) {
-        ctx_.report("Cannot baseline: the schedule does not calculate", true);
-        return;
+    QString name = nameIn;
+    if (name.isEmpty()) {
+        bool ok = false;
+        name = QInputDialog::getText(this, tr("Capture baseline"), tr("Baseline name (baselines are immutable once captured):"), QLineEdit::Normal,
+                                     tr("Baseline %1").arg(ctx_.project().model().baselines.size() + 1), &ok);
+        if (!ok || name.isEmpty()) return;
     }
-    bool ok = false;
-    const QString name = QInputDialog::getText(this, "Capture baseline", "Baseline name:", QLineEdit::Normal,
-                                               "BL-" + qstr(Date::todayUtc().toString()), &ok);
-    if (!ok || name.isEmpty()) return;
-    try {
-        ProjectEditor(ctx_.project()).addBaseline(scheduling::makeBaseline(ctx_.project(), ctx_.schedule(), sstr(name)));
-        ctx_.report("Baseline '" + name + "' captured (approved; it will not change when the schedule changes).");
-    } catch (const std::exception& e) {
-        ctx_.report(e.what(), true);
-    }
+    ctx_.tryEdit(tr("Capture baseline"), [&] {
+        ProjectEditor(ctx_.project()).addBaseline(scheduling::makeBaseline(ctx_.project(), r, sstr(name)));
+    });
 }
 
 void SchedulerPanel::applyDesignQuantities() {
-    const Uuid id = ctx_.selection().kind == EntityKind::Activity ? ctx_.selection().id : selectedActivity();
-    if (!id) {
-        ctx_.report("Select a linked activity first", true);
-        return;
-    }
-    try {
-        mine_design::applyDesignQuantities(ctx_.project(), id);
-        ctx_.report("Activity quantity recalculated from current design (audited; baselines unchanged).");
-    } catch (const std::exception& e) {
-        ctx_.report(e.what(), true);
-    }
-}
-
-void SchedulerPanel::exportCsv(const QString& givenPath) {
     if (!ctx_.hasProject()) return;
-    QString path = givenPath;
-    if (path.isEmpty()) path = QFileDialog::getSaveFileName(this, "Export schedule", "schedule.csv", "CSV (*.csv)");
-    if (path.isEmpty()) return;
-    QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
-        ctx_.report("Cannot write " + path, true);
+    std::vector<Uuid> ids = ctx_.selected(EntityKind::Activity);
+    if (ids.empty())
+        for (const auto& a : ctx_.project().model().activities.all())
+            if (a.designImpactFlag) ids.push_back(a.id);
+    if (ids.empty()) {
+        ctx_.report(tr("No activities are flagged by design changes"));
         return;
     }
-    QTextStream out(&f);
-    auto csv = [](QString s) {
-        if (s.contains(',') || s.contains('"') || s.contains('\n')) s = '"' + s.replace('"', "\"\"") + '"';
-        return s;
-    };
-    out << "activity_id,wbs,name,type,duration_d,start,finish,total_float_d,free_float_d,critical,quantity,unit,rate_per_d,actual,linked_design,design_impact\n";
-    const auto& m = ctx_.project().model();
-    const auto& r = ctx_.schedule();
-    for (const auto& a : m.activities.all()) {
-        auto t = r.timings.find(a.id);
-        const bool has = r.ok && t != r.timings.end();
-        QStringList devs;
-        for (const auto& d : m.developmentsForActivity(a.id))
-            if (const auto* dev = m.developments.find(d)) devs << qstr(dev->headingId);
-        out << qstr(a.id.toString()) << ',' << csv(qstr(a.wbsCode)) << ',' << csv(qstr(a.name)) << ',' << toString(a.kind) << ','
-            << (has ? formatNumber(t->second.duration, 3) : "") << ',' << (has ? qstr(t->second.startDate.toString()) : "") << ','
-            << (has ? qstr(t->second.finishDate.toString()) : "") << ',' << (has ? formatNumber(t->second.totalFloat, 3) : "") << ','
-            << (has ? formatNumber(t->second.freeFloat, 3) : "") << ',' << (has && t->second.critical ? "yes" : "no") << ','
-            << formatNumber(a.quantity, 3) << ',' << csv(qstr(a.quantityUnit)) << ',' << formatNumber(a.ratePerDay, 3) << ','
-            << formatNumber(a.actualQuantity, 3) << ',' << csv(devs.join(';')) << ',' << csv(qstr(a.designImpactNote)) << '\n';
-    }
-    ctx_.report("Schedule exported to " + path);
+    ctx_.tryEdit(tr("Apply design quantities"), [&] {
+        auto& p = ctx_.project();
+        CommandStack::MacroScope macro(p.commands(), "Apply design quantities");
+        for (const auto& id : ids)
+            if (!p.model().developmentsForActivity(id).empty()) mine_design::applyDesignQuantities(p, id);
+        macro.commit();
+    });
 }
 
-void SchedulerPanel::zoom(double factor) { chart_->setPixelsPerDay(chart_->pixelsPerDay() * factor); }
-
-// ===========================================================================
-GanttChart::GanttChart(AppContext& ctx, QTreeWidget* tree, QWidget* parent) : QWidget(parent), ctx_(ctx), tree_(tree) {
-    hbar_ = new QScrollBar(Qt::Horizontal, this);
-    connect(hbar_, &QScrollBar::valueChanged, this, qOverload<>(&QWidget::update));
-    setMinimumWidth(200);
-    setMouseTracking(true);
-    resetRange();
-}
-
-void GanttChart::resetRange() {
-    origin_ = ctx_.hasProject() ? ctx_.project().model().info.scheduleStart.addDays(-7) : Date::todayUtc();
-    updateScrollRange();
-    hbar_->setValue(0);
-    update();
-}
-
-void GanttChart::setPixelsPerDay(double ppd) {
-    ppd_ = std::clamp(ppd, 1.5, 80.0);
-    updateScrollRange();
-    update();
-}
-
-void GanttChart::updateScrollRange() {
-    long span = 120;
-    if (ctx_.hasProject() && ctx_.schedule().ok) span = std::max<long>(span, ctx_.schedule().projectFinishDate.days() - origin_.days() + 30);
-    spanDays_ = span;
-    hbar_->setRange(0, std::max(0, static_cast<int>(span * ppd_) - width()));
-    hbar_->setPageStep(width());
-}
-
-void GanttChart::resizeEvent(QResizeEvent*) {
-    hbar_->setGeometry(0, height() - hbar_->sizeHint().height(), width(), hbar_->sizeHint().height());
-    updateScrollRange();
-}
-
-int GanttChart::headerHeight() const { return tree_->header()->height(); }
-double GanttChart::xOf(Date d) const { return (d.days() - origin_.days()) * ppd_ - hbar_->value(); }
-
-void GanttChart::wheelEvent(QWheelEvent* e) {
-    if (e->modifiers() & Qt::ControlModifier) {
-        setPixelsPerDay(ppd_ * (e->angleDelta().y() > 0 ? 1.2 : 1 / 1.2));
-        e->accept();
+void SchedulerPanel::recordActual() {
+    const Uuid id = selectedActivity();
+    if (id.isNil()) {
+        ctx_.report(tr("Select an activity first"), MessageLevel::Warning);
         return;
     }
-    QApplication::sendEvent(tree_->verticalScrollBar(), e);
+    ActualDialog dlg(ctx_, id, this);
+    dlg.exec();
 }
 
-void GanttChart::mousePressEvent(QMouseEvent* e) {
-    const QPoint inTree(5, e->position().toPoint().y() - headerHeight());
-    if (auto* it = tree_->itemAt(inTree)) {
-        tree_->setCurrentItem(it);
-        it->setSelected(true);
-    }
-}
-
-void GanttChart::paintEvent(QPaintEvent*) {
-    updateScrollRange();
-    QPainter p(this);
-    p.setRenderHint(QPainter::Antialiasing);
-    const auto& c = Theme::colors();
-    const int hh = headerHeight();
-    const int bottom = height() - hbar_->height();
-    p.fillRect(rect(), c.panel);
+void SchedulerPanel::editScenario(bool create) {
     if (!ctx_.hasProject()) return;
-    const auto& m = ctx_.project().model();
-    const auto& sched = ctx_.schedule();
-    const WorkCalendar* cal = m.calendars.find(m.info.defaultCalendarId);
-
-    // Non-working days shading + grid.
-    const long firstDay = static_cast<long>(hbar_->value() / ppd_);
-    const long lastDay = firstDay + static_cast<long>(width() / ppd_) + 2;
-    p.setClipRect(0, hh, width(), bottom - hh);
-    if (cal) {
-        scheduling::WorkingTime wt(*cal, origin_);
-        for (long dday = firstDay; dday <= lastDay; ++dday) {
-            const Date d = origin_.addDays(dday);
-            if (!wt.isWorkingDay(d)) p.fillRect(QRectF(xOf(d), hh, ppd_, bottom - hh), c.ganttWeekend);
-        }
-    }
-    p.setPen(c.ganttGrid);
-    for (long dday = firstDay; dday <= lastDay; ++dday) {
-        const Date d = origin_.addDays(dday);
-        if (d.isoWeekday() == 1) p.drawLine(QPointF(xOf(d), hh), QPointF(xOf(d), bottom));
-    }
-    if (m.info.statusDate) {
-        p.setPen(QPen(c.accent, 2, Qt::DashLine));
-        p.drawLine(QPointF(xOf(*m.info.statusDate), hh), QPointF(xOf(*m.info.statusDate), bottom));
-    }
-    p.setClipping(false);
-
-    // Timescale header: months and week starts.
-    p.fillRect(QRect(0, 0, width(), hh), c.panelAlt);
-    p.setPen(c.border);
-    p.drawLine(0, hh - 1, width(), hh - 1);
-    QFont small = font();
-    small.setPointSizeF(font().pointSizeF() * 0.85);
-    p.setFont(small);
-    for (long dday = firstDay - 31; dday <= lastDay; ++dday) {
-        const Date d = origin_.addDays(dday);
-        int y;
-        unsigned mo, da;
-        d.toYmd(y, mo, da);
-        if (da == 1) {
-            p.setPen(c.text);
-            static const char* months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-            p.drawText(QPointF(std::max(2.0, xOf(d) + 3), hh * 0.42), QStringLiteral("%1 %2").arg(months[mo - 1]).arg(y));
-            p.setPen(c.border);
-            p.drawLine(QPointF(xOf(d), 0), QPointF(xOf(d), hh));
-        }
-        if (d.isoWeekday() == 1 && ppd_ * 7 > 28) {
-            p.setPen(c.textMuted);
-            p.drawText(QPointF(xOf(d) + 2, hh - 5), QString::number(da));
-        }
-    }
-
-    if (!sched.ok) {
-        p.setPen(c.ganttCritical);
-        p.drawText(QRect(0, hh, width(), 40), Qt::AlignCenter,
-                   "Schedule not calculated: " + qstr(sched.errors.empty() ? "" : sched.errors.front()));
+    const auto* active = ctx_.activeScenario();
+    if (!create && !active) {
+        ctx_.report(tr("The base schedule has no scenario settings; create a scenario"), MessageLevel::Warning);
         return;
     }
+    ScenarioDialog dlg(ctx_, create ? Uuid{} : active->id, this);
+    if (dlg.exec() == QDialog::Accepted && create) ctx_.setActiveScenario(dlg.scenarioId());
+}
 
-    // Rows (only items visible in the grid, at the grid's y positions).
-    std::map<Uuid, QRectF> barRects;
-    const auto* bl = latestBaseline(m);
-    p.setClipRect(0, hh, width(), bottom - hh);
-    QTreeWidgetItemIterator it(tree_);
-    for (; *it; ++it) {
-        QTreeWidgetItem* item = *it;
-        const QRect r = tree_->visualItemRect(item);
-        if (r.height() == 0) continue; // collapsed
-        const double y = hh + r.y();
-        if (y > bottom || y + r.height() < hh) continue;
-        auto id = Uuid::parse(item->data(0, RoleId).toString().toStdString());
-        if (!id) continue;
-        const auto* a = m.activities.find(*id);
-        auto t = sched.timings.find(*id);
-        if (!a || t == sched.timings.end()) continue;
-        if (item->isSelected()) p.fillRect(QRectF(0, y, width(), r.height()), QColor(c.accent.red(), c.accent.green(), c.accent.blue(), 40));
+void SchedulerPanel::optimise() {
+    auto* dlg = new OptimiserDialog(ctx_, this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->show();
+}
 
-        const double x0 = xOf(t->second.startDate);
-        const double x1 = xOf(t->second.finishDate.addDays(1));
-        const double h = r.height();
-        if (bl) {
-            for (const auto& b : bl->activities)
-                if (b.activityId == *id && a->kind != ActivityKind::Summary) {
-                    p.fillRect(QRectF(xOf(b.start), y + h * 0.72, xOf(b.finish.addDays(1)) - xOf(b.start), h * 0.14), c.ganttBaseline);
-                }
-        }
-        if (a->kind == ActivityKind::Milestone || t->second.duration <= 0) {
-            const double cx = x0, cy = y + h * 0.42, s = h * 0.3;
-            QPainterPath dia;
-            dia.moveTo(cx, cy - s);
-            dia.lineTo(cx + s, cy);
-            dia.lineTo(cx, cy + s);
-            dia.lineTo(cx - s, cy);
-            dia.closeSubpath();
-            p.fillPath(dia, t->second.critical ? c.ganttCritical : c.ganttSummary);
-            barRects[*id] = QRectF(cx - s, cy - s, 2 * s, 2 * s);
-        } else if (a->kind == ActivityKind::Summary) {
-            const QRectF br(x0, y + h * 0.3, x1 - x0, h * 0.2);
-            p.fillRect(br, c.ganttSummary);
-            QPainterPath l, rr;
-            p.fillRect(QRectF(x0, br.top(), 3, h * 0.38), c.ganttSummary);
-            p.fillRect(QRectF(x1 - 3, br.top(), 3, h * 0.38), c.ganttSummary);
-            barRects[*id] = br;
+bool SchedulerPanel::exportFile(const QString& path) {
+    const auto& s = ctx_.schedule();
+    if (!s.result.ok) {
+        ctx_.report(tr("The schedule is not calculated"), MessageLevel::Error);
+        return false;
+    }
+    const QString ext = QFileInfo(path).suffix().toLower();
+    return ctx_.tryEdit(tr("Export schedule"), [&] {
+        const auto file = std::filesystem::path(path.toStdU16String());
+        const auto rows = scheduling::scheduleTable(ctx_.project(), s.input, s.result, ctx_.comparisonBaseline());
+        if (ext == "csv") {
+            std::ofstream out(file, std::ios::binary);
+            if (!out) throw std::runtime_error("Cannot write " + file.string());
+            scheduling::writeCsv(out, rows);
+        } else if (ext == "xlsx") {
+            reporting::writeScheduleXlsx(ctx_.project(), rows, file);
+        } else if (ext == "pdf") {
+            reporting::writeGanttPdf(ctx_.project(), s.input, s.result, ctx_.comparisonBaseline(), file);
         } else {
-            const QRectF br(x0, y + h * 0.2, std::max(2.0, x1 - x0), h * 0.46);
-            p.setPen(Qt::NoPen);
-            p.setBrush(t->second.critical ? c.ganttCritical : c.ganttTask);
-            p.drawRoundedRect(br, 2, 2);
-            if (t->second.percentComplete > 0) {
-                p.setBrush(c.ganttProgress);
-                p.drawRect(QRectF(br.left(), br.top() + br.height() * 0.6, br.width() * t->second.percentComplete / 100.0, br.height() * 0.4));
-            }
-            barRects[*id] = br;
-            if (ppd_ >= 6) {
-                p.setPen(c.textMuted);
-                p.drawText(QPointF(br.right() + 6, br.bottom() - 2), qstr(a->name));
-            }
+            throw ValidationError("Export format must be .csv, .xlsx or .pdf");
         }
-        if (a->designImpactFlag) {
-            const QRectF br = barRects[*id];
-            QPainterPath tri;
-            const double tx = br.right() + 2, ty = y + 2;
-            tri.moveTo(tx + 6, ty);
-            tri.lineTo(tx + 12, ty + 11);
-            tri.lineTo(tx, ty + 11);
-            tri.closeSubpath();
-            p.fillPath(tri, c.warning);
-        }
-    }
-
-    // Dependency arrows.
-    p.setRenderHint(QPainter::Antialiasing);
-    for (const auto& d : m.dependencies.all()) {
-        auto pa = barRects.find(d.predecessorId), sa = barRects.find(d.successorId);
-        if (pa == barRects.end() || sa == barRects.end()) continue;
-        const QRectF P = pa->second, S = sa->second;
-        const bool fromFinish = d.type == DependencyType::FinishToStart || d.type == DependencyType::FinishToFinish;
-        const bool toStart = d.type == DependencyType::FinishToStart || d.type == DependencyType::StartToStart;
-        const auto pt = sched.timings.find(d.predecessorId), st = sched.timings.find(d.successorId);
-        const bool crit = pt->second.critical && st->second.critical;
-        p.setPen(QPen(crit ? c.ganttCritical : c.textMuted, 1.3));
-        const QPointF a0(fromFinish ? P.right() : P.left(), P.center().y());
-        const QPointF b0(toStart ? S.left() : S.right(), S.center().y());
-        const double stub = toStart ? -6 : 6;
-        QPainterPath path(a0);
-        const double xm = fromFinish ? a0.x() + 6 : a0.x() - 6;
-        path.lineTo(xm, a0.y());
-        path.lineTo(xm, (a0.y() + b0.y()) / 2);
-        path.lineTo(b0.x() + stub, (a0.y() + b0.y()) / 2);
-        path.lineTo(b0.x() + stub, b0.y());
-        path.lineTo(b0.x(), b0.y());
-        p.setBrush(Qt::NoBrush);
-        p.drawPath(path);
-        const double dir = toStart ? 1 : -1;
-        QPolygonF head{b0, {b0.x() - dir * 5, b0.y() - 3.5}, {b0.x() - dir * 5, b0.y() + 3.5}};
-        p.setBrush(crit ? c.ganttCritical : c.textMuted);
-        p.drawPolygon(head);
-    }
+        ctx_.report(tr("Schedule exported to %1").arg(path));
+    });
 }
 
 } // namespace openmine::app

@@ -12,7 +12,7 @@ find_package(nlohmann_json 3.10 REQUIRED)
 set(_bind_libs openmine_core openmine_cad openmine_scheduling openmine_mine_design openmine_survey openmine_formats openmine_reporting
                openmine_planning openmine_geology openmine_geotechnical openmine_omf openmine_plugin_host openmine_survey_reports nlohmann_json::nlohmann_json)
 set(_bind_defs "")
-foreach(pair "openmine_optimisation;OPTIMISER" "openmine_crs;CRS" "openmine_gis;GIS" "openmine_repository;REPOSITORY" "openmine_occt;OCCT")
+foreach(pair "openmine_optimisation;OPTIMISER" "openmine_crs;CRS" "openmine_gis;GIS" "openmine_repository;REPOSITORY" "openmine_occt;OCCT" "openmine_pdal;PDAL" "openmine_open3d;OPEN3D")
     list(GET pair 0 tgt)
     list(GET pair 1 def)
     if(TARGET ${tgt})
@@ -41,6 +41,8 @@ add_library(openmine_python_embed embed/PythonConsole.cpp)
 target_include_directories(openmine_python_embed PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/embed)
 target_link_libraries(openmine_python_embed PUBLIC openmine_core PRIVATE openmine_python_bindings pybind11::embed)
 target_compile_definitions(openmine_python_embed PRIVATE OPENMINE_PYTHON_PACKAGE_DIR="${CMAKE_BINARY_DIR}/python")
+# pybind11 objects are hidden-visibility types: the console's implementation must be hidden too.
+set_target_properties(openmine_python_embed PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
 
 if(OPENMINE_BUILD_TESTS)
     add_test(NAME python_api_tests
