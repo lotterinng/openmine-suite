@@ -49,6 +49,13 @@ std::unique_ptr<Command> reorderCommand(const ProjectModel& model, const std::st
                                         const std::string& text);
 /// Reorders directly (no command) — for building a checkout.
 void reorderDirect(ProjectModel& model, const std::string& type, const std::vector<std::string>& order);
+/// A default entity of the type with a fresh uuid, as a document to fill in (plugins, scripts).
+std::string templateDocument(const std::string& type);
+/// Validated add-or-update through ProjectEditor (same rules, metadata stamping, undo and audit as
+/// the UI). A nil uuid creates a new entity. Returns the entity id.
+Uuid putDocument(Project& project, const std::string& type, const std::string& json, const std::string& text = {});
+/// Validated removal with the editor's cascade/restrict policies.
+void removeDocument(Project& project, const std::string& type, const std::string& key);
 /// Referential-integrity problems of a model (dangling references), as messages.
 std::vector<std::string> checkModel(const Project& project);
 /// SHA-256 (hex) of a document.

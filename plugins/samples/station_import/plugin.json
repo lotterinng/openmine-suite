@@ -1,0 +1,10 @@
+{
+  "id": "org.openmine.samples.stations",
+  "name": "Survey station import (sample)",
+  "version": "1.0.0",
+  "api_version": 1,
+  "library": "openmine_station_import",
+  "description": "Sample native plugin: imports total-station coordinate files (.stn) as survey control points, exports control points as GeoJSON, and adds station commands.",
+  "author": "OpenMine Suite contributors",
+  "license": "Apache-2.0"
+}

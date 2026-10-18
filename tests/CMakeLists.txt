@@ -78,6 +78,18 @@ if(TARGET openmine_repository)
     gtest_discover_tests(openmine_pg_repository_tests DISCOVERY_TIMEOUT 60 PROPERTIES ENVIRONMENT "OPENMINE_PG_DSN=${OPENMINE_TEST_PG_DSN}" LABELS database)
 endif()
 
+# Native plugins: the sample plugin and a misbehaving test plugin, loaded by the host tests.
+if(TARGET openmine_plugin_host)
+    openmine_add_plugin(openmine_test_misbehaving ${CMAKE_CURRENT_SOURCE_DIR}/plugins/misbehaving
+        SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/plugins/misbehaving/misbehaving.cpp)
+    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/plugins/future/plugin.json ${CMAKE_BINARY_DIR}/plugins/future/plugin.json COPYONLY)
+    add_executable(openmine_plugin_tests unit/test_plugins.cpp)
+    target_link_libraries(openmine_plugin_tests PRIVATE openmine_plugin_host openmine_core GTest::gtest_main)
+    target_compile_definitions(openmine_plugin_tests PRIVATE OPENMINE_TEST_PLUGIN_DIR="${CMAKE_BINARY_DIR}/plugins")
+    add_dependencies(openmine_plugin_tests openmine_station_import openmine_test_misbehaving)
+    gtest_discover_tests(openmine_plugin_tests DISCOVERY_TIMEOUT 60)
+endif()
+
 # OMF v1 validation against the GMG reference library (omf 1.0.x). Skipped by pytest if missing.
 add_executable(omf_tool tools/omf_tool.cpp)
 target_link_libraries(omf_tool PRIVATE openmine_omf openmine_geology openmine_survey nlohmann_json::nlohmann_json)

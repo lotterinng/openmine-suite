@@ -97,6 +97,9 @@ struct TypeOps {
     std::function<void(ProjectModel&, const std::string&, const std::string&)> insert;
     std::function<std::vector<std::string>(const ProjectModel&)> order;
     std::function<void(ProjectModel&, const std::vector<std::string>&)> reorder;
+    std::function<std::string()> templ;
+    std::function<Uuid(Project&, const std::string&, const std::string&)> put;
+    std::function<void(Project&, const std::string&)> erase;
 };
 
 template <class T> class ReorderCommand : public Command {
@@ -155,6 +158,23 @@ template <class T> TypeOps opsFor() {
         return v;
     };
     o.reorder = [](ProjectModel& m, const std::vector<std::string>& keys) { EntityTraits<T>::store(m).reorder(toUuids(keys)); };
+    o.templ = [] {
+        T e{};
+        e.id = Uuid::generate();
+        return encodeEntity(e);
+    };
+    o.put = [](Project& p, const std::string& doc, const std::string& text) {
+        T e = decodeEntity<T>(doc);
+        ProjectEditor ed(p);
+        if (e.id.isNil()) return ed.add(std::move(e), text);
+        if (EntityTraits<T>::store(p.model()).contains(e.id)) {
+            const Uuid id = e.id;
+            ed.update(std::move(e), text);
+            return id;
+        }
+        return ed.add(std::move(e), text);
+    };
+    o.erase = [](Project& p, const std::string& key) { ProjectEditor(p).remove<T>(keyUuid(key)); };
     return o;
 }
 
@@ -269,6 +289,24 @@ void reorderDirect(ProjectModel& m, const std::string& type, const std::vector<s
     const auto it = ops().find(type);
     if (it == ops().end()) throw PersistenceError("Unknown entity type '" + type + "'");
     it->second.reorder(m, order);
+}
+
+std::string templateDocument(const std::string& type) {
+    const auto it = ops().find(type);
+    if (it == ops().end()) throw PersistenceError("Unknown entity type '" + type + "'");
+    return it->second.templ();
+}
+
+Uuid putDocument(Project& p, const std::string& type, const std::string& doc, const std::string& text) {
+    const auto it = ops().find(type);
+    if (it == ops().end()) throw PersistenceError("Unknown entity type '" + type + "'");
+    return it->second.put(p, doc, text);
+}
+
+void removeDocument(Project& p, const std::string& type, const std::string& key) {
+    const auto it = ops().find(type);
+    if (it == ops().end()) throw PersistenceError("Unknown entity type '" + type + "'");
+    it->second.erase(p, key);
 }
 
 std::vector<std::string> checkModel(const Project& p) {
