@@ -45,7 +45,16 @@ int pumpTrampoline(void*) {
     return 0;
 }
 
-/// While alive, schedules the pump periodically (Py_AddPendingCall is safe from any thread).
+/// Schedules `fn` to run on the interpreter's thread between bytecodes. The caller takes the GIL
+/// first: Python 3.12 rejects Py_AddPendingCall from a thread without a thread state (it returns
+/// -1 every time), although the documentation allows it; 3.13 accepts both.
+void schedule(int (*fn)(void*)) {
+    const PyGILState_STATE g = PyGILState_Ensure();
+    Py_AddPendingCall(fn, nullptr);
+    PyGILState_Release(g);
+}
+
+/// While alive, schedules the pump periodically from a helper thread.
 class PumpTicker {
 public:
     explicit PumpTicker(int intervalMs) : interval_(intervalMs) {
@@ -54,7 +63,11 @@ public:
         if (gPump && *gPump && interval_ > 0)
             thread_ = std::thread([this] {
                 std::unique_lock lk(m_);
-                while (!cv_.wait_for(lk, std::chrono::milliseconds(interval_), [this] { return stop_; })) Py_AddPendingCall(&pumpTrampoline, nullptr);
+                while (!cv_.wait_for(lk, std::chrono::milliseconds(interval_), [this] { return stop_; })) {
+                    lk.unlock(); // the GIL may take a while: never hold m_ while waiting for it
+                    schedule(&pumpTrampoline);
+                    lk.lock();
+                }
             });
     }
     ~PumpTicker() {
@@ -63,7 +76,11 @@ public:
             stop_ = true;
         }
         cv_.notify_all();
-        if (thread_.joinable()) thread_.join();
+        if (thread_.joinable()) {
+            // The helper may be waiting for the GIL, which this (interpreter) thread holds.
+            py::gil_scoped_release release;
+            thread_.join();
+        }
         gRunning = false;
         gInterruptRequested = false;
     }
@@ -262,7 +279,7 @@ std::vector<std::string> PythonConsole::complete(const std::string& text) { retu
 void PythonConsole::interrupt() {
     if (!gRunning.load()) return;
     gInterruptRequested = true;
-    Py_AddPendingCall(&interruptTrampoline, nullptr); // safe from any thread
+    schedule(&interruptTrampoline); // from the pump (GIL held) or from another thread
 }
 
 std::string PythonConsole::pythonVersion() { return Py_GetVersion(); }
