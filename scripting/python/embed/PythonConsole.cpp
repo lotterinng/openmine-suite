@@ -23,6 +23,16 @@ Project* gCurrent = nullptr;
 std::function<void(int, const std::string&)>* gSink = nullptr;
 std::atomic<bool> gRunning{false};
 std::function<void()>* gPump = nullptr;
+std::atomic<bool> gInterruptRequested{false};
+
+int interruptTrampoline(void*) {
+    // Runs on the interpreter's thread between bytecodes: raising here interrupts the running code.
+    // (PyErr_SetInterrupt would depend on Python's SIGINT handler, which Python does not install
+    // when the process starts with SIGINT ignored, as under some CI runners and launchers.)
+    if (!gInterruptRequested.exchange(false) || !gRunning.load()) return 0;
+    PyErr_SetNone(PyExc_KeyboardInterrupt);
+    return -1;
+}
 
 int pumpTrampoline(void*) {
     // Runs on the interpreter's thread with the GIL held, between bytecodes.
@@ -39,6 +49,7 @@ int pumpTrampoline(void*) {
 class PumpTicker {
 public:
     explicit PumpTicker(int intervalMs) : interval_(intervalMs) {
+        gInterruptRequested = false;
         gRunning = true;
         if (gPump && *gPump && interval_ > 0)
             thread_ = std::thread([this] {
@@ -54,6 +65,7 @@ public:
         cv_.notify_all();
         if (thread_.joinable()) thread_.join();
         gRunning = false;
+        gInterruptRequested = false;
     }
 
 private:
@@ -247,7 +259,11 @@ PythonConsole::Result PythonConsole::runFile(const std::filesystem::path& file) 
 
 std::vector<std::string> PythonConsole::complete(const std::string& text) { return impl_->complete(text).cast<std::vector<std::string>>(); }
 
-void PythonConsole::interrupt() { PyErr_SetInterrupt(); }
+void PythonConsole::interrupt() {
+    if (!gRunning.load()) return;
+    gInterruptRequested = true;
+    Py_AddPendingCall(&interruptTrampoline, nullptr); // safe from any thread
+}
 
 std::string PythonConsole::pythonVersion() { return Py_GetVersion(); }
 

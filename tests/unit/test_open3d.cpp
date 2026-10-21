@@ -14,6 +14,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <numbers>
@@ -116,11 +118,15 @@ TEST(Open3d, IcpOptionsAreHonouredOrRefused) {
     for (std::size_t i = 0; i < noisy.size(); i += 10) noisy.xyz[i] += Vec3{u(rng), u(rng), u(rng)};
     const auto r = o3d::icp(noisy, target, {}, o, {0.05});
     EXPECT_LT(distance(r.transform.apply(kMine + Vec3{30, 30, 0}), misalignment().apply(kMine + Vec3{30, 30, 0})), 0.02);
-    // Sampling: a fixed seed gives the same result twice; cancellation is honoured.
+    // Sampling: a fixed seed selects the same sample, so two runs agree. Open3D sums the normal
+    // equations in parallel (OpenMP reductions in a thread-dependent order), so the agreement is to
+    // floating-point rounding rather than bit for bit; cancellation is honoured.
     o.trimFraction = 0;
     o.sampleSize = 2000;
     const auto s1 = o3d::icp(moving, target, {}, o), s2 = o3d::icp(moving, target, {}, o);
-    EXPECT_TRUE(s1.transform == s2.transform);
+    double maxDiff = 0;
+    for (std::size_t k = 0; k < 16; ++k) maxDiff = std::max(maxDiff, std::abs(s1.transform.data()[k] - s2.transform.data()[k]));
+    EXPECT_LT(maxDiff, 1e-9);
     jobs::Progress cancelled;
     cancelled.cancel();
     EXPECT_THROW(o3d::icp(moving, target, {}, o, {}, cancelled), jobs::CancelledError);
