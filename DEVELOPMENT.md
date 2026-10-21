@@ -117,7 +117,7 @@ adds the PDAL plugins, the sample plugins, licence texts, a desktop entry, an ic
 git clone https://github.com/microsoft/vcpkg C:\vcpkg; C:\vcpkg\bootstrap-vcpkg.bat
 $env:VCPKG_ROOT = "C:\vcpkg"
 # from a "x64 Native Tools Command Prompt for VS 2022":
-cmake --preset windows-msvc            # vcpkg.json: Qt, VTK, OCCT, PDAL, PROJ, GDAL, libpq, Eigen, …
+cmake --preset windows-msvc -DOPENMINE_BUILD_PYTHON=OFF   # vcpkg.json: Qt, VTK, OCCT, PDAL, PROJ, GDAL, libpq, Eigen, …
 cmake --build --preset windows-msvc
 ctest --preset windows-msvc -LE gui
 ctest --preset windows-msvc -L gui     # smoke test (needs a desktop session)
@@ -125,7 +125,11 @@ build\windows-msvc\bin\openmine-desktop.exe
 ```
 
 vcpkg builds Qt, VTK, OCCT, GDAL and PDAL from source on the first run (several hours; use a
-binary cache). Open3D and OR-Tools are not in vcpkg's manifest here: install their official
+binary cache). The Python API needs pybind11 and vcpkg's Python: configure with
+`-DVCPKG_MANIFEST_FEATURES=python` instead of `-DOPENMINE_BUILD_PYTHON=OFF`. The Windows workflow
+(`.github/workflows/windows.yml`) pins vcpkg to a release tag and takes vcpkg's MSYS2 package list
+(used to fetch `pkgconf`) from a newer release, since MSYS2 removes superseded packages from its
+mirrors. Open3D and OR-Tools are not in vcpkg's manifest here: install their official
 Windows binaries and pass `-DOpen3D_DIR=…` and `-Dortools_DIR=…`, or leave them out (the features
 are then reported unavailable). **Status:** the Windows path is written but has not been executed
 (see `IMPLEMENTATION_STATUS.md`).

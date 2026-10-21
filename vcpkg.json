@@ -14,8 +14,7 @@
     "clipper2",
     { "name": "qtbase", "default-features": false, "features": ["widgets", "opengl", "gui", "png", "freetype"] },
     "qtsvg",
-    { "name": "vtk", "default-features": false, "features": ["opengl"] },
-    "pybind11"
+    { "name": "vtk", "default-features": false, "features": ["opengl"] }
   ],
   "default-features": ["solids", "pointclouds", "gis", "repository", "tests"],
   "features": {
@@ -34,6 +33,10 @@
     "repository": {
       "description": "PostgreSQL/PostGIS shared repository client",
       "dependencies": ["libpq"]
+    },
+    "python": {
+      "description": "pybind11 for the 'openmine' Python extension (OPENMINE_BUILD_PYTHON)",
+      "dependencies": ["pybind11"]
     },
     "tests": {
       "description": "GoogleTest",

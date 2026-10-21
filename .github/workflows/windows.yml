@@ -20,6 +20,9 @@ permissions:
 
 env:
   VCPKG_TAG: 2024.11.16          # pinned vcpkg ports
+  # MSYS2 deletes superseded packages from its mirrors, so the MSYS2 package list of an older vcpkg
+  # (used to fetch pkgconf for every port) goes stale; it is taken from this newer vcpkg release.
+  VCPKG_MSYS_TAG: 2026.10.16
   VCPKG_ROOT: ${{ github.workspace }}\vcpkg
   VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-bincache
 
@@ -57,12 +60,22 @@ jobs:
         run: |
           ./.github/scripts/logged.ps1 -Name bootstrap -Script {
             $PSVersionTable.PSVersion.ToString(); git --version
+            Get-Command cmake, ninja, cl -ErrorAction Continue | ForEach-Object { "$($_.Name): $($_.Source)" }
             "workspace: $env:GITHUB_WORKSPACE  VCPKG_ROOT: $env:VCPKG_ROOT  cache: $env:VCPKG_DEFAULT_BINARY_CACHE"
             New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
             if (Test-Path "$env:VCPKG_ROOT\.git") { "vcpkg already present" } else {
               git clone --depth 1 --branch $env:VCPKG_TAG https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
               if ($LASTEXITCODE) { throw "git clone of vcpkg $env:VCPKG_TAG failed ($LASTEXITCODE)" }
             }
+            # Current MSYS2 package list (same functions; only the package URLs, hashes and
+            # dependencies differ). Its download helper was renamed later; map it back.
+            git -C $env:VCPKG_ROOT fetch --depth 1 origin tag $env:VCPKG_MSYS_TAG
+            if ($LASTEXITCODE) { throw "git fetch of vcpkg $env:VCPKG_MSYS_TAG failed ($LASTEXITCODE)" }
+            $msys = git -C $env:VCPKG_ROOT show "${env:VCPKG_MSYS_TAG}:scripts/cmake/vcpkg_acquire_msys.cmake"
+            if ($LASTEXITCODE) { throw "vcpkg_acquire_msys.cmake not found in $env:VCPKG_MSYS_TAG" }
+            ($msys -join "`n").Replace('z_vcpkg_download_distfile(', 'vcpkg_download_distfile(') |
+              Set-Content -NoNewline -Encoding utf8NoBOM "$env:VCPKG_ROOT\scripts\cmake\vcpkg_acquire_msys.cmake"
+            git -C $env:VCPKG_ROOT --no-pager diff --stat
             & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
             if ($LASTEXITCODE) { throw "bootstrap-vcpkg.bat failed ($LASTEXITCODE)" }
             & "$env:VCPKG_ROOT\vcpkg.exe" version
