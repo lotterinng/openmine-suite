@@ -53,6 +53,22 @@ struct IntegrityReport {
 };
 IntegrityReport checkProjectFile(const std::filesystem::path& file, bool fullAssetCheck = false);
 
+/// Result of compacting a project's asset store.
+struct CompactReport {
+    std::vector<std::string> unreferencedAssets; ///< registered assets no project object uses (relative paths)
+    std::vector<std::string> orphanFiles;        ///< files/folders in the asset store that are not registered assets
+    std::int64_t bytes = 0;                      ///< space they occupy (freed unless dry run)
+    bool dryRun = false;
+};
+
+/// Removes assets no project object references any more (e.g. point clouds or attachments that
+/// were deleted) and files in the asset store that are not registered assets (left by cancelled
+/// operations). Needs a saved project. Unless `dryRun`, it clears the undo history — an undo could
+/// otherwise restore an object whose stored file is gone — records an audit entry, saves the
+/// project and only then deletes the files, so a failure never leaves the project referring to
+/// missing files. Files outside the asset kind folders are never touched.
+CompactReport compactProject(Project& project, bool dryRun = false);
+
 /// The SQL DDL for the current schema (exposed for documentation and tests).
 const std::string& schemaSql();
 /// The SQL DDL of schema version 1 (exposed so migration tests can build v1 fixtures).

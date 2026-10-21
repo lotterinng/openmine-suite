@@ -96,6 +96,8 @@ private:
     void setTheme(bool dark);
     void showAbout();
     void projectCheck();
+    /// Removes unused and unregistered asset files (asks first unless non-interactive); returns the report text.
+    QString compactProject(bool dryRun);
     void loadPlugins();
     void rebuildPluginMenu();
     void rebuildRecentMenu();

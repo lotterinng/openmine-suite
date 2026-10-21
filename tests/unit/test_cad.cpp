@@ -354,3 +354,40 @@ TEST(CadSnap, ModesAndPriorities) {
     s.modes = static_cast<unsigned>(SnapMode::Endpoint);
     EXPECT_FALSE(findSnap(cands, {404, 304}, {40.4, 30.4, 0}, proj, s));
 }
+
+TEST(CadGrips, VerticesArcsAndCircles) {
+    // Polyline vertices; meshes have none.
+    const auto pl = makePolyline({{0, 0, 0}, {10, 0, 0}, {10, 10, 0}});
+    ASSERT_EQ(grips(pl).size(), 3u);
+    EXPECT_EQ(grips(pl)[1].kind, GripKind::Vertex);
+    const auto moved = moveGrip(pl, 1, {12, -3, 1});
+    expectNear(moved.vertices[1], {12, -3, 1});
+    EXPECT_EQ(moved.vertices.size(), 3u);
+    EXPECT_THROW(moveGrip(pl, 3, {0, 0, 0}), EditError);
+    EXPECT_THROW(moveGrip(makeLine({0, 0, 0}, {5, 0, 0}), 1, {0, 0, 0}), EditError);
+    GeometryObject mesh;
+    mesh.type = GeometryType::Mesh;
+    EXPECT_TRUE(grips(mesh).empty());
+
+    // Circle: centre moves it; the radius grip sets the radius in the circle's plane.
+    const auto c = makeCircle({1, 1, 5}, 2);
+    ASSERT_EQ(grips(c).size(), 2u);
+    expectNear(grips(c)[1].point, {3, 1, 5});
+    EXPECT_NEAR(moveGrip(c, 1, {1, 4, 9}).arc.radius, 3.0, 1e-12); // z ignored: projected onto the plane
+    expectNear(moveGrip(c, 0, {0, 0, 0}).arc.center, {0, 0, 0});
+    EXPECT_THROW(moveGrip(c, 1, {1, 1, 7}), EditError); // zero radius
+
+    // Arc 0°–90° of radius 2 at the origin: centre, start, mid (radius), end.
+    const auto a = makeArc({0, 0, 0}, 2, 0, kPi / 2);
+    const auto ag = grips(a);
+    ASSERT_EQ(ag.size(), 4u);
+    EXPECT_EQ(ag[1].kind, GripKind::ArcStart);
+    expectNear(ag[1].point, {2, 0, 0});
+    expectNear(ag[3].point, {0, 2, 0});
+    const auto longer = moveGrip(a, 3, {-1, 0, 0}); // end to 180°
+    EXPECT_NEAR(longer.arc.endAngle - longer.arc.startAngle, kPi, 1e-12);
+    EXPECT_NEAR(longer.arc.radius, 2, 1e-12);
+    const auto earlier = moveGrip(a, 1, {0, -5, 0}); // start back to -90°
+    EXPECT_NEAR(earlier.arc.endAngle - earlier.arc.startAngle, kPi, 1e-12);
+    EXPECT_NEAR(moveGrip(a, 2, {3, 3, 0}).arc.radius, std::sqrt(18.0), 1e-12);
+}

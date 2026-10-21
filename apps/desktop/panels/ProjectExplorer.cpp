@@ -712,6 +712,10 @@ void ProjectExplorer::contextMenu(const QPoint& pos) {
         act(tr("Open"), "open-report", "report");
         act(tr("Save as…"), "save-report", "save");
         break;
+    case EntityKind::Attachment:
+        act(tr("Open"), "open-attachment", "open");
+        act(tr("Save as…"), "save-attachment", "save");
+        break;
     case EntityKind::Scenario:
         menu.addAction(toolIcon("scenario"), tr("Make active"), [this, primary] { ctx_.setActiveScenario(primary.id); });
         act(tr("Optimise sequence…"), "optimise", "optimise");
@@ -732,6 +736,8 @@ void ProjectExplorer::contextMenu(const QPoint& pos) {
     default: break;
     }
     menu.addSeparator();
+    if (primary.kind != EntityKind::Attachment && primary.kind != EntityKind::Asset && sel.size() == 1)
+        act(tr("Attach file…"), "attach-file", "attach");
     menu.addAction(tr("Rename…"), [this, primary] { renameItem(primary); })->setEnabled(sel.size() == 1);
     menu.addAction(toolIcon("delete"), tr("Delete"), [this] { deleteSelected(); })->setEnabled(primary.kind != EntityKind::ProjectInfo);
     menu.exec(tree_->viewport()->mapToGlobal(pos));

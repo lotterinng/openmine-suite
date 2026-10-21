@@ -549,3 +549,25 @@ TEST(MineDesign, ProjectGeometryEditsAreUndoableAndFlagLinkedActivities) {
     EXPECT_THROW(mine_design::chamferObjects(p, l1, {1, 200, 0}, l1, {2, 200, 0}, 1, 1), ValidationError);
     EXPECT_THROW(mine_design::trimObject(p, Uuid::generate(), {}, {}), ValidationError);
 }
+
+TEST(MineDesign, GripEditsMoveDefiningPointsAndFlagLinkedActivities) {
+    Fixture f;
+    auto& p = *f.p;
+    // The centreline's last vertex moved 30 m further north: 150 → 180 m, flagged, one undo step.
+    const auto gs = cad::grips(*p.model().geometry.find(f.geom));
+    ASSERT_EQ(gs.size(), 3u);
+    const std::size_t before = p.commands().index();
+    const auto r = mine_design::moveGrip(p, f.geom, 2, {90, 90, 1000});
+    EXPECT_EQ(p.commands().index(), before + 1);
+    EXPECT_EQ(r.changed, std::vector<Uuid>{f.geom});
+    EXPECT_EQ(r.flaggedActivities, 1);
+    EXPECT_NEAR(geometry::curveLength(*p.model().geometry.find(f.geom)), 180.0, 1e-9);
+    EXPECT_TRUE(p.model().activities.find(f.act)->designImpactFlag);
+    EXPECT_DOUBLE_EQ(p.model().activities.find(f.act)->quantity, 150.0); // flagged, not changed
+    p.commands().undo();
+    EXPECT_NEAR(geometry::curveLength(*p.model().geometry.find(f.geom)), 150.0, 1e-9);
+    // Invalid grip edits are rejected and change nothing.
+    EXPECT_THROW(mine_design::moveGrip(p, f.geom, 1, {0, 0, 1000}), ValidationError); // onto its neighbour
+    EXPECT_THROW(mine_design::moveGrip(p, f.geom, 7, {0, 0, 1000}), ValidationError);
+    EXPECT_EQ(p.commands().index(), before);
+}

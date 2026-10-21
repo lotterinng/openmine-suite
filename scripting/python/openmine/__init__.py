@@ -27,14 +27,14 @@ Modules: :mod:`openmine.geology`, :mod:`openmine.geotech`, :mod:`openmine.survey
 from __future__ import annotations
 
 from . import _core
-from ._core import CancelledError, DxfError, MeshFormatError, OmfError, PersistenceError, PointCloudError, Progress, ValidationError
+from ._core import AssetError, CancelledError, DxfError, MeshFormatError, OmfError, PersistenceError, PointCloudError, Progress, ValidationError
 
 GisError = getattr(_core, "GisError", RuntimeError)
 SolidError = getattr(_core, "SolidError", RuntimeError)
 CrsError = getattr(_core, "CrsError", ValueError)
 from ._project import (Activity, Development, PointCloud, Project, ScheduleResult, current_project)
 
-__all__ = ["Project", "Development", "Activity", "PointCloud", "ScheduleResult", "Progress", "ValidationError", "PersistenceError",
+__all__ = ["Project", "Development", "Activity", "PointCloud", "ScheduleResult", "Progress", "ValidationError", "PersistenceError", "AssetError",
            "CancelledError", "PointCloudError", "DxfError", "MeshFormatError", "OmfError", "GisError", "SolidError", "CrsError", "FEATURES", "current_project", "__version__"]
 
 __version__ = _core.__version__

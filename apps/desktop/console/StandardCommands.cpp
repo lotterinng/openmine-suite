@@ -23,6 +23,7 @@
 #include "openmine/mine_design/Development.h"
 #include "openmine/mine_design/GeometryEdits.h"
 #include "openmine/objects/EnumNames.h"
+#include "openmine/project/Attachments.h"
 #include "openmine/project/ProjectEditor.h"
 #include "openmine/scheduling/Cpm.h"
 #include "openmine/survey/Registration.h"
@@ -35,6 +36,7 @@
 #endif
 
 #include <QAction>
+#include <QFileInfo>
 #include <QDockWidget>
 #include <QRegularExpression>
 
@@ -194,6 +196,24 @@ void MainWindow::registerCommands() {
         ctx_.report("Saved " + path);
     }, {"SAVEAS"});
     con.registerCommand("CLOSE", "CLOSE", "Close the project", [this](const QStringList&) { closeProject(); });
+    con.registerCommand("COMPACT", "COMPACT [DRYRUN]", "Remove stored files no project object uses (saves; clears undo)", [this, needProject](const QStringList& a) {
+        needProject();
+        const bool dry = !a.isEmpty() && a.front().compare("DRYRUN", Qt::CaseInsensitive) == 0;
+        if (!a.isEmpty() && !dry) throw ValidationError("Usage: COMPACT [DRYRUN]");
+        if (compactProject(dry).isEmpty()) throw ValidationError("The project was not compacted");
+    });
+    con.registerCommand("ATTACH", "ATTACH <file> [description]", "Attach a copy of a file to the selected object (or the project)",
+                        [this, needProject](const QStringList& a) {
+        needProject();
+        if (a.isEmpty()) throw ValidationError("Usage: ATTACH <file> [description]");
+        const auto sel = ctx_.primary();
+        const std::string type = sel.id.isNil() || sel.kind == EntityKind::ProjectInfo ? std::string() : documentType(sel.kind);
+        const Uuid target = type.empty() ? Uuid{} : sel.id;
+        const QString file = a.front();
+        const Uuid id = attachFile(ctx_.project(), type, target, std::filesystem::path(file.toStdU16String()), sstr(a.mid(1).join(' ')));
+        ctx_.report(tr("Attached %1 to %2").arg(QFileInfo(file).fileName(), target.isNil() ? tr("the project") : displayName(ctx_.project().model(), {sel.kind, sel.id})));
+        ctx_.select(EntityKind::Attachment, id);
+    });
     con.registerCommand("CHECK", "CHECK", "Check the project file, model references and assets", [this, needProject](const QStringList&) {
         needProject();
         projectCheck();
@@ -436,6 +456,29 @@ void MainWindow::registerCommands() {
     con.registerCommand("TRIM", "TRIM", "Trim curves at cutting edges", [=](const QStringList&) { needProject(); tool(Tool::Trim); }, {"TR"});
     con.registerCommand("EXTEND", "EXTEND", "Extend curves to boundaries", [=](const QStringList&) { needProject(); tool(Tool::Extend); }, {"EX"});
     con.registerCommand("SPLIT", "SPLIT", "Split a curve at a point", [=](const QStringList&) { needProject(); tool(Tool::Split); }, {"BREAK", "BR"});
+    con.registerCommand("GRIP", "GRIP [n x,y,z|@dx,dy,dz]", "List the grips of the selected object, or move grip n", [=, this](const QStringList& a) {
+        needProject();
+        const auto sel = ctx_.selectedGeometry();
+        if (sel.empty()) throw ValidationError("Select one object first");
+        const auto* g = ctx_.project().model().geometry.find(sel.back());
+        const auto grips = cad::grips(*g);
+        if (grips.empty()) throw ValidationError("'" + g->name + "' has no grips (meshes and solids are edited with their own tools)");
+        static const char* kinds[] = {"vertex", "centre", "radius", "start", "end"};
+        if (a.isEmpty()) {
+            for (std::size_t i = 0; i < grips.size(); ++i)
+                ctx_.report(QStringLiteral("%1  %2  %3, %4, %5").arg(i + 1).arg(kinds[static_cast<int>(grips[i].kind)])
+                                .arg(grips[i].point.x, 0, 'f', 3).arg(grips[i].point.y, 0, 'f', 3).arg(grips[i].point.z, 0, 'f', 3));
+            return;
+        }
+        if (a.size() != 2) throw ValidationError("Usage: GRIP n x,y,z  (or @dx,dy,dz relative to the grip)");
+        bool ok = false;
+        const int n = a[0].toInt(&ok);
+        if (!ok || n < 1 || n > static_cast<int>(grips.size())) throw ValidationError("Grip number between 1 and " + std::to_string(grips.size()));
+        const auto to = parsePoint(a[1], grips[static_cast<std::size_t>(n - 1)].point, workZ());
+        if (!to) throw ValidationError("Not a point: " + sstr(a[1]));
+        const auto r = mine_design::moveGrip(ctx_.project(), g->id, static_cast<std::size_t>(n - 1), *to);
+        if (r.flaggedActivities) ctx_.report(tr("%1 linked activity(ies) flagged for review").arg(r.flaggedActivities), MessageLevel::Warning);
+    });
     con.registerCommand("JOIN", "JOIN", "Join the selected curves end to end", [this](const QStringList&) { handleEntityAction("join", ctx_.selection()); }, {"J"});
     con.registerCommand("EXPLODE", "EXPLODE", "Explode the selected objects into their parts", [this](const QStringList&) { handleEntityAction("explode", ctx_.selection()); }, {"X"});
     con.registerCommand("DELETE", "DELETE", "Delete the selection (UNDO restores it)", [=, this](const QStringList&) {

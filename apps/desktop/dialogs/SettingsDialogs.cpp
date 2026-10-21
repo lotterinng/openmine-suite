@@ -20,6 +20,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
+#include <QSet>
 #include <QSpinBox>
 #include <QTabWidget>
 #include <QVBoxLayout>
@@ -102,6 +103,23 @@ PreferencesDialog::PreferencesDialog(AppContext& ctx, ViewportArea& views, std::
     dl->addStretch(1);
     tabs->addTab(drawing, tr("Drawing"));
 
+    // Plugins: which native plugins load, and whether Python plugins are discovered.
+    auto* plugins = new QWidget;
+    auto* plg = new QVBoxLayout(plugins);
+    plg->addWidget(new QLabel(tr("Native plugins found in the plugin folders (unchecked = not loaded). Changes apply at once."), plugins));
+    nativePlugins_ = new QListWidget(plugins);
+    plg->addWidget(nativePlugins_, 1);
+    pythonPlugins_ = new QCheckBox(tr("Discover Python plugins at start-up (installed distributions and \"python\" plugin sub-folders)"), plugins);
+    pythonPlugins_->setToolTip(tr("Python plugins stay loaded for the session once discovered; turning this off takes effect at the next start"));
+    plg->addWidget(pythonPlugins_);
+    QStringList folders;
+    for (const auto& d : ctx_.pluginDirectories()) folders << QString::fromStdU16String(d.u16string());
+    auto* where = new QLabel(tr("Plugin folders: %1 (add more with OPENMINE_PLUGIN_PATH)").arg(folders.join("; ")), plugins);
+    where->setWordWrap(true);
+    where->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    plg->addWidget(where);
+    tabs->addTab(plugins, tr("Plugins"));
+
     auto* project = new QWidget;
     auto* pf = new QFormLayout(project);
     decimals_ = new QSpinBox(project);
@@ -143,6 +161,22 @@ void PreferencesDialog::load() {
     textHeight_->setValue(tools.textHeight());
     filletRadius_->setValue(tools.filletRadius());
     offsetDistance_->setValue(tools.offsetDistance());
+    const QStringList disabled = ctx_.settings().value("plugins/disabled").toStringList();
+    nativePlugins_->clear();
+    std::vector<std::string> problems;
+    for (const auto& m : ctx_.plugins().discover(ctx_.pluginDirectories(), &problems)) {
+        auto* it = new QListWidgetItem(tr("%1 %2 — %3").arg(QString::fromStdString(m.name), QString::fromStdString(m.version), QString::fromStdString(m.id)),
+                                       nativePlugins_);
+        it->setData(Qt::UserRole, QString::fromStdString(m.id));
+        it->setToolTip(QString::fromStdString(m.description));
+        it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
+        it->setCheckState(disabled.contains(QString::fromStdString(m.id)) ? Qt::Unchecked : Qt::Checked);
+    }
+    for (const auto& p : problems) {
+        auto* it = new QListWidgetItem(QString::fromStdString(p), nativePlugins_);
+        it->setFlags(Qt::ItemIsEnabled);
+    }
+    pythonPlugins_->setChecked(ctx_.settings().value("plugins/python", true).toBool());
     if (ctx_.hasProject()) {
         decimals_->setValue(ctx_.project().model().info.coordinateDisplayDecimals);
         southAxes_->setChecked(ctx_.project().model().info.southOrientatedAxes);
@@ -193,6 +227,21 @@ bool PreferencesDialog::apply() {
     st.setValue("draw/textHeight", textHeight_->value());
     st.setValue("draw/filletRadius", filletRadius_->value());
     st.setValue("draw/offsetDistance", offsetDistance_->value());
+
+    // Plugins: the disabled list keeps ids of plugins not found now (a folder may be unavailable).
+    QStringList disabled = st.value("plugins/disabled").toStringList();
+    const QStringList before = disabled;
+    for (int r = 0; r < nativePlugins_->count(); ++r) {
+        const auto* it = nativePlugins_->item(r);
+        const QString id = it->data(Qt::UserRole).toString();
+        if (id.isEmpty()) continue;
+        disabled.removeAll(id);
+        if (it->checkState() == Qt::Unchecked) disabled << id;
+    }
+    disabled.removeDuplicates();
+    st.setValue("plugins/disabled", disabled);
+    st.setValue("plugins/python", pythonPlugins_->isChecked());
+    if (QSet<QString>(disabled.begin(), disabled.end()) != QSet<QString>(before.begin(), before.end())) ctx_.requestPluginRescan();
 
     const bool dark = theme_->currentIndex() == 0;
     if ((Theme::current() == ThemeKind::Dark) != dark && setTheme_) setTheme_(dark);

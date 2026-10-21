@@ -66,6 +66,7 @@ const char* toolName(Tool t) {
     case Tool::PickPoints: return "Pick points";
     case Tool::SectionLine: return "Section line";
     case Tool::CropPolygon: return "Crop polygon";
+    case Tool::Grip: return "Grip edit";
     }
     return "?";
 }
@@ -74,6 +75,63 @@ ToolController::ToolController(AppContext& ctx, QObject* parent) : QObject(paren
     snap_.modes = cad::SnapMode::Endpoint | cad::SnapMode::Midpoint | cad::SnapMode::Center | cad::SnapMode::Intersection |
                   cad::SnapMode::Node | cad::SnapMode::Perpendicular | cad::SnapMode::Nearest;
     connect(&ctx_, &AppContext::projectReplaced, this, [this] { setTool(Tool::Select); });
+    connect(&ctx_, &AppContext::selectionChanged, this, &ToolController::gripsChanged);
+    connect(&ctx_, &AppContext::modelChanged, this, [this] {
+        // The object being grip-edited was deleted (e.g. by undo of its creation): stop.
+        if (grip_ && (!ctx_.hasProject() || !ctx_.project().model().geometry.contains(grip_->object))) setTool(Tool::Select);
+        emit gripsChanged();
+    });
+}
+
+// ---- grips ---------------------------------------------------------------------------------------
+
+std::vector<ToolController::ObjectGrip> ToolController::selectionGrips() const {
+    std::vector<ObjectGrip> out;
+    if (!ctx_.hasProject() || tool_ != Tool::Select) return out;
+    const auto& m = ctx_.project().model();
+    for (const auto* g : selectedObjects()) {
+        const auto* layer = m.layers.find(g->layerId);
+        if (layer && (layer->locked || !layer->visible)) continue;
+        const auto gs = cad::grips(*g);
+        for (std::size_t i = 0; i < gs.size(); ++i) {
+            if (out.size() >= kMaxGrips) return out;
+            out.push_back({g->id, i, gs[i]});
+        }
+    }
+    return out;
+}
+
+std::optional<ToolController::ObjectGrip> ToolController::gripAt(Viewport3D* view, QPoint q) const {
+    std::optional<ObjectGrip> best;
+    double bestD = snap_.aperturePixels;
+    for (const auto& g : selectionGrips()) {
+        const auto s = view->worldToWidget(g.grip.point);
+        if (!s) continue;
+        const double d = std::hypot(s->x() - q.x(), s->y() - q.y());
+        if (d <= bestD) {
+            bestD = d;
+            best = g;
+        }
+    }
+    return best;
+}
+
+bool ToolController::gripClick(Viewport3D* view, QPoint q) {
+    if (tool_ != Tool::Select) return false;
+    const auto g = gripAt(view, q);
+    if (!g) return false;
+    lastView_ = view;
+    returnTo_ = Tool::Select;
+    setTool(Tool::Grip);
+    grip_ = g;
+    pts_ = {g->grip.point}; // the base for relative input and the rubber band
+    const auto* obj = ctx_.project().model().geometry.find(g->object);
+    static const char* kinds[] = {"vertex", "centre", "radius", "start", "end"};
+    QString what = tr(kinds[static_cast<int>(g->grip.kind)]);
+    if (g->grip.kind == cad::GripKind::Vertex) what += QStringLiteral(" %1").arg(g->grip.vertex + 1);
+    setPrompt(tr("GRIP %1 of %2: click the new position, or type x,y,z / @dx,dy,dz (Esc cancels)").arg(what, obj ? qstr(obj->name) : QString()));
+    emit gripsChanged();
+    return true;
 }
 
 void ToolController::setPrompt(const QString& p) {
@@ -112,6 +170,7 @@ void ToolController::setTool(Tool t) {
         onPoints_ = nullptr;
     }
     tool_ = t;
+    if (t != Tool::Grip) grip_.reset();
     if (needsSelection() && selectedObjects().empty()) {
         ctx_.report(tr("%1: select the objects first, then start the tool.").arg(tr(toolName(t))), MessageLevel::Warning);
         tool_ = Tool::Select;
@@ -147,8 +206,10 @@ void ToolController::setTool(Tool t) {
     case Tool::PickPoints: break; // prompt set by the request
     case Tool::SectionLine: setPrompt(tr("SECTION: first point of the section line")); break;
     case Tool::CropPolygon: setPrompt(tr("CROP: polygon vertices around the points to keep; Enter/right-click closes")); break;
+    case Tool::Grip: break; // prompt set by gripClick
     }
     emit toolChanged(tool_);
+    emit gripsChanged();
 }
 
 void ToolController::requestPoint(const QString& prompt, std::function<void(Vec3)> done, bool) {
@@ -198,6 +259,7 @@ std::optional<ToolController::Resolved> ToolController::resolve(Viewport3D* view
             }
             if (!any) continue;
             if (q.x() < x0 - ap || q.x() > x1 + ap || q.y() < y0 - ap || q.y() > y1 + ap) continue;
+            if (grip_ && id == grip_->object) continue; // the object being edited does not snap to itself
             if (const auto* g = m.geometry.find(id)) cands.push_back(g);
             if (cands.size() > 400) break;
         }
@@ -368,12 +430,18 @@ bool ToolController::key(Viewport3D*, const std::string& key, bool, bool) {
 }
 
 void ToolController::undoLastPoint() {
-    if (pts_.empty()) return;
+    if (pts_.empty() || tool_ == Tool::Grip) return; // a grip edit keeps its base point
     pts_.pop_back();
     if (lastView_) updatePreview(lastView_, lastCursor_);
 }
 
 void ToolController::cancel() {
+    if (tool_ == Tool::Grip) {
+        clearPreview();
+        ctx_.report(tr("Grip edit cancelled"));
+        setTool(Tool::Select);
+        return;
+    }
     const bool wasPick = tool_ == Tool::PickPoint || tool_ == Tool::PickPoints;
     if (!pts_.empty() || !picked_.empty()) {
         pts_.clear();
@@ -440,6 +508,12 @@ void ToolController::addPoint(Vec3 p) {
     pts_.push_back(p);
     const auto n = pts_.size();
     switch (tool_) {
+    case Tool::Grip:
+        if (n >= 2) {
+            complete();
+            return;
+        }
+        break;
     case Tool::Point:
         {
             GeometryObject g;
@@ -713,6 +787,19 @@ void ToolController::applyTransform(const Transform3& t, bool copy, const QStrin
 void ToolController::complete() {
     auto& m = ctx_.project().model();
     switch (tool_) {
+    case Tool::Grip: {
+        const auto g = grip_;
+        const Vec3 to = pts_.back();
+        clearPreview();
+        setTool(Tool::Select);
+        if (!g) return;
+        ctx_.tryEdit(tr("Move grip"), [&] {
+            const auto r = mine_design::moveGrip(ctx_.project(), g->object, g->index, to);
+            if (r.flaggedActivities > 0)
+                ctx_.report(tr("%1 linked activity(ies) flagged for review: the centreline changed").arg(r.flaggedActivities), MessageLevel::Warning);
+        });
+        return;
+    }
     case Tool::Move:
     case Tool::Copy: applyTransform(Transform3::translation(pts_[1] - pts_[0]), tool_ == Tool::Copy, tr(toolName(tool_))); break;
     case Tool::Rotate: {
@@ -864,6 +951,20 @@ void ToolController::updatePreview(Viewport3D* view, std::optional<Vec3> cursor)
     auto chain = pts_;
     if (cursor) chain.push_back(*cursor);
     switch (tool_) {
+    case Tool::Grip:
+        if (grip_ && cursor && ctx_.hasProject())
+            if (const auto* g = ctx_.project().model().geometry.find(grip_->object)) {
+                try {
+                    const auto moved = cad::moveGrip(*g, grip_->index, *cursor);
+                    if (geometry::isCurve(moved.type)) o.lines.push_back(geometry::curvePolyline(moved, 0.01));
+                    else if (moved.vertices.size() >= 2) o.lines.push_back(moved.vertices);
+                } catch (const std::exception&) {
+                    // invalid position (e.g. onto a neighbour): only the rubber band is shown
+                }
+                o.lines.push_back({grip_->grip.point, *cursor});
+                o.points = {*cursor};
+            }
+        break;
     case Tool::Line:
     case Tool::Polyline:
     case Tool::Spline:

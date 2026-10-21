@@ -197,6 +197,88 @@ GeometryObject makeDimension(DimensionKind kind, std::vector<Vec3> pts, double t
     return g;
 }
 
+// ---- grips --------------------------------------------------------------------------------------
+namespace {
+/// Angle of `p` about the arc's normal from its reference direction.
+double angleInArcPlane(const ArcData& a, Vec3 p) {
+    const Vec3 v = p - a.center;
+    const Vec3 y = cross(a.normal, a.refDir);
+    return std::atan2(dot(v, y), dot(v, a.refDir));
+}
+/// `p` projected onto the arc's plane.
+Vec3 ontoArcPlane(const ArcData& a, Vec3 p) { return p - a.normal * dot(p - a.center, a.normal); }
+} // namespace
+
+std::vector<Grip> grips(const GeometryObject& g) {
+    std::vector<Grip> out;
+    switch (g.type) {
+    case GeometryType::Arc:
+        out.push_back({GripKind::Centre, 0, g.arc.center});
+        out.push_back({GripKind::ArcStart, 0, geometry::arcPoint(g.arc, g.arc.startAngle)});
+        out.push_back({GripKind::Radius, 0, geometry::arcPoint(g.arc, (g.arc.startAngle + g.arc.endAngle) / 2)});
+        out.push_back({GripKind::ArcEnd, 0, geometry::arcPoint(g.arc, g.arc.endAngle)});
+        break;
+    case GeometryType::Circle:
+        out.push_back({GripKind::Centre, 0, g.arc.center});
+        out.push_back({GripKind::Radius, 0, geometry::arcPoint(g.arc, 0.0)});
+        break;
+    case GeometryType::Mesh:
+    case GeometryType::Solid: break;
+    default:
+        for (std::size_t i = 0; i < g.vertices.size(); ++i) out.push_back({GripKind::Vertex, i, g.vertices[i]});
+        break;
+    }
+    return out;
+}
+
+GeometryObject moveGrip(const GeometryObject& g, std::size_t index, Vec3 to) {
+    const auto gs = grips(g);
+    if (index >= gs.size()) throw EditError("'" + g.name + "' has no grip " + std::to_string(index));
+    const Grip grip = gs[index];
+    GeometryObject r = g;
+    switch (grip.kind) {
+    case GripKind::Vertex: {
+        r.vertices[grip.vertex] = to;
+        if (r.type == GeometryType::Line && distance(r.vertices[0], r.vertices[1]) < geometry::kLengthTolerance)
+            throw EditError("The line's ends would coincide");
+        // A polyline vertex onto its neighbour would leave a zero-length segment.
+        if (r.type == GeometryType::Polyline && r.vertices.size() >= 2) {
+            const std::size_t n = r.vertices.size(), i = grip.vertex;
+            const bool prev = i > 0 || r.closed, next = i + 1 < n || r.closed;
+            if ((prev && distance(to, r.vertices[(i + n - 1) % n]) < geometry::kLengthTolerance) ||
+                (next && distance(to, r.vertices[(i + 1) % n]) < geometry::kLengthTolerance))
+                throw EditError("The vertex would coincide with its neighbour (delete the vertex instead)");
+        }
+        break;
+    }
+    case GripKind::Centre: r.arc.center = to; break;
+    case GripKind::Radius: {
+        const double radius = distance(ontoArcPlane(g.arc, to), g.arc.center);
+        if (radius < geometry::kLengthTolerance) throw EditError("The radius would be zero");
+        r.arc.radius = radius;
+        break;
+    }
+    case GripKind::ArcStart:
+    case GripKind::ArcEnd: {
+        const double twoPi = 2 * std::numbers::pi;
+        double a = angleInArcPlane(g.arc, to);
+        if (grip.kind == GripKind::ArcStart) {
+            // Keep the end; the new start is the angle reached going backwards from the end.
+            while (a > g.arc.endAngle) a -= twoPi;
+            while (a <= g.arc.endAngle - twoPi) a += twoPi;
+            r.arc.startAngle = a;
+        } else {
+            while (a < g.arc.startAngle) a += twoPi;
+            while (a >= g.arc.startAngle + twoPi) a -= twoPi;
+            r.arc.endAngle = a;
+        }
+        if (r.arc.endAngle - r.arc.startAngle < 1e-9) throw EditError("The arc would have no length");
+        break;
+    }
+    }
+    return r;
+}
+
 GeometryObject transformed(const GeometryObject& g, const Transform3& t) {
     GeometryObject out = g;
     if (!geometry::transformGeometry(out, t)) {

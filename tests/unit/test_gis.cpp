@@ -106,7 +106,14 @@ TEST(Gis, VectorRoundTripWithAttributesAndCrs) {
         const auto f = dir / (std::string("out.") + ext);
         VectorExportOptions o;
         o.crsWkt = kLo25;
-        exportVector({&road, &pit, &bh}, f, o);
+        GeometryObject mesh;
+        mesh.type = GeometryType::Mesh;
+        mesh.name = "Pit shell";
+        const auto rep = exportVector({&road, &pit, &mesh, &bh}, f, o);
+        EXPECT_EQ(rep.written, 3);
+        ASSERT_EQ(rep.skipped.size(), 1u);
+        EXPECT_EQ(rep.skipped[0].rfind("Pit shell (Mesh): ", 0), 0u) << rep.skipped[0];
+        EXPECT_THROW(exportVector({&mesh}, dir / (std::string("nothing.") + ext), o), GisError);
         const auto info = vectorInfo(f);
         ASSERT_EQ(info.size(), 1u);
         EXPECT_EQ(info[0].featureCount, 3);

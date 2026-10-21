@@ -23,6 +23,10 @@ struct EditResult {
     int flaggedActivities = 0;        ///< linked schedule activities flagged for review
 };
 
+/// Moves grip `grip` (cad::grips order) of an object to `to` — a vertex, an arc's centre, radius or
+/// end. One undo step; a heading centreline's linked activities are flagged.
+EditResult moveGrip(Project& project, const Uuid& id, std::size_t grip, Vec3 to);
+
 /// Moves/rotates/scales/mirrors curves, points, meshes and annotations (or copies them with
 /// `copy`). Throws ValidationError for solids.
 EditResult transformObjects(Project& project, const std::vector<Uuid>& ids, const Transform3& t, bool copy, const std::string& text);

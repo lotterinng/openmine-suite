@@ -106,6 +106,20 @@ EditResult transformObjects(Project& p, const std::vector<Uuid>& ids, const Tran
     });
 }
 
+EditResult moveGrip(Project& p, const Uuid& id, std::size_t grip, Vec3 to) {
+    const GeometryObject g = object(p, id);
+    GeometryObject n;
+    try {
+        n = cad::moveGrip(g, grip, to);
+    } catch (const cad::EditError& e) {
+        throw ValidationError(e.what()); // an invalid edit: rejected, nothing changed
+    }
+    return inMacro(p, "Move grip", [&](EditResult& r) {
+        r.flaggedActivities += updateGeometryWithImpact(p, n, "Move grip");
+        r.changed.push_back(id);
+    });
+}
+
 Uuid offsetObject(Project& p, const Uuid& id, double distance, Vec3 side, bool roundJoins) {
     if (!(distance > 0)) throw ValidationError("The offset distance must be positive");
     const auto& g = curve(p, id);

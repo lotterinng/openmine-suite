@@ -148,10 +148,22 @@ struct PluginManager::Impl {
     std::function<void(int, const std::string&, const std::string&)> sink;
     OpenMineHostV1 host{};
 
+    /// The loaded plugin with this id, else the first status entry with it (failed or disabled).
     Loaded* findPlugin(const std::string& id) {
+        Loaded* any = nullptr;
         for (auto& l : loaded)
-            if (l->status.manifest.id == id) return l.get();
-        return nullptr;
+            if (l->status.manifest.id == id) {
+                if (l->status.loaded) return l.get();
+                if (!any) any = l.get();
+            }
+        return any;
+    }
+    /// Removes the status entries of plugins that are not loaded (all, or those with this id), so
+    /// that a rescan reports their current state instead of a stale one.
+    void dropUnloaded(const std::string* id = nullptr) {
+        std::erase_if(loaded, [&](const std::unique_ptr<Loaded>& l) {
+            return !l->status.loaded && (!id || l->status.manifest.id == *id);
+        });
     }
     bool nameTaken(const std::string& n, bool command, bool importer) const {
         for (const auto& l : loaded) {
@@ -460,7 +472,11 @@ std::vector<PluginManifest> PluginManager::discover(const std::vector<fs::path>&
 }
 
 bool PluginManager::load(const PluginManifest& m) {
-    if (impl_->findPlugin(m.id) && impl_->findPlugin(m.id)->status.loaded) return true;
+    if (const Loaded* existing = impl_->findPlugin(m.id); existing && existing->status.loaded) {
+        if (existing->status.manifest.folder == m.folder) return true; // already loaded from here
+    } else {
+        impl_->dropUnloaded(&m.id); // retry: forget the previous failure
+    }
     auto l = std::make_unique<Loaded>();
     l->status.manifest = m;
     auto fail = [&](std::string why) {
@@ -478,7 +494,8 @@ bool PluginManager::load(const PluginManifest& m) {
     };
     if (m.apiVersion != OPENMINE_PLUGIN_API_VERSION)
         return fail("Plugin API version " + std::to_string(m.apiVersion) + " is not supported (host provides " + std::to_string(OPENMINE_PLUGIN_API_VERSION) + ")");
-    if (impl_->findPlugin(m.id)) return fail("Another plugin with id '" + m.id + "' is already present");
+    if (const Loaded* existing = impl_->findPlugin(m.id); existing && existing->status.loaded)
+        return fail("Another plugin with id '" + m.id + "' is already loaded from " + existing->status.manifest.folder.string());
     const fs::path lib = m.libraryPath();
     if (!fs::exists(lib)) return fail("Library not found: " + lib.string());
     std::string err;
@@ -506,6 +523,11 @@ bool PluginManager::load(const PluginManifest& m) {
 
 int PluginManager::loadAll(const std::vector<fs::path>& dirs, const std::vector<std::string>& disabled) {
     int n = 0;
+    // A rescan: previous failures and problems are re-evaluated, and plugins disabled since they
+    // were loaded are unloaded.
+    impl_->dropUnloaded();
+    for (const auto& id : disabled)
+        if (const Loaded* l = impl_->findPlugin(id); l && l->status.loaded) unload(id);
     std::vector<std::string> problems;
     for (const auto& m : discover(dirs, &problems)) {
         if (std::find(disabled.begin(), disabled.end(), m.id) != disabled.end()) {
@@ -527,19 +549,21 @@ int PluginManager::loadAll(const std::vector<fs::path>& dirs, const std::vector<
 
 void PluginManager::unload(const std::string& id) {
     auto& v = impl_->loaded;
-    for (auto it = v.begin(); it != v.end(); ++it)
-        if ((*it)->status.manifest.id == id) {
-            auto& l = **it;
-            if (l.status.loaded && l.info.shutdown) {
-                try {
-                    l.info.shutdown();
-                } catch (...) {
-                }
-            }
-            if (l.handle) closeLibrary(l.handle);
-            v.erase(it);
-            return;
+    for (auto it = v.begin(); it != v.end();) {
+        if ((*it)->status.manifest.id != id) {
+            ++it;
+            continue;
         }
+        auto& l = **it;
+        if (l.status.loaded && l.info.shutdown) {
+            try {
+                l.info.shutdown();
+            } catch (...) {
+            }
+        }
+        if (l.handle) closeLibrary(l.handle);
+        it = v.erase(it);
+    }
 }
 
 void PluginManager::unloadAll() {

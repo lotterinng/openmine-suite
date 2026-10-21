@@ -36,11 +36,13 @@ when it no longer matches the build. `CRS` exists only in builds with PROJ.
 | `ARC` | `ARC [p1 p2 p3]` | Arc through three points (no args: draw in the viewport) | `A` |
 | `AREA` | `AREA` | Plan area and perimeter of the selected closed curves (no selection: pick in the viewport) | `AA` |
 | `ASSIGN` | `ASSIGN <resource> [units] [DRIVES]` | Assign a resource to the selected activities |  |
+| `ATTACH` | `ATTACH <file> [description]` | Attach a copy of a file to the selected object (or the project) |  |
 | `BASELINE` | `BASELINE <name>` | Capture an approved, immutable baseline of the active schedule |  |
 | `CHAMFER` | `CHAMFER [d1 [d2]]` | Chamfer two curves (pick them in the viewport) | `CHA` |
 | `CHECK` | `CHECK` | Check the project file, model references and assets |  |
 | `CIRCLE` | `CIRCLE [centre radius]` | Create a circle (no args: draw in the viewport) | `CI` |
 | `CLOSE` | `CLOSE` | Close the project |  |
+| `COMPACT` | `COMPACT [DRYRUN]` | Remove stored files no project object uses (saves; clears undo) |  |
 | `COMPARE` | `COMPARE <reference surface> [maxDistance]` | Distance of the selected surface to a reference surface |  |
 | `COPY` | `COPY [dx,dy[,dz]]` | Copy the selection with an offset | `CO`, `CP` |
 | `CROP` | `CROP x1,y1,z1 x2,y2,z2 [OUTSIDE] \| CROP (draw a polygon)` | Crop the selected point cloud by a box or a drawn polygon |  |
@@ -57,6 +59,7 @@ when it no longer matches the build. `CRS` exists only in builds with PROJ.
 | `FILLET` | `FILLET [radius]` | Fillet two curves (radius 0 = sharp corner) | `F` |
 | `FILTER` | `FILTER OUTLIERS [k ratio] \| RADIUS r n \| VOXEL size [CENTROID] \| SPACING d \| RANDOM n \| GROUND  [OPEN3D]` | Filter the selected point cloud into a derived dataset (the original is never changed) |  |
 | `GRIDSNAP` | `GRIDSNAP [spacing \| OFF]` | Grid snap with a spacing, or off |  |
+| `GRIP` | `GRIP [n x,y,z\|@dx,dy,dz]` | List the grips of the selected object, or move grip n |  |
 | `HEADING` | `HEADING <id> [width height] [level code]` | Make the selected centreline a development heading | `DEV` |
 | `HEAL` | `HEAL` | Heal the selected solids (shape fixing, orientation, face merging) |  |
 | `HELP` | `HELP [command]` | List commands or show help for one command | `?` |

@@ -1,6 +1,6 @@
 #pragma once
 // SPDX-License-Identifier: Apache-2.0
-// Settings: preferences (display, drawing and snapping, point clouds, the open project's
+// Settings: preferences (display, drawing and snapping, point clouds, plugins, the open project's
 // coordinate display) persisted per user, and the customisable quick-access toolbar.
 
 #include "../app/AppContext.h"
@@ -53,6 +53,8 @@ private:
     QDoubleSpinBox* offsetDistance_;
     QSpinBox* decimals_;
     QCheckBox* southAxes_;
+    QCheckBox* pythonPlugins_;
+    QListWidget* nativePlugins_;
 };
 
 /// Chooses the actions of the quick-access toolbar (stored as action ids).

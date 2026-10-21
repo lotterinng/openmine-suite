@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Interactive CAD tools of the viewports: drawing (point, line, polyline, polygon, rectangle,
 // circle, 3-point arc, spline, text, dimension), measuring (distance, area), editing (move, copy,
-// rotate, mirror, scale, offset, trim, extend, fillet, split) and picking (points for dialogs,
-// section lines, crop polygons).
+// rotate, mirror, scale, offset, trim, extend, fillet, split), grip editing of the selected
+// objects' defining points (vertices; arc and circle centre, radius and ends) and picking (points
+// for dialogs, section lines, crop polygons).
 //
 // Points come from object snaps (modules/cad/Snap: endpoint, midpoint, centre, intersection,
 // perpendicular, tangent, nearest, node, grid), from surfaces and point clouds under the cursor
@@ -14,6 +15,7 @@
 
 #include "../app/AppContext.h"
 
+#include "openmine/cad/Edit.h"
 #include "openmine/cad/Snap.h"
 
 #include <QObject>
@@ -33,6 +35,7 @@ enum class Tool {
     Measure, MeasureArea,
     Move, Copy, Rotate, Mirror, Scale, Offset, Trim, Extend, Fillet, Chamfer, Split,
     PickPoint, PickPoints, SectionLine, CropPolygon,
+    Grip, ///< moving one grip of a selected object (entered by clicking a grip while selecting)
 };
 const char* toolName(Tool t);
 
@@ -78,6 +81,22 @@ public:
     double offsetDistance() const { return offsetDistance_; }
     void setOffsetDistance(double d) { offsetDistance_ = d; }
 
+    // ---- grips ---------------------------------------------------------------------------------
+    struct ObjectGrip {
+        Uuid object;
+        std::size_t index = 0; ///< index into cad::grips(object)
+        cad::Grip grip;
+    };
+    /// Grips of the selected objects on unlocked layers (at most kMaxGrips; none while a tool runs).
+    std::vector<ObjectGrip> selectionGrips() const;
+    static constexpr std::size_t kMaxGrips = 5000;
+    /// The grip within the snap aperture of `q` (nearest), if any.
+    std::optional<ObjectGrip> gripAt(Viewport3D* view, QPoint q) const;
+    /// A click while selecting: on a grip it starts moving that grip (returns true).
+    bool gripClick(Viewport3D* view, QPoint q);
+    /// The grip being moved (Grip tool).
+    std::optional<ObjectGrip> hotGrip() const { return grip_; }
+
     // ---- typed input (command console) -------------------------------------------------------
     /// Parses typed coordinates or values for the running tool. Returns false when the text is
     /// not tool input (the console then treats it as a command).
@@ -116,6 +135,8 @@ signals:
     /// A crop polygon was closed (world vertices, the view's plane normal).
     void polygonDefined(std::vector<openmine::Vec3> polygon, openmine::Vec3 viewNormal);
     void measured(QString text);
+    /// The displayed grips changed (selection, model, tool).
+    void gripsChanged();
 
 private:
     void addPoint(Viewport3D* view, const Resolved& r);
@@ -153,6 +174,7 @@ private:
     std::function<void(Uuid, Vec3, Vec3)> onCloudPoint_;
     std::function<void(std::vector<Vec3>)> onPoints_;
     std::optional<Resolved> lastResolved_;
+    std::optional<ObjectGrip> grip_;
 };
 
 } // namespace openmine::app

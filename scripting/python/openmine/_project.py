@@ -365,6 +365,18 @@ class Cad(_Namespace):
         """Extends the end nearest ``pick`` to the nearest boundary."""
         return self._n.extend_curve(_id(id), [_id(e) for e in boundaries], list(pick))
 
+    def grips(self, id: str) -> List[dict]:
+        """The editable defining points of an object: ``{"kind", "vertex", "point"}`` with kind
+        "vertex" (points, lines, polylines, spline fit points, text, dimensions, hatches) or, for
+        arcs and circles, "centre", "radius", "start" and "end"."""
+        return self._n.grips(_id(id))
+
+    def move_grip(self, id: str, grip: int, to: PointLike) -> dict:
+        """Moves grip number ``grip`` (see :meth:`grips`) to ``to`` — one undo step; moving a heading
+        centreline's vertex flags its linked activities. Invalid results (a vertex onto its
+        neighbour, a zero radius) raise ``ValueError``."""
+        return self._n.move_grip(_id(id), int(grip), list(_vec3(to)))
+
     def split(self, id: str, at: PointLike) -> dict:
         """Splits a curve at the point nearest ``at``; the first piece keeps the object's identity."""
         return self._n.split_curve(_id(id), list(at))
@@ -1266,10 +1278,14 @@ class Formats(_Namespace):
         self._need_gis()
         return self._n.import_vector(str(file), source_layer, default_z, layer)
 
-    def export_vector(self, ids: Sequence[str], file: PathType, closed_as_polygons: bool = True) -> None:
-        """Points and curves with attributes, in the project CRS (KML is written in WGS 84)."""
+    def export_vector(self, ids: Sequence[str], file: PathType, closed_as_polygons: bool = True) -> dict:
+        """Points and curves with attributes, in the project CRS (KML is written in WGS 84).
+
+        Returns ``{"written": n, "skipped": [...]}``: objects with no vector-feature form (meshes,
+        solids, text, dimensions, hatches) are listed in ``skipped``, never dropped silently;
+        :class:`GisError` when none of the objects can be written."""
         self._need_gis()
-        self._n.export_vector([_id(i) for i in ids], str(file), closed_as_polygons)
+        return self._n.export_vector([_id(i) for i in ids], str(file), closed_as_polygons)
 
     def import_dem(self, file: PathType, step: int = 1, z_scale: float = 1.0, name: str = "", layer: str = "Surfaces") -> dict:
         """An elevation raster as a surface (two triangles per cell; no-data cells leave holes)."""
@@ -1336,6 +1352,49 @@ def _read_text(src) -> str:
         return f.read()
 
 
+class Attachments(_Namespace):
+    """Files attached to project objects (face photos, field sheets, permits, reports). The file is
+    copied into the project's asset store and verified by SHA-256 when it is read back; an
+    attachment is deleted with its object (and restored by undo)."""
+
+    def add(self, file: PathType, to: Any = None, description: str = "") -> str:
+        """Attaches a copy of ``file`` to an object — a wrapper (``Development``, ``Activity``,
+        ``PointCloud``), or a ``(document type, id)`` pair such as ``("GeometryObject", id)`` — or,
+        with ``to=None``, to the project itself. One undo step; returns the attachment id."""
+        if to is None:
+            type_, entity = "", ""
+        elif isinstance(to, tuple):
+            type_, entity = to[0], _id(to[1])
+        else:
+            type_ = {"Development": "MineDevelopment", "Activity": "ScheduleActivity", "PointCloud": "PointCloudDataset"}.get(type(to).__name__)
+            if type_ is None:
+                raise TypeError("Pass a Development, Activity or PointCloud, or a (document type, id) pair")
+            entity = _id(to)
+        return self._n.attach_file(type_, entity, str(file), description)
+
+    def list(self, to: Any = None) -> List[dict]:
+        """Attachments as ``{"id", "file_name", "mime_type", "description", "entity_type", "entity"}``
+        — of one object (wrapper or id), of the project itself (``to="project"``), or all (``None``)."""
+        out = []
+        for d in self._n.documents("Attachment"):
+            c = d["columns"]
+            entity = c.get("entity_uuid") or ""
+            item = {"id": d["uuid"], "file_name": c.get("file_name", ""), "mime_type": c.get("mime_type", ""),
+                    "description": c.get("description", ""), "entity_type": c.get("entity_type", ""), "entity": entity}
+            if to is None or (to == "project" and not entity) or (to not in (None, "project") and entity == _id(to)):
+                out.append(item)
+        return out
+
+    def save(self, attachment: str, destination: PathType) -> None:
+        """Writes the attached file to ``destination`` (``AssetError`` if the stored copy is missing
+        or was changed outside OpenMine)."""
+        self._n.save_attachment(_id(attachment), str(destination))
+
+    def remove(self, attachment: str) -> None:
+        """Removes an attachment (undoable; the stored file is freed by :meth:`Project.compact`)."""
+        self._n.delete("Attachment", _id(attachment))
+
+
 # ---- project ---------------------------------------------------------------------------------------------
 class Project:
     """An OpenMine project (a ``.openmine`` file with its asset folder)."""
@@ -1353,6 +1412,7 @@ class Project:
         self.formats = Formats(self)
         self.crs = Crs(self)
         self.reports = Reports(self)
+        self.attachments = Attachments(self)
 
     # lifecycle
     @classmethod
@@ -1446,6 +1506,12 @@ class Project:
     def check(self) -> List[str]:
         """Model integrity problems (dangling references, invalid values); empty when consistent."""
         return self._native.check()
+
+    def compact(self, dry_run: bool = False) -> dict:
+        """Removes stored files no project object uses any more and unregistered files left in the
+        asset folder: ``{"unreferenced_assets", "orphan_files", "bytes", "dry_run"}``. Needs a saved
+        project; unless ``dry_run`` it saves the project and clears the undo history."""
+        return self._native.compact(dry_run)
 
     # coordinates (when PROJ is available)
     def declare_crs(self, definition: str, set_as_project_crs: bool = True) -> str:

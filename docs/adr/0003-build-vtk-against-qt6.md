@@ -1,6 +1,6 @@
 # ADR 0003 — Build VTK against Qt 6 instead of using distro VTK
 
-* Status: accepted (v0.1)
+* Status: superseded by [ADR 0005](0005-own-qt6-vtk-adapter.md) (v0.2)
 
 ## Context
 The specification requires Qt 6. Ubuntu 24.04's `libvtk9-qt-dev` (VTK 9.1) is linked against

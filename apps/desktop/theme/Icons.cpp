@@ -102,6 +102,25 @@ const QHash<QString, Painter>& painters() {
              k.poly({{14, 14}, {50, 50}}, k.accent());
              k.poly({{50, 14}, {14, 50}}, k.accent());
          }},
+        {"attach", [](Ink& k) { // paper clip
+             QPainterPath p;
+             p.moveTo(40, 22);
+             p.lineTo(40, 46);
+             p.cubicTo(40, 56, 24, 56, 24, 46);
+             p.lineTo(24, 16);
+             p.cubicTo(24, 6, 48, 6, 48, 16);
+             p.lineTo(48, 44);
+             k.p.setPen(k.line());
+             k.p.drawPath(p);
+             k.poly({{32, 22}, {32, 44}}, k.accent());
+         }},
+        {"compact", [](Ink& k) { // a box squeezed by two arrows
+             k.poly({{20, 22}, {44, 22}, {44, 42}, {20, 42}}, k.line(), true);
+             k.poly({{6, 32}, {16, 32}}, k.accent());
+             k.poly({{11, 26}, {17, 32}, {11, 38}}, k.accent());
+             k.poly({{58, 32}, {48, 32}}, k.accent());
+             k.poly({{53, 26}, {47, 32}, {53, 38}}, k.accent());
+         }},
         {"import", [](Ink& k) {
              k.poly({{10, 40}, {10, 54}, {54, 54}, {54, 40}}, k.line());
              k.poly({{32, 8}, {32, 40}}, k.accent());

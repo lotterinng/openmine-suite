@@ -33,6 +33,28 @@ GeometryObject makeText(Vec3 insertion, const std::string& text, double height, 
 GeometryObject makeHatch(const std::vector<std::vector<Vec3>>& loops, const std::string& pattern, double spacing, double angleRad = 0);
 GeometryObject makeDimension(DimensionKind kind, std::vector<Vec3> definitionPoints, double textHeight = 1.0, int precision = 3);
 
+// ---- Grips (direct editing of defining points) ------------------------------------------------------
+enum class GripKind {
+    Vertex,    ///< a vertex / fit point / definition point (index into `vertices`)
+    Centre,    ///< arc or circle centre: moves the whole curve
+    Radius,    ///< point on an arc (mid-arc) or circle (at the reference direction): sets the radius
+    ArcStart,  ///< arc start point: sets the start angle (centre and radius kept)
+    ArcEnd,    ///< arc end point: sets the end angle
+};
+struct Grip {
+    GripKind kind = GripKind::Vertex;
+    std::size_t vertex = 0; ///< for Vertex grips
+    Vec3 point;
+};
+/// The editable defining points of an object: vertices of points, lines, polylines, splines (fit
+/// points), text (insertion), dimensions (definition points) and hatch boundaries; centre, radius
+/// and end grips of arcs and circles. Meshes and solids have none.
+std::vector<Grip> grips(const GeometryObject& g);
+/// The object with grip `index` (of grips(g)) moved to `to`. Arc/circle grips act in the curve's
+/// plane (`to` is projected onto it). Throws EditError for an invalid index or a degenerate result
+/// (zero radius, coincident line ends, zero-length arc).
+GeometryObject moveGrip(const GeometryObject& g, std::size_t index, Vec3 to);
+
 // ---- Transform-type edits (move, copy, rotate, scale, mirror) ---------------------------------
 /// Throws EditError if the transform cannot be represented (e.g. non-uniform scale of an arc).
 GeometryObject transformed(const GeometryObject& g, const Transform3& t);

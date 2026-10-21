@@ -33,6 +33,8 @@
 #include "openmine/persistence/ProjectFile.h"
 #include "openmine/planning/FourD.h"
 #include "openmine/plugins/PluginManager.h"
+#include "openmine/assets/AssetStore.h"
+#include "openmine/project/Attachments.h"
 #include "openmine/project/ProjectEditor.h"
 #include "openmine/reporting/ScheduleExport.h"
 #include "openmine/reporting/SurveyReports.h"
@@ -617,6 +619,7 @@ void defineBindings(py::module_& m) {
 
     py::register_exception<ValidationError>(m, "ValidationError", PyExc_ValueError);
     py::register_exception<persistence::PersistenceError>(m, "PersistenceError", PyExc_IOError);
+    py::register_exception<AssetError>(m, "AssetError", PyExc_IOError);
     py::register_exception<jobs::CancelledError>(m, "CancelledError", PyExc_RuntimeError);
     py::register_exception<survey::PointCloudError>(m, "PointCloudError", PyExc_RuntimeError);
     // File-format errors (unreadable or invalid files): RuntimeError subclasses with their own names.
@@ -726,7 +729,23 @@ void defineBindings(py::module_& m) {
         }, py::arg("type"), py::arg("document"), py::arg("text") = "")
         .def("delete", [](PyProject& s, const std::string& type, const std::string& key) { pe::removeDocument(s.get(), type, key); })
         .def("check", [](PyProject& s) { return pe::checkModel(s.get()); })
-        .def("order", [](PyProject& s, const std::string& type) { return pe::entityOrder(s.get().model(), type); });
+        .def("order", [](PyProject& s, const std::string& type) { return pe::entityOrder(s.get().model(), type); })
+        // ---- attachments and asset compaction ------------------------------------------------------------
+        .def("attach_file", [](PyProject& s, const std::string& type, const std::string& entity, const fs::path& file, const std::string& description) {
+            return attachFile(s.get(), type, entity.empty() ? Uuid{} : uuidArg(entity), file, description).toString();
+        }, py::arg("type"), py::arg("entity"), py::arg("file"), py::arg("description") = "")
+        .def("save_attachment", [](PyProject& s, const std::string& id, const fs::path& destination) {
+            saveAttachment(s.get(), uuidArg(id), destination);
+        })
+        .def("compact", [](PyProject& s, bool dryRun) {
+            const auto r = pe::compactProject(s.get(), dryRun);
+            py::dict d;
+            d["unreferenced_assets"] = r.unreferencedAssets;
+            d["orphan_files"] = r.orphanFiles;
+            d["bytes"] = r.bytes;
+            d["dry_run"] = r.dryRun;
+            return d;
+        }, py::arg("dry_run") = false);
 
     // ---- CAD --------------------------------------------------------------------------------------------
     P.def("layers", [](PyProject& s) {
@@ -906,6 +925,23 @@ void defineBindings(py::module_& m) {
         .def("extend_curve", [](PyProject& s, const std::string& id, const std::vector<std::string>& bounds, std::array<double, 3> pick) {
             return editDict(mine_design::extendObject(s.get(), uuidArg(id), uuids(bounds), vec(pick)));
         }, py::arg("id"), py::arg("boundaries"), py::arg("pick"))
+        .def("grips", [](PyProject& s, const std::string& id) {
+            const auto* g = s.get().model().geometry.find(uuidArg(id));
+            if (!g) throw py::key_error("Object " + id + " does not exist");
+            static const char* kinds[] = {"vertex", "centre", "radius", "start", "end"};
+            py::list out;
+            for (const auto& gr : cad::grips(*g)) {
+                py::dict d;
+                d["kind"] = kinds[static_cast<int>(gr.kind)];
+                d["vertex"] = gr.vertex;
+                d["point"] = std::array<double, 3>{gr.point.x, gr.point.y, gr.point.z};
+                out.append(d);
+            }
+            return out;
+        })
+        .def("move_grip", [](PyProject& s, const std::string& id, std::size_t grip, std::array<double, 3> to) {
+            return editDict(mine_design::moveGrip(s.get(), uuidArg(id), grip, {to[0], to[1], to[2]}));
+        })
         .def("split_curve", [](PyProject& s, const std::string& id, std::array<double, 3> at) {
             return editDict(mine_design::splitObject(s.get(), uuidArg(id), vec(at)));
         }, py::arg("id"), py::arg("at"))
@@ -2809,7 +2845,11 @@ void defineBindings(py::module_& m) {
             gis::VectorExportOptions o;
             o.layerName = file.stem().string();
             o.crsWkt = projectCrsText(s.get());
-            gis::exportVector(objs, file, o, polygons);
+            const auto rep = gis::exportVector(objs, file, o, polygons);
+            py::dict d;
+            d["written"] = rep.written;
+            d["skipped"] = rep.skipped;
+            return d;
         }, py::arg("ids"), py::arg("file"), py::arg("closed_as_polygons") = true)
         .def("import_dem_surface", [](PyProject& s, const fs::path& file, int step, double zScale, const std::string& name, const std::string& layer) {
             gis::DemImportOptions o;

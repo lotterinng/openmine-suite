@@ -345,6 +345,7 @@ void MainWindow::createActions() {
         if (!f.isEmpty()) exportFile(f);
     }, QKeySequence(Qt::CTRL | Qt::Key_E), tr("Exports the selection (or everything applicable) by file type"));
     addAction("file.check", tr("Check project integrity"), "info", [this] { projectCheck(); });
+    addAction("file.compact", tr("Compact project…"), "compact", [this] { compactProject(false); });
     addAction("file.repository", tr("Shared repository…"), "link", [this] {
         RepositoryDialog dlg(ctx_, this);
         dlg.exec();
@@ -825,7 +826,7 @@ void MainWindow::createMenus() {
     auto* file = mb->addMenu(tr("&File"));
     add(file, {"file.new", "file.open"});
     recentMenu_ = file->addMenu(tr("Recent projects"));
-    add(file, {"file.save", "file.saveAs", "file.close", "-", "file.import", "file.export", "-", "file.repository", "file.check", "-", "file.exit"});
+    add(file, {"file.save", "file.saveAs", "file.close", "-", "file.import", "file.export", "-", "file.repository", "file.check", "file.compact", "-", "file.exit"});
     connect(recentMenu_, &QMenu::aboutToShow, this, &MainWindow::rebuildRecentMenu);
     auto* edit = mb->addMenu(tr("&Edit"));
     add(edit, {"edit.undo", "edit.redo", "-", "edit.delete", "edit.selectAll", "edit.clearSelection", "-", "edit.properties"});
@@ -1203,6 +1204,45 @@ void MainWindow::showAbout() {
                           "<p>Licensed under the Apache License 2.0. Third-party components and their licences are listed in THIRD_PARTY_NOTICES.</p>"
                           "<p>Qt %2 · VTK · Open CASCADE · PDAL · PROJ · GDAL · OR-Tools · SQLite · PostgreSQL/PostGIS · Python</p>")
                            .arg(qstr(persistence::kAppVersion), qVersion()));
+}
+
+QString MainWindow::compactProject(bool dryRun) {
+    if (!ctx_.hasProject()) return {};
+    if (ctx_.project().filePath().empty()) {
+        ctx_.report(tr("Save the project before compacting it"), MessageLevel::Warning);
+        return {};
+    }
+    auto describe = [](const persistence::CompactReport& r) {
+        return tr("%1 unused asset(s) and %2 unregistered file(s), %3 MB")
+            .arg(r.unreferencedAssets.size())
+            .arg(r.orphanFiles.size())
+            .arg(static_cast<double>(r.bytes) / (1024.0 * 1024.0), 0, 'f', 2);
+    };
+    try {
+        const auto preview = persistence::compactProject(ctx_.project(), true);
+        if (preview.unreferencedAssets.empty() && preview.orphanFiles.empty()) {
+            ctx_.report(tr("Nothing to compact: every stored file is in use"));
+            return tr("nothing to compact");
+        }
+        if (dryRun) {
+            for (const auto& f : preview.unreferencedAssets) ctx_.report(tr("  unused: %1").arg(qstr(f)));
+            for (const auto& f : preview.orphanFiles) ctx_.report(tr("  unregistered: %1").arg(qstr(f)));
+            ctx_.report(tr("Compacting would remove %1").arg(describe(preview)));
+            return describe(preview);
+        }
+        if (!nonInteractive_ &&
+            QMessageBox::question(this, tr("Compact project"),
+                                  tr("Remove %1 from the project's asset folder?\n\nThe project is saved as part of compacting, and the undo history "
+                                     "is cleared (an undo could otherwise bring back an object whose file is gone).")
+                                      .arg(describe(preview))) != QMessageBox::Yes)
+            return {};
+        const auto done = persistence::compactProject(ctx_.project());
+        ctx_.report(tr("Project compacted: removed %1").arg(describe(done)));
+        return describe(done);
+    } catch (const std::exception& e) {
+        ctx_.report(tr("Compacting failed: %1").arg(e.what()), MessageLevel::Error);
+        return {};
+    }
 }
 
 void MainWindow::projectCheck() {

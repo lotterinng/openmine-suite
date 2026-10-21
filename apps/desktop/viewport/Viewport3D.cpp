@@ -1453,6 +1453,8 @@ void Viewport3D::onRelease(int button, int x, int y, bool ctrl, bool shift) {
         if (button == 1 && tools_->click(this, q, ctrl, shift)) return;
         if (button == 3 && tools_->rightClick(this, q)) return;
     }
+    // A click on a grip of the selection starts moving that grip.
+    if (button == 1 && !ctrl && !shift && tools_ && tools_->gripClick(this, q)) return;
     if (button == 1) {
         const auto hit = pickAt(q);
         if (hit) ctx_.select(hit->owner.kind, hit->owner.id, ctrl ? SelectMode::Toggle : shift ? SelectMode::Add : SelectMode::Replace);

@@ -24,12 +24,14 @@
 #include "openmine/formats/MeshFormats.h"
 #include "openmine/geology/BlockModel.h"
 #include "openmine/geology/Drillholes.h"
+#include "openmine/geometry/Curves.h"
 #include "openmine/geometry/MeshOps.h"
 #include "openmine/geometry/Polyline.h"
 #include "openmine/mine_design/Development.h"
 #include "openmine/mine_design/GeometryEdits.h"
 #include "openmine/mine_design/Revisions.h"
 #include "openmine/omf/OmfProject.h"
+#include "openmine/project/Attachments.h"
 #include "openmine/project/ProjectEditor.h"
 #include "openmine/survey/PointCloudProject.h"
 #include "openmine/survey/Registration.h"
@@ -44,6 +46,8 @@
 #endif
 
 #include <QApplication>
+#include <QDesktopServices>
+#include <QDir>
 #include <QDockWidget>
 #include <QFile>
 #include <QFileDialog>
@@ -51,6 +55,8 @@
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QRegularExpression>
+#include <QStandardPaths>
+#include <QUrl>
 
 #include <fstream>
 
@@ -567,25 +573,28 @@ bool MainWindow::exportFile(const QString& path) {
         if (ext == ".shp" || ext == ".gpkg" || ext == ".geojson" || ext == ".kml") {
 #ifdef OPENMINE_APP_HAVE_GIS
             std::vector<const GeometryObject*> objs;
-            auto consider = [&](const GeometryObject& g) {
-                if (g.type != GeometryType::Mesh && g.type != GeometryType::Solid && g.type != GeometryType::Text && g.type != GeometryType::Dimension &&
-                    g.type != GeometryType::Hatch)
-                    objs.push_back(&g);
-            };
-            if (selGeom.empty())
-                for (const auto& g : m.geometry.all()) consider(g);
-            else
+            // Everything selected (or every object) is offered; the exporter writes points and
+            // curves and lists what has no vector-feature form. Exporting the whole project skips
+            // meshes, solids and annotation without listing each one.
+            const bool all = selGeom.empty();
+            auto vectorType = [](const GeometryObject& g) { return g.type == GeometryType::Point || geometry::isCurve(g.type); };
+            int notVector = 0;
+            if (all) {
+                for (const auto& g : m.geometry.all()) {
+                    if (vectorType(g)) objs.push_back(&g);
+                    else ++notVector;
+                }
+            } else {
                 for (const auto& id : selGeom)
-                    if (const auto* g = m.geometry.find(id)) consider(*g);
-            if (objs.empty()) {
-                ctx_.report(tr("No points or curves to export"), MessageLevel::Warning);
-                return false;
+                    if (const auto* g = m.geometry.find(id)) objs.push_back(g);
             }
             gis::VectorExportOptions o;
             o.layerName = sstr(QFileInfo(base).completeBaseName());
             o.crsWkt = crsText();
-            gis::exportVector(objs, file, o);
-            done(tr("%1 feature(s)").arg(objs.size()));
+            const auto rep = gis::exportVector(objs, file, o);
+            for (const auto& sk : rep.skipped) ctx_.report(tr("Not exported: %1").arg(qstr(sk)), MessageLevel::Warning);
+            if (notVector) ctx_.report(tr("%1 mesh, solid or annotation object(s) are not vector features and were not exported").arg(notVector), MessageLevel::Warning);
+            done(tr("%1 feature(s)").arg(rep.written));
             return true;
 #else
             ctx_.report(tr("GIS export is not available: built without GDAL"), MessageLevel::Error);
@@ -1394,6 +1403,41 @@ void MainWindow::handleEntityAction(const QString& actionIn, const std::vector<S
         QString f = argument;
         if (f.isEmpty()) f = chooseSaveFile(tr("Save report"), tr("Report (*.%1)").arg(qstr(r->format)), "reports", qstr(r->name) + "." + qstr(r->format));
         if (!f.isEmpty() && reports_->saveCopy(id, f)) ctx_.report(tr("Saved %1").arg(QFileInfo(f).fileName()));
+        return;
+    }
+
+    // ---- attachments
+    if (action == "attach-file") {
+        const SelectionItem target = items.empty() ? SelectionItem{} : items.back();
+        const std::string type = target.id.isNil() || target.kind == EntityKind::ProjectInfo ? std::string() : documentType(target.kind);
+        QString f = argument;
+        if (f.isEmpty()) f = chooseOpenFile(tr("Attach file"), tr("All files (*)"), "attachments");
+        if (f.isEmpty()) return;
+        ctx_.tryEdit(tr("Attach file"), [&] {
+            const Uuid id = attachFile(p, type, type.empty() ? Uuid{} : target.id, std::filesystem::path(f.toStdU16String()));
+            ctx_.report(tr("Attached %1 to %2").arg(QFileInfo(f).fileName(), type.empty() ? tr("the project") : displayName(m, target)));
+            ctx_.select(EntityKind::Attachment, id);
+        });
+        return;
+    }
+    if (action == "open-attachment" || action == "save-attachment") {
+        const Uuid id = need(EntityKind::Attachment, action == "open-attachment" ? tr("Open attachment") : tr("Save attachment"));
+        if (id.isNil()) return;
+        const auto* a = m.attachments.find(id);
+        QString f = argument;
+        if (action == "open-attachment" && f.isEmpty())
+            f = QDir(QStandardPaths::writableLocation(QStandardPaths::TempLocation)).filePath(QStringLiteral("openmine-attachments/%1/%2").arg(qstr(id.toString()), qstr(a->fileName)));
+        if (f.isEmpty()) f = chooseSaveFile(tr("Save attachment"), tr("All files (*)"), "attachments", qstr(a->fileName));
+        if (f.isEmpty()) return;
+        try {
+            saveAttachment(p, id, std::filesystem::path(f.toStdU16String()));
+        } catch (const std::exception& e) {
+            ctx_.report(tr("%1: %2").arg(qstr(a->fileName), e.what()), MessageLevel::Error);
+            return;
+        }
+        if (action == "save-attachment") ctx_.report(tr("Saved %1").arg(QFileInfo(f).fileName()));
+        else if (nonInteractive_) ctx_.report(tr("Attachment extracted to %1").arg(f));
+        else if (!QDesktopServices::openUrl(QUrl::fromLocalFile(f))) ctx_.report(tr("No application opens %1 (extracted to %2)").arg(qstr(a->fileName), f), MessageLevel::Warning);
         return;
     }
 

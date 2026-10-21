@@ -347,6 +347,42 @@ void Smoke::cad() {
         double err = 0;
         for (std::size_t i = 0; i < 3 && i < drawn->vertices.size(); ++i) err = std::max(err, std::hypot(drawn->vertices[i].x - pts[i].x, drawn->vertices[i].y - pts[i].y));
         check(drawn->vertices.size() == 3 && err < 0.5, QStringLiteral("picked vertices land on the work plane (max error %1 m at this zoom)").arg(err, 0, 'f', 3));
+        // Clicking on the drawn polyline with the selection tool selects it (VTK picking through
+        // the Qt adapter).
+        const Uuid drawnId = lastGeometry();
+        w_.action("draw.select")->trigger();
+        ctx_.clearSelection();
+        const auto onCurve = w_.activeView()->worldToWidget((pts[0] + pts[1]) / 2.0);
+        if (onCurve) w_.activeView()->simulateClick(onCurve->toPoint());
+        pump(50);
+        check(onCurve && ctx_.isSelected(EntityKind::Geometry, drawnId), "a click on the polyline in the viewport selects it");
+        // Grip editing: click the middle vertex's grip, then the new position.
+        auto& tools = w_.viewports()->tools();
+        check(tools.selectionGrips().size() == 3, QStringLiteral("the selected polyline shows %1 grips").arg(tools.selectionGrips().size()));
+        const auto gripAt = w_.activeView()->worldToWidget(pts[1]);
+        const Vec3 target{kE0 + 40, kN0 + 35, kZ0};
+        const auto targetAt = w_.activeView()->worldToWidget(target);
+        if (gripAt && targetAt) {
+            const Vec3 original = m().geometry.find(drawnId)->vertices[1];
+            w_.action("draw.snap")->setChecked(false);
+            w_.activeView()->simulateClick(gripAt->toPoint());
+            pump(30);
+            check(tools.tool() == Tool::Grip && tools.hotGrip() && tools.hotGrip()->index == 1, "a click on a grip starts moving it");
+            w_.activeView()->simulateClick(targetAt->toPoint());
+            pump(50);
+            const auto* edited = m().geometry.find(drawnId);
+            check(tools.tool() == Tool::Select && edited && std::hypot(edited->vertices[1].x - target.x, edited->vertices[1].y - target.y) < 0.5 &&
+                      edited->vertices.size() == 3,
+                  "the second click moves the vertex (one undo step)");
+            check(cmd("UNDO") && distance(m().geometry.find(drawnId)->vertices[1], original) < 1e-12,
+                  "undo restores the vertex");
+            w_.action("draw.snap")->setChecked(true);
+        } else {
+            check(false, "grips are on screen");
+        }
+        ctx_.select(EntityKind::Geometry, drawnId);
+        check(cmd("GRIP") && cmd("GRIP 1 @0,0,2") && std::abs(m().geometry.find(drawnId)->vertices[0].z - (kZ0 + 2)) < 1e-9, "GRIP moves a grip by typed coordinates");
+        cmd("UNDO");
     }
     w_.action("draw.snap")->setChecked(true);
 
@@ -777,7 +813,21 @@ void Smoke::exchange() {
 
 void Smoke::views() {
     section("Views and panels");
+    // Every view of the multi-view layouts renders through the Qt/VTK adapter (ADR 0005).
+    check(cmd("LAYOUT 2") && w_.viewports()->views().size() == 2, "two views side by side");
+    for (int i = 0; i < 2; ++i) {
+        auto* v = w_.viewports()->views()[static_cast<std::size_t>(i)];
+        w_.viewports()->setActive(v);
+        cmd("ZOOM EXTENTS");
+        viewShot(QStringLiteral("view_pair_%1").arg(i + 1), v);
+    }
     check(cmd("LAYOUT 4") && w_.viewports()->views().size() == 4, "four views");
+    for (int i = 0; i < 4; ++i) {
+        auto* v = w_.viewports()->views()[static_cast<std::size_t>(i)];
+        w_.viewports()->setActive(v);
+        cmd("ZOOM EXTENTS");
+        viewShot(QStringLiteral("view_quad_%1").arg(i + 1), v);
+    }
     shot("views_quad");
     check(cmd("LAYOUT 1"), "one view");
     check(cmd("VIEW TOP"), "plan view");
@@ -819,6 +869,21 @@ void Smoke::scripting() {
     if (check(hasCommand("stations.summary", false), "native sample plugin loaded from the plugin path")) {
         const auto r = ctx_.runPluginCommand("stations.summary");
         check(r.ok && qstr(r.text).contains("count"), QStringLiteral("native plugin command runs: %1").arg(qstr(r.ok ? r.text : r.error).left(120)));
+        // Disabling in the preferences unloads it at the rescan; enabling loads it again.
+        auto& st = ctx_.settings();
+        const QVariant saved = st.value("plugins/disabled");
+        auto nativeLoaded = [&] {
+            const auto now = ctx_.pluginCommands();
+            return std::any_of(now.begin(), now.end(), [](const PluginCommandInfo& c) { return c.name == "stations.summary" && !c.python; });
+        };
+        st.setValue("plugins/disabled", QStringList{"org.openmine.samples.stations"});
+        ctx_.requestPluginRescan();
+        check(!nativeLoaded() && !ctx_.plugins().importerFor("a.stn"), "a plugin disabled in the preferences is unloaded at the rescan");
+        st.setValue("plugins/disabled", QStringList{});
+        ctx_.requestPluginRescan();
+        check(nativeLoaded() && ctx_.plugins().importerFor("a.stn"), "re-enabling the plugin loads it again");
+        if (saved.isValid()) st.setValue("plugins/disabled", saved);
+        else st.remove("plugins/disabled");
     }
     if (PythonConsolePanel::available()) {
         if (check(hasCommand("levels.summary", true) && hasCommand("levels.layers", true), "Python sample plugin discovered in the plugin folder")) {
@@ -839,6 +904,16 @@ void Smoke::scripting() {
 
 void Smoke::persistence() {
     section("Persistence");
+    // An attachment on the heading travels with the project.
+    const QString note = path("out/face-note.txt");
+    {
+        QFile f(note);
+        check(f.open(QIODevice::WriteOnly) && f.write("Face at 0+045: wet, extra bolting") > 0, "attachment source written");
+    }
+    ctx_.select(EntityKind::Development, heading_);
+    check(cmd("ATTACH " + note + " Face inspection note") && m().attachments.size() >= 1 && ctx_.primary().kind == EntityKind::Attachment,
+          "ATTACH copies a file onto the selected heading");
+    const Uuid attachment = ctx_.primary().id;
     std::map<std::string, std::size_t> counts;
 #define OPENMINE_COUNT(T, member, Kind) counts[#T] = m().member.size();
     OPENMINE_ENTITY_TYPES(OPENMINE_COUNT)
@@ -862,6 +937,26 @@ void Smoke::persistence() {
     check(m().baselines.size() == 1, "baseline preserved");
     check(cmd("SCHEDULE"), "schedule recalculates after reopening");
     shot("reopened");
+    // Attachment extracted from the reopened project; deleting it leaves a file for compaction.
+    if (const auto* a = m().attachments.find(attachment)) {
+        const QString out = path("out/face-note-extracted.txt");
+        w_.handleEntityAction("save-attachment:" + out, {{EntityKind::Attachment, attachment}});
+        QFile f(out);
+        check(f.open(QIODevice::ReadOnly) && f.readAll() == "Face at 0+045: wet, extra bolting" && a->entityId == heading_,
+              "the attachment reopens on its heading, byte for byte");
+        const QString stored = QString::fromStdU16String(ctx_.project().assets().pathOf(*m().assets.find(a->asset.id)).u16string());
+        ctx_.select(EntityKind::Attachment, attachment);
+        check(cmd("DELETE") && !m().attachments.contains(attachment) && QFile::exists(stored), "attachment deleted (its stored file is kept for undo)");
+        check(cmd("COMPACT DRYRUN") && QFile::exists(stored), "COMPACT DRYRUN lists without removing");
+        check(cmd("COMPACT") && !QFile::exists(stored) && !ctx_.project().commands().canUndo() && !ctx_.project().isModified(),
+              "COMPACT removes the unused file, saves and clears the undo history");
+        int intact = 0;
+        for (const auto& asset : m().assets.all()) intact += ctx_.project().assets().verify(asset, true).ok ? 1 : 0;
+        check(intact == static_cast<int>(m().assets.size()) && intact > 0,
+              QStringLiteral("every asset still in use is intact after compacting (%1 verified by SHA-256)").arg(intact));
+    } else {
+        check(false, "the attachment survives saving and reopening");
+    }
 }
 
 

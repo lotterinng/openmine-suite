@@ -397,8 +397,21 @@ std::vector<Uuid> addVectorFeatures(Project& p, const VectorImport& data, const 
     return ids;
 }
 
-void exportVector(const std::vector<const GeometryObject*>& objs, const fs::path& file, const VectorExportOptions& o, bool closedAsPolygons) {
+VectorExportReport exportVector(const std::vector<const GeometryObject*>& objs, const fs::path& file, const VectorExportOptions& o, bool closedAsPolygons) {
     init();
+    VectorExportReport report;
+    auto exportable = [](const GeometryObject& g) {
+        return (g.type == GeometryType::Point && !g.vertices.empty()) || (geometry::isCurve(g.type) && g.vertices.size() >= 1);
+    };
+    for (const auto* g : objs) {
+        if (!g || exportable(*g)) continue;
+        const std::string why = g->type == GeometryType::Point ? "a point without a position"
+                                                               : "meshes, solids, text, dimensions and hatches have no vector-feature form (use DXF, OBJ/PLY/STL or a DEM)";
+        report.skipped.push_back((g->name.empty() ? std::string("(unnamed)") : g->name) + " (" + toString(g->type) + "): " + why);
+    }
+    if (std::none_of(objs.begin(), objs.end(), [&](const GeometryObject* g) { return g && exportable(*g); }))
+        throw GisError("Nothing to export: vector files hold points and curves" +
+                       (report.skipped.empty() ? std::string() : " — " + report.skipped.front()));
     std::string drvName = o.driver;
     if (drvName.empty()) {
         const auto e = lowerExt(file);
@@ -418,7 +431,7 @@ void exportVector(const std::vector<const GeometryObject*>& objs, const fs::path
     // Shapefiles hold one geometry type per file: use the most general needed.
     bool anyPoint = false, anyPoly = false, anyLine = false;
     for (const auto* g : objs) {
-        if (!g) continue;
+        if (!g || !exportable(*g)) continue;
         if (g->type == GeometryType::Point) anyPoint = true;
         else if (geometry::isCurve(g->type)) ((g->closed || g->type == GeometryType::Circle) && closedAsPolygons ? anyPoly : anyLine) = true;
     }
@@ -437,7 +450,7 @@ void exportVector(const std::vector<const GeometryObject*>& objs, const fs::path
         l->CreateField(&f);
     }
     for (const auto* g : objs) {
-        if (!g) continue;
+        if (!g || !exportable(*g)) continue;
         std::unique_ptr<OGRGeometry> geom;
         if (g->type == GeometryType::Point && !g->vertices.empty()) geom = std::make_unique<OGRPoint>(g->vertices[0].x, g->vertices[0].y, g->vertices[0].z);
         else if (geometry::isCurve(g->type)) {
@@ -461,7 +474,9 @@ void exportVector(const std::vector<const GeometryObject*>& objs, const fs::path
         for (const auto& [k, v] : g->attributes) f.SetField(k.c_str(), v.c_str());
         f.SetGeometryDirectly(geom.release());
         if (l->CreateFeature(&f) != OGRERR_NONE) throw GisError("Cannot write a feature: " + std::string(CPLGetLastErrorMsg()));
+        ++report.written;
     }
+    return report;
 }
 
 } // namespace openmine::gis

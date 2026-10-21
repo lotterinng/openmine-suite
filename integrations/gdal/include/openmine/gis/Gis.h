@@ -85,9 +85,15 @@ struct VectorExportOptions {
     std::string layerName = "openmine";
     std::string crsWkt;
 };
+struct VectorExportReport {
+    int written = 0;                  ///< features written
+    std::vector<std::string> skipped; ///< "<name> (<type>): <reason>" for every object not written
+};
 /// Writes points/curves (as line strings, closed curves as polygons when `closedAsPolygons`)
-/// with their attributes. Curves with arcs are densified to 1 mm.
-void exportVector(const std::vector<const GeometryObject*>& objects, const std::filesystem::path& file, const VectorExportOptions& options,
-                  bool closedAsPolygons = true);
+/// with their attributes. Curves with arcs are densified to 1 mm. Objects without a vector-feature
+/// form (meshes, solids, text, dimensions, hatches, empty points) are not written and are listed in
+/// the report — never dropped silently. Throws GisError when nothing can be written.
+VectorExportReport exportVector(const std::vector<const GeometryObject*>& objects, const std::filesystem::path& file,
+                                const VectorExportOptions& options, bool closedAsPolygons = true);
 
 } // namespace openmine::gis

@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <set>
 #include <fstream>
@@ -125,4 +126,44 @@ TEST(Plugins, HostProtectsTheModelFromMisbehavingPlugins) {
     pm.unload("org.openmine.tests.misbehaving");
     EXPECT_FALSE(pm.runCommand(*p, "bad.open-edit").ok);
     EXPECT_EQ(PluginManager::apiVersion(), 1);
+}
+
+TEST(Plugins, RescanReportsCurrentStateAndAppliesDisabling) {
+    auto count = [](const PluginManager& pm, const std::string& id, bool loadedOnly) {
+        return std::count_if(pm.plugins().begin(), pm.plugins().end(),
+                             [&](const PluginStatus& s) { return s.manifest.id == id && (!loadedOnly || s.loaded); });
+    };
+    const std::string stations = "org.openmine.samples.stations", future = "org.openmine.tests.future";
+    PluginManager pm;
+    EXPECT_EQ(pm.loadAll({kDir}, {}), 2);
+    const auto entries = pm.plugins().size();
+    // Rescanning neither duplicates entries nor turns a stale failure into "already present".
+    EXPECT_EQ(pm.loadAll({kDir}, {}), 2);
+    EXPECT_EQ(pm.plugins().size(), entries);
+    EXPECT_EQ(count(pm, future, false), 1);
+    for (const auto& s : pm.plugins())
+        if (s.manifest.id == future) EXPECT_NE(s.error.find("API version 99"), std::string::npos) << s.error;
+    // Disabling a loaded plugin unloads it at the next scan; its registrations disappear.
+    EXPECT_EQ(pm.loadAll({kDir}, {stations}), 1);
+    EXPECT_EQ(count(pm, stations, true), 0);
+    EXPECT_EQ(count(pm, stations, false), 1);
+    EXPECT_FALSE(pm.importerFor("a.stn"));
+    // Enabling it again loads it.
+    EXPECT_EQ(pm.loadAll({kDir}, {}), 2);
+    EXPECT_EQ(count(pm, stations, true), 1);
+    EXPECT_TRUE(pm.importerFor("a.stn"));
+    // Unloading removes every entry of the id.
+    pm.unload(stations);
+    EXPECT_EQ(count(pm, stations, false), 0);
+    // The same id found in a second folder is reported, not loaded twice.
+    const auto copy = fs::temp_directory_path() / ("openmine-plugin-dup-" + Uuid::generate().toString());
+    fs::create_directories(copy);
+    fs::copy(kDir / "station_import", copy / "station_import", fs::copy_options::recursive);
+    EXPECT_EQ(pm.loadAll({kDir, copy}, {}), 2);
+    EXPECT_EQ(count(pm, stations, true), 1);
+    bool reported = false;
+    for (const auto& s : pm.plugins())
+        if (s.manifest.id == stations && !s.loaded) reported = s.error.find("already loaded from") != std::string::npos;
+    EXPECT_TRUE(reported);
+    fs::remove_all(copy);
 }

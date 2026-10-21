@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Per-entity validation rules used by ProjectEditor::add/update. Each rule throws
 // ValidationError with a message suitable for the user.
+#include "openmine/project/Attachments.h"
 #include "openmine/project/ProjectEditor.h"
 
 #include "openmine/geometry/Curves.h"
@@ -68,6 +69,11 @@ template <> void ProjectEditor::validate(const Asset& a) const {
 template <> void ProjectEditor::validate(const Attachment& a) const {
     require(!a.fileName.empty(), "Attachment needs a file name");
     requireRef(p_.model().assets, a.asset.id, "Attachment asset", false);
+    if (a.entityId.isNil())
+        require(a.entityType.empty() || a.entityType == "Project", "An attachment without an entity belongs to the project (type \"Project\")");
+    else
+        require(entityExists(p_.model(), a.entityType, a.entityId), "The attachment's " + (a.entityType.empty() ? std::string("entity") : a.entityType) +
+                                                                       " does not exist");
 }
 
 template <> void ProjectEditor::validate(const Material& m) const {

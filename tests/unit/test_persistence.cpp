@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "openmine/persistence/ProjectFile.h"
+#include "openmine/assets/AssetStore.h"
+#include "openmine/cad/Edit.h"
+#include "openmine/project/Attachments.h"
 #include "openmine/project/ProjectEditor.h"
 
 #include <gtest/gtest.h>
@@ -503,4 +506,109 @@ TEST(EntityCodec, SetCommandsAreUndoableAndIntegrityIsChecked) {
     EXPECT_TRUE(persistence::checkModel(p).empty());
     EXPECT_THROW(persistence::encodeDocument(p.model(), "NoSuchType", "x"), persistence::PersistenceError);
     EXPECT_FALSE(persistence::encodeDocument(p.model(), "GeometryObject", Uuid::generate().toString()));
+}
+
+namespace {
+std::string fileBytes(const fs::path& f) {
+    std::ifstream in(f, std::ios::binary);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+} // namespace
+
+TEST(Persistence, AttachmentsAreStoredVerifiedAndFollowTheirEntity) {
+    const auto dir = tempDir();
+    auto p = Project::createNew("Attach", Date::fromYmd(2026, 11, 2));
+    ProjectEditor ed(*p);
+    GeometryObject g = cad::makePolyline({{0, 0, 0}, {10, 0, 0}});
+    g.name = "Face line";
+    g.layerId = p->model().layers.all().front().id;
+    const Uuid gid = ed.addGeometry(g);
+    std::string photo(5000, '\0');
+    for (std::size_t i = 0; i < photo.size(); ++i) photo[i] = static_cast<char>(i * 31 % 256);
+    std::ofstream(dir / "Face 0+120.JPG", std::ios::binary) << photo;
+    std::ofstream(dir / "permit.pdf", std::ios::binary) << "%PDF-1.4 permit";
+
+    const Uuid aid = attachFile(*p, "GeometryObject", gid, dir / "Face 0+120.JPG", "Face photo");
+    const auto* a = p->model().attachments.find(aid);
+    ASSERT_TRUE(a);
+    EXPECT_EQ(a->fileName, "Face 0+120.JPG");
+    EXPECT_EQ(a->mimeType, "image/jpeg");
+    EXPECT_EQ(a->entityType, "GeometryObject");
+    EXPECT_EQ(a->description, "Face photo");
+    EXPECT_EQ(p->commands().undoText(), "Attach Face 0+120.JPG");
+    const Uuid projectLevel = attachFile(*p, "", Uuid{}, dir / "permit.pdf");
+    EXPECT_EQ(p->model().attachments.find(projectLevel)->entityType, "Project");
+    EXPECT_EQ(attachmentsOf(*p, gid).size(), 1u);
+    EXPECT_EQ(attachmentsOf(*p, Uuid{}).size(), 1u);
+    EXPECT_THROW(attachFile(*p, "GeometryObject", Uuid::generate(), dir / "permit.pdf"), ValidationError);
+    EXPECT_THROW(attachFile(*p, "NoSuchType", gid, dir / "permit.pdf"), ValidationError);
+    EXPECT_THROW(attachFile(*p, "GeometryObject", gid, dir / "missing.pdf"), AssetError);
+
+    // Saved, reopened and extracted byte for byte.
+    persistence::saveProject(*p, dir / "a.openmine");
+    persistence::LoadReport rep;
+    auto q = persistence::loadProject(dir / "a.openmine", &rep);
+    EXPECT_TRUE(rep.warnings.empty());
+    saveAttachment(*q, aid, dir / "out" / "photo.jpg");
+    EXPECT_EQ(fileBytes(dir / "out" / "photo.jpg"), photo);
+    // A stored file changed behind OpenMine's back is detected.
+    const auto* asset = q->model().assets.find(q->model().attachments.find(aid)->asset.id);
+    std::ofstream(q->assets().pathOf(*asset), std::ios::binary | std::ios::app) << "x";
+    EXPECT_THROW(saveAttachment(*q, aid, dir / "out" / "tampered.jpg"), AssetError);
+
+    // Deleting the entity deletes its attachments; undo brings both back.
+    ProjectEditor(*p).removeGeometry(gid);
+    EXPECT_FALSE(p->model().attachments.contains(aid));
+    EXPECT_TRUE(p->model().attachments.contains(projectLevel));
+    p->commands().undo();
+    EXPECT_TRUE(p->model().geometry.contains(gid));
+    EXPECT_TRUE(p->model().attachments.contains(aid));
+    fs::remove_all(dir);
+}
+
+TEST(Persistence, CompactRemovesUnreferencedAndUnregisteredAssetsOnly) {
+    const auto dir = tempDir();
+    auto p = Project::createNew("Compact", Date::fromYmd(2026, 11, 2));
+    std::ofstream(dir / "keep.txt") << "kept";
+    std::ofstream(dir / "drop.txt") << "dropped file content";
+    EXPECT_THROW(persistence::compactProject(*p), persistence::PersistenceError); // never saved
+    const Uuid keep = attachFile(*p, "", Uuid{}, dir / "keep.txt");
+    const Uuid drop = attachFile(*p, "", Uuid{}, dir / "drop.txt");
+    const auto file = dir / "c.openmine";
+    persistence::saveProject(*p, file);
+    const auto sidecar = AssetStore::sidecarFor(file);
+    const Asset dropped = *p->model().assets.find(p->model().attachments.find(drop)->asset.id);
+    ProjectEditor(*p).remove<Attachment>(drop); // the asset stays registered, now unused
+    std::ofstream(sidecar / "attachment" / (Uuid::generate().toString() + ".bin")) << "left by a cancelled import";
+    fs::create_directories(sidecar / "pointcloud" / Uuid::generate().toString() / "nodes");
+    std::ofstream(sidecar / "README.txt") << "a user's own file next to the kind folders";
+
+    const auto dry = persistence::compactProject(*p, true);
+    EXPECT_TRUE(dry.dryRun);
+    ASSERT_EQ(dry.unreferencedAssets.size(), 1u);
+    EXPECT_EQ(dry.unreferencedAssets[0], dropped.relativePath);
+    EXPECT_EQ(dry.orphanFiles.size(), 2u);
+    EXPECT_GT(dry.bytes, 0);
+    EXPECT_TRUE(fs::exists(p->assets().pathOf(dropped)));
+    EXPECT_TRUE(p->commands().canUndo());
+
+    const auto done = persistence::compactProject(*p);
+    EXPECT_EQ(done.unreferencedAssets, dry.unreferencedAssets);
+    EXPECT_EQ(done.bytes, dry.bytes);
+    EXPECT_FALSE(fs::exists(sidecar / dropped.relativePath));
+    EXPECT_FALSE(p->model().assets.contains(dropped.id));
+    EXPECT_FALSE(p->commands().canUndo());
+    EXPECT_TRUE(p->commands().isClean());
+    EXPECT_TRUE(fs::exists(sidecar / "README.txt"));
+    EXPECT_EQ(fs::directory_iterator(sidecar / "pointcloud"), fs::directory_iterator());
+    EXPECT_EQ(p->model().audit.back().action, "Compact");
+    // The saved file matches: no missing-asset warnings, the kept attachment intact.
+    persistence::LoadReport rep;
+    auto q = persistence::loadProject(file, &rep);
+    EXPECT_TRUE(rep.warnings.empty()) << rep.warnings.front();
+    saveAttachment(*q, keep, dir / "keep-out.txt");
+    EXPECT_EQ(fileBytes(dir / "keep-out.txt"), "kept");
+    const auto again = persistence::compactProject(*q, true);
+    EXPECT_TRUE(again.unreferencedAssets.empty() && again.orphanFiles.empty());
+    fs::remove_all(dir);
 }

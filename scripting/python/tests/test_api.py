@@ -821,7 +821,11 @@ def test_gis_exchange_crs_transforms_and_local_grids(tmp_path):
     road = p.cad.add_polyline([(22000, 3180000, 1500), (22100, 3180050, 1495)], name="Haul road")
     pit = p.cad.add_polyline([(22300, 3180000, 1480), (22400, 3180000, 1480), (22400, 3180100, 1480)], closed=True, name="Pit")
     f = tmp_path / "features.gpkg"
-    p.formats.export_vector([road, pit], f)
+    label = p.cad.add_text((22000, 3180000, 1500), "Haul road", name="label")
+    out = p.formats.export_vector([road, pit, label], f)
+    assert out["written"] == 2 and len(out["skipped"]) == 1 and out["skipped"][0].startswith("label (Text):")
+    with pytest.raises(openmine.GisError):  # nothing exportable is an error, not an empty file
+        p.formats.export_vector([label], tmp_path / "empty.gpkg")
     q = Project.new("GIS2", start="2026-11-02")
     r = q.formats.import_vector(f)
     assert len(r["ids"]) == 2 and r["crs"] == "EPSG:2051"
@@ -871,3 +875,66 @@ def test_gis_exchange_crs_transforms_and_local_grids(tmp_path):
     assert np.allclose(pts[0], to_base(100, 100, 0), atol=1e-6)
     with pytest.raises(ValueError):
         p.crs.define_local_grid("Bad", lo25, pairs[:1])
+
+
+def test_attachments_and_compaction(tmp_path):
+    from openmine import AssetError
+    photo = tmp_path / "face 0+045.jpg"
+    photo.write_bytes(bytes(range(256)) * 20)
+    sheet = tmp_path / "field sheet.pdf"
+    sheet.write_bytes(b"%PDF-1.4 field sheet")
+    p, design, act = spec_project()
+    a = p.attachments.add(photo, to=design, description="Face photo")
+    b = p.attachments.add(sheet, to=act)
+    c = p.attachments.add(sheet)  # the project itself
+    assert [x["id"] for x in p.attachments.list(design)] == [a]
+    assert p.attachments.list(design)[0]["mime_type"] == "image/jpeg"
+    assert [x["id"] for x in p.attachments.list("project")] == [c]
+    assert len(p.attachments.list()) == 3
+    with pytest.raises(TypeError):
+        p.attachments.add(sheet, to=42)
+    with pytest.raises(ValidationError):
+        p.attachments.add(sheet, to=("MineDevelopment", "00000000-0000-4000-8000-000000000000"))
+    with pytest.raises(AssetError):
+        p.attachments.add(tmp_path / "missing.pdf")
+    with pytest.raises(openmine.PersistenceError):
+        p.compact()  # never saved
+    f = tmp_path / "Attached.openmine"
+    p.save(f)
+    q = Project.open(f)
+    q.attachments.save(a, tmp_path / "out" / "photo.jpg")
+    assert (tmp_path / "out" / "photo.jpg").read_bytes() == photo.read_bytes()
+    # The activity goes, its attachment with it; the stored file stays until compaction.
+    p.documents.delete("ScheduleActivity", act.id)
+    assert [x["id"] for x in p.attachments.list()] == [a, c]
+    p.attachments.remove(c)
+    preview = p.compact(dry_run=True)
+    assert preview["dry_run"] and len(preview["unreferenced_assets"]) == 2 and preview["bytes"] == 2 * len(b"%PDF-1.4 field sheet")
+    assert p.undo_text  # nothing changed yet
+    done = p.compact()
+    assert done["unreferenced_assets"] == preview["unreferenced_assets"] and done["bytes"] == preview["bytes"]
+    assert not p.is_modified and p.undo_text == ""
+    assert p.compact(dry_run=True)["unreferenced_assets"] == []
+    r = Project.open(f)
+    assert r.load_report["warnings"] == [] and [x["id"] for x in r.attachments.list()] == [a]
+
+
+def test_grip_editing_moves_defining_points_and_flags_headings():
+    p, design, act = spec_project()
+    g = p.cad.grips(design.geometry_id)
+    assert [x["kind"] for x in g] == ["vertex", "vertex"]
+    end = np.array(g[1]["point"])
+    r = p.cad.move_grip(design.geometry_id, 1, end + [-30.0, 0, -3.75])  # 30 m further west at -12.5 %
+    assert r["changed"] == [design.geometry_id] and r["flagged_activities"] == 1
+    assert design.length == pytest.approx(150.0 + math.hypot(30.0, 3.75), abs=1e-6)  # collinear extension
+    assert act.info["design_impact_flag"]
+    p.undo()
+    assert design.length == pytest.approx(150.0, abs=1e-9)
+    arc = p.cad.add_arc((0, 0, 0), 2.0, 0, 90)
+    assert [x["kind"] for x in p.cad.grips(arc)] == ["centre", "start", "radius", "end"]
+    p.cad.move_grip(arc, 2, (3, 3, 0))
+    assert p.cad.geometry(arc)["arc"]["radius"] == pytest.approx(math.sqrt(18))
+    with pytest.raises(ValueError):
+        p.cad.move_grip(arc, 2, (0, 0, 0))  # zero radius
+    with pytest.raises(KeyError):
+        p.cad.grips("00000000-0000-4000-8000-000000000000")

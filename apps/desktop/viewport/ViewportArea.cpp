@@ -16,6 +16,22 @@ ViewportArea::ViewportArea(AppContext& ctx, QWidget* parent)
         ctx_.report(tr("Point cloud: %1").arg(m), MessageLevel::Warning);
     });
     connect(tools_.get(), &ToolController::sectionDefined, this, [this](Vec3 p, Vec3 n, double) { showSection(p, n, 2.5); });
+    // Grips of the selection in every view (the one being moved in red).
+    connect(tools_.get(), &ToolController::gripsChanged, this, [this] {
+        Overlay o;
+        if (const auto hot = tools_->hotGrip()) {
+            o.points = {hot->grip.point};
+            o.color = 0xF44336;
+        } else {
+            for (const auto& g : tools_->selectionGrips()) o.points.push_back(g.grip.point);
+            o.color = 0x2196F3;
+        }
+        o.pointSize = 8;
+        forEach([&](Viewport3D& v) {
+            if (o.points.empty()) v.clearOverlay("grips");
+            else v.setOverlay("grips", o);
+        });
+    });
     ensure(0);
     rebuildLayout();
     setActive(views_[0]);

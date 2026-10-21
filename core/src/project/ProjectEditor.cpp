@@ -285,7 +285,14 @@ public:
         for (const auto& l : p_.model().designLinks)
             if (l.activityId == id || l.designId == id) unlink(l);
     }
-    std::unique_ptr<Command> take() { return std::move(macro_); }
+    /// The command; attachments of every erased entity go with it (and come back on undo).
+    std::unique_ptr<Command> take() {
+        std::vector<const Attachment*> owned;
+        for (const auto& a : p_.model().attachments.all())
+            if (!a.entityId.isNil() && erased_.count(a.entityId) && !erased_.count(a.id)) owned.push_back(&a);
+        for (const auto* a : owned) erase(*a);
+        return std::move(macro_);
+    }
 
 private:
     const Project& p_;

@@ -110,6 +110,12 @@ The append-only audit log: every change with time, user and description.
 
 Model integrity problems (dangling references, invalid values); empty when consistent.
 
+### `compact(dry_run: bool = False) -> dict`
+
+Removes stored files no project object uses any more and unregistered files left in the
+asset folder: ``{"unreferenced_assets", "orphan_files", "bytes", "dry_run"}``. Needs a saved
+project; unless ``dry_run`` it saves the project and clears the undo history.
+
 ### `declare_crs(definition: str, set_as_project_crs: bool = True) -> str`
 
 Declares a CRS (see :meth:`Crs.declare`); by default it also becomes the project CRS.
@@ -269,6 +275,18 @@ cutting edges (default: every curve on a visible layer).
 ### `extend(id: str, pick: PointLike, boundaries: Sequence[str] = ()) -> dict`
 
 Extends the end nearest ``pick`` to the nearest boundary.
+
+### `grips(id: str) -> List[dict]`
+
+The editable defining points of an object: ``{"kind", "vertex", "point"}`` with kind
+"vertex" (points, lines, polylines, spline fit points, text, dimensions, hatches) or, for
+arcs and circles, "centre", "radius", "start" and "end".
+
+### `move_grip(id: str, grip: int, to: PointLike) -> dict`
+
+Moves grip number ``grip`` (see :meth:`grips`) to ``to`` — one undo step; moving a heading
+centreline's vertex flags its linked activities. Invalid results (a vertex onto its
+neighbour, a zero radius) raise ``ValueError``.
 
 ### `split(id: str, at: PointLike) -> dict`
 
@@ -807,9 +825,13 @@ Features as points and polylines with their attributes (definitions are added), 
 ``layer`` (default: the file name). Coordinates are not transformed: a CRS different from
 the project's is reported in ``warnings``. KML is longitude/latitude.
 
-### `export_vector(ids: Sequence[str], file: PathType, closed_as_polygons: bool = True) -> None`
+### `export_vector(ids: Sequence[str], file: PathType, closed_as_polygons: bool = True) -> dict`
 
 Points and curves with attributes, in the project CRS (KML is written in WGS 84).
+
+Returns ``{"written": n, "skipped": [...]}``: objects with no vector-feature form (meshes,
+solids, text, dimensions, hatches) are listed in ``skipped``, never dropped silently;
+:class:`GisError` when none of the objects can be written.
 
 ### `import_dem(file: PathType, step: int = 1, z_scale: float = 1.0, name: str = , layer: str = Surfaces) -> dict`
 
