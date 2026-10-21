@@ -3,11 +3,19 @@ name: CI
 on:
   push:
     branches: [main]
+    # Changes that only concern the Windows build (windows.yml) do not re-run the Linux jobs.
+    paths-ignore:
+      - ".github/workflows/windows.yml"
+      - ".github/scripts/**"
+      - "packaging/windows/**"
   pull_request:
+  workflow_dispatch:
 
+# A newer push waits for the running pipeline instead of cancelling it (the first run of the full
+# job fills the dependency cache, which is only saved when the job completes).
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   PDAL_VERSION: 2.8.4

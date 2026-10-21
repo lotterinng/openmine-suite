@@ -48,16 +48,27 @@ jobs:
       - name: Bootstrap vcpkg
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
-          git clone --depth 1 --branch $env:VCPKG_TAG https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
-          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          ./.github/scripts/logged.ps1 -Name bootstrap -Script {
+            $PSVersionTable.PSVersion.ToString(); git --version
+            "workspace: $env:GITHUB_WORKSPACE  VCPKG_ROOT: $env:VCPKG_ROOT  cache: $env:VCPKG_DEFAULT_BINARY_CACHE"
+            New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+            if (Test-Path "$env:VCPKG_ROOT\.git") { "vcpkg already present" } else {
+              git clone --depth 1 --branch $env:VCPKG_TAG https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
+              if ($LASTEXITCODE) { throw "git clone of vcpkg $env:VCPKG_TAG failed ($LASTEXITCODE)" }
+            }
+            & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+            if ($LASTEXITCODE) { throw "bootstrap-vcpkg.bat failed ($LASTEXITCODE)" }
+            & "$env:VCPKG_ROOT\vcpkg.exe" version
+          }
 
       - name: Configure (installs the vcpkg dependencies; hours on the first run)
         shell: pwsh
-        run: >
-          cmake --preset windows-msvc
-          -DOPENMINE_BUILD_PYTHON=OFF -DOPENMINE_WITH_OPEN3D=OFF -DOPENMINE_WITH_ORTOOLS=OFF
-          -DOPENMINE_BUILD_BENCHMARKS=OFF
+        run: |
+          ./.github/scripts/logged.ps1 -Name configure -Grep 'error|failed|CMake Error' -Script {
+            cmake --preset windows-msvc `
+              -DOPENMINE_BUILD_PYTHON=OFF -DOPENMINE_WITH_OPEN3D=OFF -DOPENMINE_WITH_ORTOOLS=OFF `
+              -DOPENMINE_BUILD_BENCHMARKS=OFF
+          }
 
       - name: Save vcpkg binary cache
         if: always()
@@ -77,7 +88,11 @@ jobs:
           if-no-files-found: ignore
 
       - name: Build
-        run: cmake --build --preset windows-msvc
+        shell: pwsh
+        run: |
+          ./.github/scripts/logged.ps1 -Name build -Grep 'error C|error LNK|fatal error|: error|FAILED:' -Script {
+            cmake --build --preset windows-msvc
+          }
 
       - name: Python tools for the validation tests
         shell: pwsh
@@ -90,7 +105,9 @@ jobs:
           $env:QT_PLUGIN_PATH = "$vi\Qt6\plugins"
           $env:PROJ_DATA = "$vi\share\proj"
           $env:GDAL_DATA = "$vi\share\gdal"
-          ctest --preset windows-msvc -LE gui --timeout 1800
+          ./.github/scripts/logged.ps1 -Name tests -Tail 120 -Grep '\*\*\*Failed|\*\*\*Exception|Timeout|\[  FAILED|Failure|Error|error' -Script {
+            ctest --preset windows-msvc -LE gui --timeout 1800
+          }
 
       - name: Mesa OpenGL for the smoke test (the runner has no GPU driver with OpenGL 3.2)
         shell: pwsh
@@ -108,7 +125,12 @@ jobs:
           $env:QT_PLUGIN_PATH = "$vi\Qt6\plugins"
           $env:PROJ_DATA = "$vi\share\proj"
           $env:GDAL_DATA = "$vi\share\gdal"
-          ctest --preset windows-msvc -L gui --timeout 1800
+          ./.github/scripts/logged.ps1 -Name smoke -Tail 120 -Grep 'FAIL|Failed|Error|error' -Script {
+            ctest --preset windows-msvc -L gui --timeout 1800
+            if ($LASTEXITCODE -and (Test-Path build\windows-msvc\gui-smoke)) {
+              Get-ChildItem build\windows-msvc\gui-smoke -Filter *.log | ForEach-Object { Get-Content $_.FullName -Tail 60 }
+            }
+          }
 
       - name: Upload smoke-test log and screenshots
         if: always()
@@ -122,7 +144,9 @@ jobs:
         shell: pwsh
         run: |
           Get-ChildItem mesa\x\x64\*.dll | ForEach-Object { Remove-Item -ErrorAction SilentlyContinue "build\windows-msvc\bin\$($_.Name)" }
-          ./packaging/windows/stage.ps1 -Build build/windows-msvc -Out stage
+          ./.github/scripts/logged.ps1 -Name stage -Script {
+            ./packaging/windows/stage.ps1 -Build build/windows-msvc -Out stage
+          }
 
       - name: Check the staged application starts
         shell: pwsh
@@ -134,8 +158,10 @@ jobs:
         shell: pwsh
         run: |
           $version = (Select-String -Path CMakeLists.txt -Pattern 'project\(OpenMineSuite VERSION ([0-9.]+)').Matches[0].Groups[1].Value
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp "/DAppVersion=$version" "/DStage=$PWD\stage" "/DOutputDir=$PWD\dist" packaging\windows\openmine-suite.iss
-          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          ./.github/scripts/logged.ps1 -Name installer -Script {
+            & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp "/DAppVersion=$version" "/DStage=$PWD\stage" "/DOutputDir=$PWD\dist" packaging\windows\openmine-suite.iss
+            if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+          }
           Get-ChildItem dist
 
       - name: Upload installer

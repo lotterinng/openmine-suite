@@ -27,6 +27,7 @@ Get-ChildItem "$Vcpkg/bin" -Filter *.dll | Where-Object { $_.Name -notlike "libp
 # PDAL format plugins (the application points PDAL_DRIVER_PATH at pdal-plugins\).
 Get-ChildItem "$Vcpkg/bin" -Filter "libpdal_plugin_*.dll" -ErrorAction SilentlyContinue | Copy-Item -Destination "$Out/pdal-plugins"
 # PROJ and GDAL data files.
+New-Item -ItemType Directory -Force -Path "$Out/share" | Out-Null
 foreach ($d in @("proj", "gdal")) {
     $data = Join-Path $Vcpkg "share/$d"
     if (Test-Path $data) { Copy-Item -Recurse $data "$Out/share/$d" }
@@ -43,7 +44,16 @@ $Crt = Get-ChildItem "$env:VCToolsRedistDir/x64" -Directory -Filter "Microsoft.V
 if ($Crt) { Copy-Item "$($Crt.FullName)/*.dll" $Out } else { Write-Warning "MSVC runtime not found (VCToolsRedistDir); the installer will need the VC++ redistributable" }
 
 # Sample plugins, documentation, licences.
-if (Test-Path "$Build/plugins") { Copy-Item -Recurse "$Build/plugins/*" "$Out/plugins" }
+# Only the sample plugins: the build's plugins folder also holds the test suite's plugins.
+foreach ($sample in Get-ChildItem -Directory "$Src/plugins/samples") {
+    $built = Join-Path $Build "plugins/$($sample.Name)"
+    if ((Test-Path "$built/plugin.json") -and (Get-ChildItem $built -Filter *.dll)) {
+        Copy-Item -Recurse $built "$Out/plugins/$($sample.Name)"
+    }
+}
+if (Test-Path "$Build/python/openmine") {   # Python plugins only work in a build with the Python API
+    Copy-Item -Recurse "$Build/plugins/python" "$Out/plugins/python"
+}
 Copy-Item "$Src/LICENSE", "$Src/NOTICE", "$Src/THIRD_PARTY_NOTICES.md", "$Src/README.md" "$Out/docs"
 Copy-Item "$Src/docs/user-guide.md", "$Src/docs/python.md", "$Src/docs/plugins.md", "$Src/docs/console-commands.md" "$Out/docs"
 Copy-Item "$Src/packaging/linux/licenses/*" "$Out/licenses"

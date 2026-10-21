@@ -13,6 +13,13 @@ option(OPENMINE_BUILD_PYTHON  "Build the 'openmine' Python extension"      ON)
 option(OPENMINE_WITH_OCCT     "Use Open CASCADE for solid modelling"       ON)
 option(OPENMINE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors"    OFF)
 
+# MSVC: sources are UTF-8; template-heavy translation units (Eigen, nlohmann::json) exceed the
+# default COFF section limit; <windows.h> must not define min/max macros over std::min/std::max.
+if(MSVC)
+    add_compile_options(/utf-8 /bigobj /Zc:__cplusplus)
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _USE_MATH_DEFINES _CRT_SECURE_NO_WARNINGS)
+endif()
+
 function(openmine_set_warnings target)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
