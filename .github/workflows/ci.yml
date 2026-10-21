@@ -84,17 +84,19 @@ jobs:
             -DOPENMINE_TEST_PG_DSN="host=127.0.0.1 port=54329 dbname=openmine_test user=postgres password=openmine"
 
       - name: Build
-        run: cmake --build --preset linux-debug
+        run: .github/scripts/logged.sh build 'error|FAILED' -- cmake --build --preset linux-debug
 
       - name: Tests (headless)
         run: |
           export LD_LIBRARY_PATH=$DEPS/pdal/lib:$DEPS/clipper2/lib:$DEPS/ortools/lib:$DEPS/open3d/lib
-          ctest --preset linux-debug -LE gui --timeout 1800
+          .github/scripts/logged.sh tests '\*\*\*Failed|\*\*\*Exception|Timeout|\[  FAILED|Failure|Error|error|assert' -- \
+            ctest --preset linux-debug -LE gui --timeout 1800 --output-on-failure
 
       - name: GUI smoke test
         run: |
           export LD_LIBRARY_PATH=$DEPS/pdal/lib:$DEPS/clipper2/lib:$DEPS/ortools/lib:$DEPS/open3d/lib
-          xvfb-run -a -s "-screen 0 1920x1080x24" ctest --preset linux-debug -L gui --timeout 1800
+          .github/scripts/logged.sh smoke 'FAIL|Failed|Error|error' -- \
+            xvfb-run -a -s "-screen 0 1920x1080x24" ctest --preset linux-debug -L gui --timeout 1800 --output-on-failure
 
       - name: Upload smoke-test log and screenshots
         if: always()
@@ -134,7 +136,8 @@ jobs:
             -DOPENMINE_WITH_OPEN3D=OFF -DOPENMINE_WITH_PROJ=OFF -DOPENMINE_WITH_GDAL=OFF -DOPENMINE_WITH_ORTOOLS=OFF \
             -DOPENMINE_WITH_POSTGRES=OFF
           cmake --build build
-          LD_LIBRARY_PATH=/tmp/clipper2-install/lib ctest --test-dir build --output-on-failure
+          LD_LIBRARY_PATH=/tmp/clipper2-install/lib .github/scripts/logged.sh tests-minimal '\*\*\*Failed|\[  FAILED|Failure|Error|error' -- \
+            ctest --test-dir build --output-on-failure
 
   benchmarks:
     name: Linux — engine benchmarks against budgets (Release)
