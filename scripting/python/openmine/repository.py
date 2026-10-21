@@ -26,18 +26,22 @@ class WorkingCopy:
 
     @property
     def base_revision(self) -> int:
+        """The repository revision the local project is based on."""
         return json.loads(self.text)["base_revision"]
 
     @property
     def project_id(self) -> str:
+        """The repository project id."""
         return json.loads(self.text)["project"]
 
     def save(self, path) -> None:
+        """Writes the working-copy state (keep it next to the project file)."""
         with open(path, "w", encoding="utf-8") as f:
             f.write(self.text)
 
     @classmethod
     def load(cls, path) -> "WorkingCopy":
+        """Reads a saved working-copy state."""
         with open(path, encoding="utf-8") as f:
             return cls(f.read())
 
@@ -51,12 +55,15 @@ class Repository:
             self._r.initialise()
 
     def projects(self) -> List[Tuple[str, str]]:
+        """Projects in the repository: ``(id, name)``."""
         return self._r.projects()
 
     def create_project(self, project: Project, author: str, message: str = "Initial import") -> WorkingCopy:
+        """Publishes a local project as a new repository project (revision 1)."""
         return WorkingCopy(self._r.create_project(project._native, author, message))
 
     def checkout(self, project_id: str, revision: int = 0) -> Tuple[Project, WorkingCopy]:
+        """A local copy of a project at ``revision`` (0 = the latest) and its working copy."""
         native, wc = self._r.checkout(project_id, revision)
         return Project(native), WorkingCopy(wc)
 
@@ -65,9 +72,11 @@ class Repository:
         self._r.delete_project(project_id)
 
     def head_revision(self, project_id: str) -> int:
+        """The latest revision number."""
         return self._r.head_revision(project_id)
 
     def revisions(self, project_id: str) -> list:
+        """History: ``(revision, author, message, created_at, changes)``."""
         return self._r.revisions(project_id)
 
     def pull(self, project: Project, wc: WorkingCopy, policy: str = "abort") -> dict:
@@ -76,14 +85,19 @@ class Repository:
         return result
 
     def publish(self, project: Project, wc: WorkingCopy, author: str, message: str) -> dict:
+        """Publishes local changes as a new revision (refused when the working copy is behind: pull first).
+        Returns the revision, the changes and any refusal."""
         result, wc.text = self._r.publish(project._native, wc.text, author, message)
         return result
 
     def intersecting(self, project_id: str, box) -> list:
+        """Entities whose geometry intersects a plan box ``(xmin, ymin, xmax, ymax)`` (PostGIS)."""
         return self._r.intersecting(project_id, list(box))
 
     def lock(self, project_id: str, type: str, key: str, holder: str, seconds: int = 3600) -> bool:
+        """Takes an advisory lock on an entity for ``seconds``; False when another holder has it."""
         return self._r.lock(project_id, type, key, holder, seconds)
 
     def unlock(self, project_id: str, type: str, key: str, holder: str) -> None:
+        """Releases a lock held by ``holder``."""
         self._r.unlock(project_id, type, key, holder)

@@ -50,17 +50,20 @@ class Registry:
     _current: str = ""
 
     def command(self, name: str, help: str = "") -> Callable:
+        """Decorator registering ``function(project, **arguments)`` as command ``name``."""
         def deco(fn):
             self.add_command(name, fn, help)
             return fn
         return deco
 
     def add_command(self, name: str, fn: Callable, help: str = "") -> None:
+        """Registers a command; a name may be registered once."""
         if name in self.commands:
             raise ValueError(f"Command {name!r} is already registered by {self.commands[name].plugin or 'another plugin'}")
         self.commands[name] = PythonCommand(name, fn, help, self._current)
 
     def run(self, project: Project, name: str, **arguments) -> Any:
+        """Runs a command on a project as one undo step (rolled back if it raises)."""
         cmd = self.commands.get(name)
         if cmd is None:
             raise KeyError(f"Unknown command {name!r}")
@@ -129,16 +132,21 @@ class NativePlugins:
         self.loaded = self._m.load_all([str(d) for d in directories], list(disabled))
 
     def plugins(self) -> List[dict]:
+        """Every discovered plugin with its manifest, load status, error and registrations."""
         return self._m.plugins()
 
     def commands(self) -> List[tuple]:
+        """Commands of the loaded plugins: ``(name, description, plugin id)``."""
         return self._m.commands()
 
     def run(self, project: Project, name: str, **arguments) -> dict:
+        """Runs a native plugin command with JSON-compatible arguments."""
         return self._m.run_command(project._native, name, arguments)
 
     def import_file(self, project: Project, file, **options) -> dict:
+        """Imports a file through the plugin registered for its extension."""
         return self._m.run_import(project._native, str(file), options)
 
     def export_file(self, project: Project, file, **options) -> dict:
+        """Exports through the plugin registered for the file's extension."""
         return self._m.run_export(project._native, str(file), options)

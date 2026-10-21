@@ -1,6 +1,6 @@
 {
   "name": "openmine-suite",
-  "version-string": "0.1.0",
+  "version-string": "0.4.0",
   "description": "Open-source integrated mine survey, design and scheduling",
   "license": "Apache-2.0",
   "dependencies": [

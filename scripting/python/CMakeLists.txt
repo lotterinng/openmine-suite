@@ -49,6 +49,14 @@ if(OPENMINE_BUILD_TESTS)
              COMMAND ${Python_EXECUTABLE} -m pytest -q -p no:cacheprovider --basetemp=${CMAKE_BINARY_DIR}/pytest-python-api ${CMAKE_CURRENT_SOURCE_DIR}/tests)
     set_tests_properties(python_api_tests PROPERTIES ENVIRONMENT
         "PYTHONPATH=${CMAKE_BINARY_DIR}/python;OPENMINE_TEST_PLUGIN_DIR=${CMAKE_BINARY_DIR}/plugins;OPENMINE_PG_DSN=${OPENMINE_TEST_PG_DSN}" LABELS python)
+    # docs/reference/project-schema.md is generated from the schema the build writes.
+    add_test(NAME schema_reference_up_to_date
+             COMMAND ${Python_EXECUTABLE} ${CMAKE_SOURCE_DIR}/docs/tools/generate_schema_reference.py --check)
+    set_tests_properties(schema_reference_up_to_date PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python" LABELS "docs")
+    # docs/reference/python-api.md is generated from the package's signatures and docstrings.
+    add_test(NAME python_reference_up_to_date
+             COMMAND ${Python_EXECUTABLE} ${CMAKE_SOURCE_DIR}/docs/tools/generate_python_reference.py --check)
+    set_tests_properties(python_reference_up_to_date PROPERTIES ENVIRONMENT "PYTHONPATH=${CMAKE_BINARY_DIR}/python" LABELS "docs")
     find_package(GTest REQUIRED)
     include(GoogleTest)
     add_executable(openmine_console_tests tests/test_console.cpp)

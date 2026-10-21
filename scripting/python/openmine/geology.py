@@ -11,6 +11,8 @@ from . import _core
 
 
 def statistics(values: Sequence[float], weights: Sequence[float] = ()) -> dict:
+    """Count, min/max, mean, median, variance, standard deviation, CV and percentiles (p10–p99) of
+    sample values, weighted when ``weights`` are given."""
     return _core.statistics(list(values), list(weights))
 
 

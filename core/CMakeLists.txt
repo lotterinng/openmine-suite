@@ -3,6 +3,8 @@ find_package(nlohmann_json 3.10 REQUIRED)
 find_package(Threads REQUIRED)
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 
+configure_file(cmake/Version.h.in ${CMAKE_BINARY_DIR}/generated/openmine/Version.h @ONLY)
+
 add_library(openmine_core
     src/objects/Uuid.cpp
     src/objects/DateTime.cpp
@@ -30,7 +32,7 @@ add_library(openmine_core
     src/persistence/EntityCodec.cpp
 )
 add_library(OpenMine::core ALIAS openmine_core)
-target_include_directories(openmine_core PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
+target_include_directories(openmine_core PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/generated>)
 target_link_libraries(openmine_core PRIVATE SQLite::SQLite3 nlohmann_json::nlohmann_json Eigen3::Eigen PUBLIC Threads::Threads)
 target_compile_features(openmine_core PUBLIC cxx_std_20)
 openmine_set_warnings(openmine_core)

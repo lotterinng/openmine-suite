@@ -32,21 +32,28 @@ def rmr89(**inputs) -> dict:
 
 
 def hoek_brown(gsi: float, mi: float, sigma_ci: float, disturbance: float = 0.0, intact_modulus: float = 0.0) -> dict:
+    """Generalised Hoek–Brown parameters (mb, s, a), rock-mass strengths and modulus (MPa) from GSI, mi,
+    σci and the disturbance factor D."""
     return _core.hoek_brown(gsi, mi, sigma_ci, disturbance, intact_modulus)
 
 
 def fisher(planes: Sequence[Plane]) -> dict:
+    """Fisher statistics of planes ``(dip, dip_direction)``: mean pole and plane, κ and α95."""
     return _core.fisher(list(planes))
 
 
 def joint_sets(planes: Sequence[Plane], k: int, max_angle: float = 0.0, seed: int = 1) -> dict:
+    """Joint sets by k-means on poles: each set's mean plane and statistics, and the assignment of each plane."""
     return _core.joint_sets(list(planes), k, max_angle, seed)
 
 
 def kinematics(planes: Sequence[Plane], face: Plane, friction: float = 30.0, set_planes: Sequence[Plane] = ()) -> dict:
+    """Planar sliding, wedge (Hocking) and flexural toppling checks against a face and friction angle;
+    counts as percentages of the planes."""
     return _core.kinematics(list(planes), tuple(face), friction, list(set_planes))
 
 
 def stereonet_svg(planes: Sequence[Plane], sets: int = 0, contours: Sequence[float] = (2, 4, 6, 8), friction: Optional[float] = None,
                   title: str = "") -> str:
+    """A lower-hemisphere equal-area stereonet as SVG (poles, density contours, sets, friction cone)."""
     return _core.stereonet_svg(list(planes), sets, list(contours), friction, title)

@@ -23,6 +23,7 @@ def delaunay(points, max_edge_length: float = 0.0):
 
 
 def decimate(vertices, triangles, target_triangles: int = 0, max_error: float = 1e300):
+    """Quadric decimation of a mesh to ``target_triangles`` and/or ``max_error``."""
     return _core.decimate(np.asarray(vertices, dtype=float), np.asarray(triangles, dtype=np.uint32), target_triangles, max_error)
 
 
@@ -33,12 +34,15 @@ def volume_between(earlier, later, cell: float = 0.5) -> dict:
 
 
 def statistics(points) -> dict:
+    """Count, bounds, centroid and mean/median nearest-neighbour spacing of points."""
     return _core.cloud_statistics(np.asarray(points, dtype=float))
 
 
 def voxel_downsample(points, voxel: float):
+    """One point per voxel (the point nearest the voxel centre)."""
     return _core.voxel_downsample(np.asarray(points, dtype=float), voxel)
 
 
 def cloud_to_mesh(points, vertices, triangles, signed: bool = True):
+    """Distance of each point to a mesh (signed by its orientation when ``signed``)."""
     return _core.cloud_to_mesh(np.asarray(points, dtype=float), np.asarray(vertices, dtype=float), np.asarray(triangles, dtype=np.uint32), signed)

@@ -97,34 +97,43 @@ class Development:
 
     @property
     def document(self) -> dict:
+        """The heading's entity document."""
         return self.project.documents.get("MineDevelopment", self.id)
 
     @property
     def heading_id(self) -> str:
+        """The heading identifier (e.g. "LEG2_675_D3_DEC")."""
         return self.document["columns"]["heading_id"]
 
     @property
     def geometry_id(self) -> str:
+        """Id of the centreline geometry."""
         return self.document["columns"]["geometry_uuid"]
 
     @property
     def metrics(self) -> dict:
+        """Derived design quantities: length, horizontal length, gradient, chainage, section area, volume,
+        tonnes and loose volume."""
         return self.project._native.development_metrics(self.id)
 
     @property
     def length(self) -> float:
+        """3D centreline length (m)."""
         return self.metrics["length"]
 
     @property
     def info(self) -> dict:
+        """Heading fields with its metrics and linked activities."""
         d = dict(self.document["columns"])
         d.update(self.metrics)
         return d
 
     def centreline(self) -> np.ndarray:
+        """Centreline vertices ``(n, 3)``."""
         return self.project._native.development_centreline(self.id)
 
     def stations(self, interval: float = 10.0) -> List[dict]:
+        """Chainage stations every ``interval`` m with position and formatted chainage."""
         return self.project._native.development_stations(self.id, interval)
 
     def envelope(self) -> Tuple[np.ndarray, np.ndarray]:
@@ -139,15 +148,18 @@ class Activity:
 
     @property
     def document(self) -> dict:
+        """The activity's entity document."""
         return self.project.documents.get("ScheduleActivity", self.id)
 
     @property
     def info(self) -> dict:
+        """Activity fields with its linked designs."""
         d = dict(self.document["columns"])
         d["linked_designs"] = self.project.scheduler.linked_designs(self.id)
         return d
 
     def record_actual(self, quantity: float, date: str, note: str = "") -> str:
+        """Records dated actual progress (an incremental quantity on ``date``); returns its id."""
         return self.project._native.record_actual(self.id, date, float(quantity), note)
 
 
@@ -163,14 +175,17 @@ class ScheduleResult:
         self.levelling: Optional[dict] = raw.get("levelling")
 
     def activity(self, activity_id) -> dict:
+        """Timing of one activity: start, finish, late dates, floats, duration, critical flag."""
         return self.raw["activities"][_id(activity_id)]
 
     @property
     def activities(self) -> Dict[str, dict]:
+        """Timing of every activity by id."""
         return self.raw["activities"]
 
     @property
     def critical_path(self) -> List[str]:
+        """Ids of the critical activities in start order."""
         return sorted((k for k, v in self.activities.items() if v["critical"]), key=lambda k: self.activities[k]["start"])
 
     def __repr__(self) -> str:
@@ -191,51 +206,68 @@ class Documents(_Namespace):
     types = staticmethod(_core.NativeProject.document_types)
 
     def list(self, type: str) -> List[dict]:
+        """Every entity of a type as documents ``{"uuid", "columns", "children"}``."""
         return self._n.documents(type)
 
     def get(self, type: str, key: str) -> Optional[dict]:
+        """One entity document, or ``None``."""
         return self._n.document(type, key)
 
     def template(self, type: str) -> dict:
+        """A document with the type's default values (for :meth:`put`)."""
         return _core.NativeProject.template(type)
 
     def put(self, type: str, document: dict, text: str = "") -> str:
+        """Adds or replaces an entity from a document (validated like the user interface; one undo
+        step). Returns its key."""
         return self._n.put(type, document, text)
 
     def delete(self, type: str, key: str) -> None:
+        """Deletes an entity applying the documented deletion policy (restrict, cascade or set null)."""
         self._n.delete(type, key)
 
     def check(self) -> List[str]:
+        """Model integrity problems; empty when consistent."""
         return self._n.check()
 
 
 class Cad(_Namespace):
     def layers(self) -> List[dict]:
+        """Layers: ``{"id", "name", "color", "visible", "locked"}``."""
         return self._n.layers()
 
     def add_layer(self, name: str, color: int = 0xD0D0D0) -> str:
+        """A new layer (``color`` 0xRRGGBB); returns its id."""
         return self._n.add_layer(name, color)
 
     def add_point(self, point: PointLike, name: str = "", layer: str = "0", attributes: Optional[dict] = None) -> str:
+        """A point object; returns its id."""
         return self._n.add_geometry("Point", _points([point]), name, layer, False, attributes or {}, [])
 
     def add_polyline(self, points, name: str = "", layer: str = "0", closed: bool = False, attributes: Optional[dict] = None,
                      bulges: Optional[Sequence[float]] = None) -> str:
+        """A polyline (optionally closed; ``bulges`` give plan arcs in the DXF convention); returns its id."""
         return self._n.add_geometry("Polyline", _points(points), name, layer, closed, attributes or {}, list(bulges or []))
 
     def add_line(self, a: PointLike, b: PointLike, name: str = "", layer: str = "0") -> str:
+        """A line between two points; returns its id."""
         return self._n.add_geometry("Line", _points([a, b]), name, layer, False, {}, [])
 
     def add_mesh(self, vertices, triangles, name: str = "", layer: str = "0") -> str:
+        """A triangle mesh (vertices ``(n, 3)``, triangles ``(m, 3)``); returns its id."""
         return self._n.add_mesh(_points(vertices), np.ascontiguousarray(triangles, dtype=np.uint32), name, layer)
 
     def geometry(self, id: str) -> dict:
+        """An object's data: type, layer, vertices, closure, bulges, attributes, and as applicable
+        ``length``, ``arc``, ``text``, ``dimension_value``, ``hatch_area``, ``mesh``, ``area``, ``volume``."""
         return self._n.geometry(_id(id))
 
     def ids(self, type: Optional[str] = None, layer: Optional[str] = None) -> List[str]:
+        """Object ids, optionally of one type ("Polyline", "Mesh", "Solid", …) and/or on one layer."""
         return self._n.geometry_ids(type, layer)
 
     def remove(self, id: str) -> None:
+        """Deletes an object (refused while a heading uses it as its centreline)."""
         self._n.remove_geometry(_id(id))
 
     # ---- drawing ------------------------------------------------------------------------------------
@@ -257,9 +289,11 @@ class Cad(_Namespace):
         return self._add("arc3", {"p1": list(p1), "p2": list(p2), "p3": list(p3)}, name, layer, attributes)
 
     def add_circle(self, centre: PointLike, radius: float, name: str = "", layer: str = "0", attributes: Optional[dict] = None) -> str:
+        """A circle in plan; returns its id."""
         return self._add("circle", {"centre": list(centre), "radius": radius}, name, layer, attributes)
 
     def add_rectangle(self, corner1: PointLike, corner2: PointLike, name: str = "", layer: str = "0", attributes: Optional[dict] = None) -> str:
+        """An axis-aligned rectangle (closed polyline) from two corners; returns its id."""
         return self._add("rectangle", {"corner1": list(corner1), "corner2": list(corner2)}, name, layer, attributes)
 
     def add_polygon(self, centre: PointLike, radius: float, sides: int, rotation_deg: float = 0.0, inscribed: bool = True, name: str = "",
@@ -270,6 +304,7 @@ class Cad(_Namespace):
 
     def add_text(self, insertion: PointLike, text: str, height: float = 1.0, rotation_deg: float = 0.0, align: str = "left", name: str = "",
                  layer: str = "0") -> str:
+        """A text annotation (``align`` "left", "centre" or "right"); returns its id."""
         return self._add("text", {"insertion": list(insertion), "text": text, "height": height, "rotation_deg": rotation_deg, "align": align},
                          name, layer, None)
 
@@ -296,9 +331,11 @@ class Cad(_Namespace):
         return self._n.transform_objects([_id(i) for i in _as_list(ids)], list(m), copy, text)
 
     def move(self, ids, delta: PointLike, copy: bool = False) -> dict:
+        """Moves objects by ``delta`` (with ``copy``, moves copies)."""
         return self.transform(ids, _translation(delta), copy, "Copy" if copy else "Move")
 
     def copy(self, ids, delta: PointLike) -> dict:
+        """Copies objects displaced by ``delta``; the result lists them in ``created``."""
         return self.move(ids, delta, copy=True)
 
     def rotate(self, ids, angle_deg: float, about: PointLike = (0.0, 0.0, 0.0), axis: PointLike = (0.0, 0.0, 1.0), copy: bool = False) -> dict:
@@ -306,6 +343,7 @@ class Cad(_Namespace):
         return self.transform(ids, _rotation(axis, math.radians(angle_deg), about), copy, "Rotate")
 
     def scale(self, ids, factor: float, about: PointLike = (0.0, 0.0, 0.0), copy: bool = False) -> dict:
+        """Scales objects by ``factor`` about ``about``."""
         if not factor > 0:
             raise ValueError("The scale factor must be positive")
         return self.transform(ids, _scaling(factor, about), copy, "Scale")
@@ -328,12 +366,16 @@ class Cad(_Namespace):
         return self._n.extend_curve(_id(id), [_id(e) for e in boundaries], list(pick))
 
     def split(self, id: str, at: PointLike) -> dict:
+        """Splits a curve at the point nearest ``at``; the first piece keeps the object's identity."""
         return self._n.split_curve(_id(id), list(at))
 
     def join(self, ids: Sequence[str], tolerance: float = 1e-4) -> dict:
+        """Joins curves whose ends meet within ``tolerance`` into polylines (heading centrelines are
+        kept and noted); raises ``ValueError`` when nothing joins."""
         return self._n.join_curves([_id(i) for i in ids], tolerance)
 
     def explode(self, ids) -> dict:
+        """Explodes polylines, hatches, dimensions and splines into their parts."""
         return self._n.explode_objects([_id(i) for i in _as_list(ids)])
 
     def fillet(self, first: str, pick_first: PointLike, second: str, pick_second: PointLike, radius: float) -> dict:
@@ -343,6 +385,8 @@ class Cad(_Namespace):
 
     def chamfer(self, first: str, pick_first: PointLike, second: str, pick_second: PointLike, distance1: float,
                 distance2: Optional[float] = None) -> dict:
+        """A straight chamfer between two curves picked near their corner, ``distance1`` along the first
+        and ``distance2`` (default: the same) along the second."""
         return self._n.chamfer_curves(_id(first), list(pick_first), _id(second), list(pick_second), distance1,
                                       distance1 if distance2 is None else distance2)
 
@@ -369,9 +413,11 @@ class Design(_Namespace):
     design ↔ schedule link (changes flag linked activities; quantities change only on request)."""
 
     def developments(self) -> List[Development]:
+        """Every development heading."""
         return [Development(self._p, d["uuid"]) for d in self._n.documents("MineDevelopment")]
 
     def development(self, id: str) -> Development:
+        """The heading with this id."""
         return Development(self._p, _id(id))
 
     def create_heading(self, geometry: str, heading_id: str, width: float = 5.0, height: float = 5.0, **spec) -> Development:
@@ -413,6 +459,7 @@ class Design(_Namespace):
 
     # gradients and rules
     def gradient_profile(self, geometry) -> List[dict]:
+        """Segments of a centreline (or a heading's) with chainages, plan length, rise, grade, radius and "1 in n"."""
         return self._n.gradient_profile(_geometry_id(geometry))
 
     def check_design_rules(self, geometry, **rules) -> List[dict]:
@@ -435,10 +482,13 @@ class Design(_Namespace):
         self._n.apply_design_quantities(_id(activity))
 
     def quantities(self) -> List[dict]:
+        """Design quantities per heading (length, gradient, section area, volume, tonnes, loose volume)
+        with the scheduled quantity and whether it matches the design."""
         return self._n.development_quantities()
 
     # levels and stopes
     def add_level(self, code: str = "", elevation: float = 0.0, name: str = "", zone: str = "") -> str:
+        """A mine level (code, nominal floor elevation); returns its id."""
         return self._n.add_level(name, code, elevation, zone)
 
     def assign_levels(self, tolerance: float = 5.0) -> int:
@@ -454,6 +504,7 @@ class Design(_Namespace):
                                     _id(geometry) if geometry is not None else None)
 
     def stope_metrics(self, stope: str) -> dict:
+        """Volume, tonnes, diluted and recovered tonnes, contained metal, mined grade and closure."""
         return self._n.stope_metrics(_id(stope))
 
     def subdivide_stope(self, stope: str, outline, floor: float, back: float, strike_azimuth_deg: float, panel_length: float,
@@ -463,9 +514,11 @@ class Design(_Namespace):
 
     # revisions
     def capture_revision(self, entity, code: str, comment: str = "") -> str:
+        """Captures the current state of a heading or stope as revision ``code`` (one undo step)."""
         return self._n.capture_revision(_id(entity), code, comment)
 
     def approve_revision(self, revision: str) -> None:
+        """Approves a revision (irreversible; audited)."""
         self._n.approve_revision(revision)
 
     def compare_revisions(self, from_revision: str, to_revision: Optional[str] = None) -> dict:
@@ -504,27 +557,37 @@ class Scheduler(_Namespace):
         return out
 
     def add_milestone(self, name: str, **fields) -> Activity:
+        """A zero-duration milestone activity."""
         return Activity(self._p, self._n.add_activity(dict(fields, name=name, milestone=True)))
 
     def link(self, predecessor, successor, type: str = "FinishToStart", lag_hours: float = 0.0) -> str:
+        """A dependency (``type`` FinishToStart, StartToStart, FinishToFinish or StartToFinish; ``lag_hours``
+        in working hours of the successor's calendar, negative = lead); returns its id."""
         return self._n.add_dependency(_id(predecessor), _id(successor), type, lag_hours)
 
     def add_resource(self, name: str, capacity: float = 1.0) -> str:
+        """A resource (equipment or crew) available ``capacity`` units at once; returns its id."""
         return self._n.add_resource(name, capacity)
 
     def assign(self, activity, resource: str, units: float = 1.0) -> str:
+        """Assigns a resource (by id or name) to an activity with ``units``; returns the assignment id."""
         return self._n.assign_resource(_id(activity), resource, units)
 
     def calculate(self, scenario: Optional[str] = None) -> ScheduleResult:
+        """The CPM schedule of the base plan or a scenario (levelled when the scenario asks for it)."""
         return ScheduleResult(self._n.calculate_schedule(scenario))
 
     def table(self, scenario: Optional[str] = None, baseline: Optional[str] = None) -> List[dict]:
+        """The calculated schedule as rows (dates, durations, floats, critical flag, quantities, progress,
+        resources, linked design and, with ``baseline``, baseline dates and variances)."""
         return self._n.schedule_table(scenario, baseline)
 
     def create_baseline(self, name: str) -> str:
+        """Stores the current schedule as an immutable baseline; returns its id."""
         return self._n.create_baseline(name)
 
     def compare_to_baseline(self, baseline: str) -> List[dict]:
+        """Start and finish variances (hours) of every activity against a baseline."""
         return self._n.compare_to_baseline(baseline)
 
     def add_scenario(self, name: str, overrides: Iterable[Tuple[str, str, str]] = (), levelling: str = "None") -> str:
@@ -566,6 +629,7 @@ class Scheduler(_Namespace):
 
     # targets and quantities
     def add_target(self, name: str, start: str, end: str, quantity: float, unit: str = "m", zone: str = "", level: str = "") -> str:
+        """A production target for a period (optionally for one zone or level); returns its id."""
         return self._n.add_target(name, start, end, quantity, unit, zone, level)
 
     def production(self, period: str = "month", scenario: Optional[str] = None, unit: str = "m", zone: str = "", level: str = "") -> List[dict]:
@@ -581,9 +645,11 @@ class Scheduler(_Namespace):
         return self._n.plan_snapshot(at, baseline, scenario)
 
     def export_gantt_pdf(self, file: PathType, scenario: Optional[str] = None, title: str = "") -> int:
+        """A Gantt chart PDF (table, bars, progress, baseline, critical path, dependencies); returns the page count."""
         return self._n.export_gantt_pdf(str(file), scenario, title, None)
 
     def export_xlsx(self, file: PathType, scenario: Optional[str] = None) -> None:
+        """The schedule table as an XLSX workbook."""
         self._n.export_schedule_xlsx(str(file), scenario)
 
     def optimise(self, scenario: Optional[str] = None, store_as: Optional[str] = None, progress: Optional[_core.Progress] = None,
@@ -624,14 +690,17 @@ class PointCloud(str):
     # ---- description -------------------------------------------------------------------------------
     @property
     def id(self) -> str:
+        """The dataset id."""
         return str(self)
 
     @property
     def project(self) -> "Project":
+        """The project the dataset belongs to."""
         return self._project
 
     @property
     def document(self) -> dict:
+        """The dataset's entity document."""
         d = self._project.documents.get("PointCloudDataset", str(self))
         if d is None:
             raise KeyError(f"The point cloud {str(self)!r} no longer exists")
@@ -639,10 +708,12 @@ class PointCloud(str):
 
     @property
     def name(self) -> str:
+        """Dataset name."""
         return self.document["columns"]["name"]
 
     @property
     def point_count(self) -> int:
+        """Number of points."""
         return int(self.document["columns"]["point_count"])
 
     @property
@@ -652,6 +723,7 @@ class PointCloud(str):
 
     @property
     def parent(self) -> Optional["PointCloud"]:
+        """The dataset it was derived from (``None`` for an imported scan)."""
         pid = self.document["columns"]["parent_dataset_uuid"]
         return PointCloud(self._project, pid) if pid else None
 
@@ -674,6 +746,7 @@ class PointCloud(str):
 
     @property
     def xyz(self) -> np.ndarray:
+        """All points ``(n, 3)`` in project coordinates."""
         return self.points()["xyz"]
 
     def statistics(self) -> dict:
@@ -830,22 +903,30 @@ class Survey(_Namespace):
         return PointCloud(self._p, str(id))
 
     def pointclouds(self) -> List[PointCloud]:
+        """Every point-cloud dataset."""
         return [PointCloud(self._p, d["uuid"]) for d in self._p.documents.list("PointCloudDataset")]
 
     def add_point_cloud(self, xyz, name: str) -> PointCloud:
+        """A dataset from an ``(n, 3)`` array of project coordinates."""
         return PointCloud(self._p, self._n.add_point_cloud(_points(xyz), name))
 
     def points(self, dataset, box: Optional[Sequence[float]] = None) -> dict:
+        """A dataset's points in project coordinates as arrays (``xyz`` and stored attributes),
+        optionally inside a box ``(xmin, ymin, zmin, xmax, ymax, zmax)``."""
         return self._n.point_cloud_points(str(dataset), list(box) if box is not None else None)
 
     def export(self, dataset, file: PathType, progress: Optional[_core.Progress] = None) -> None:
+        """Writes a dataset in project coordinates; the format follows the extension."""
         self._n.export_point_cloud(str(dataset), str(file), progress)
 
     def register_icp(self, moving, target, apply: bool = False, progress: Optional[_core.Progress] = None, **options) -> dict:
+        """ICP of ``moving`` onto ``target`` (options: mode, max_correspondence, max_iterations, sample_size,
+        trim_fraction, engine); stored as a registration, applied only with ``apply``."""
         return self._n.icp_registration(str(moving), str(target), options, apply, progress)
 
     def add_control_point(self, name: str, position: PointLike, code: str = "", horizontal_sigma: float = 0.005, vertical_sigma: float = 0.005,
                           role: str = "Control", source: str = "Python") -> str:
+        """A survey control point with its stated 1σ accuracy; returns its id."""
         return self._n.add_control_point(name, list(_vec3(position)), code, horizontal_sigma, vertical_sigma, role, source)
 
     def revert_registration(self, registration: str) -> None:
@@ -854,14 +935,18 @@ class Survey(_Namespace):
 
     # surfaces (the source is never changed: each result is a new mesh object recording its method)
     def decimate_surface(self, surface: str, target_triangles: int = 0, max_error: float = 0.0, preserve_boundary: bool = True, name: str = "") -> dict:
+        """Quadric decimation to ``target_triangles`` and/or ``max_error`` into a new mesh."""
         return self._n.surface_tool(_id(surface), "decimate", {"target_triangles": target_triangles, "max_error": max_error,
                                                                "preserve_boundary": preserve_boundary}, None, name, None)
 
     def smooth_surface(self, surface: str, iterations: int = 10, lambda_: float = 0.5, mu: float = -0.53, fix_boundary: bool = True, name: str = "") -> dict:
+        """Taubin λ|μ smoothing (volume-preserving) into a new mesh."""
         return self._n.surface_tool(_id(surface), "smooth", {"iterations": iterations, "lambda": lambda_, "mu": mu, "fix_boundary": fix_boundary}, None, name,
                                     None)
 
     def repair_surface(self, surface: str, merge_tolerance: float = 1e-6, fill_holes_up_to: int = 0, orient_outward: bool = True, name: str = "") -> dict:
+        """Merges duplicate vertices, removes degenerate and duplicate triangles, orients consistently and
+        fills holes up to ``fill_holes_up_to`` edges, into a new mesh with a report."""
         return self._n.surface_tool(_id(surface), "repair", {"merge_tolerance": merge_tolerance, "fill_holes_up_to": fill_holes_up_to,
                                                              "orient_outward": orient_outward}, None, name, None)
 
@@ -871,6 +956,7 @@ class Survey(_Namespace):
         return self._n.surface_tool(_id(surface), "compare", {"signed": signed, "max_distance": max_distance}, _id(reference), name, None)
 
     def add_as_built(self, dataset, vertices, triangles, name: str, layer: str = "0", development: str = "") -> str:
+        """Stores a mesh as the as-built model of a scan (and optionally a heading); returns its id."""
         return self._n.add_as_built(str(dataset), _points(vertices), np.ascontiguousarray(triangles, dtype=np.uint32), name, layer,
                                     _id(development) if development else "")
 
@@ -889,6 +975,7 @@ class Survey(_Namespace):
         return self._n.build_as_built(str(dataset), _id(development), corridor, voxel, depth, engine, name, layer, fill_holes_up_to, progress)
 
     def conformance(self, as_built: str, development, interval: float = 1.0, commit: bool = False, max_gap: float = 0.5) -> dict:
+        """Design conformance of a stored as-built model against a heading (see :meth:`compare_design`)."""
         return self._n.conformance(str(as_built), _id(development), interval, commit, max_gap)
 
     def compare_design(self, design, asbuilt, interval: float = 1.0, commit: bool = True, max_gap: float = 0.5,
@@ -929,19 +1016,23 @@ class Solids(_Namespace):
 
     # primitives
     def box(self, corner1: PointLike, corner2: PointLike, name: str = "", layer: str = "0") -> str:
+        """An axis-aligned box between two corners; returns its id."""
         self._need()
         return self._n.solid_primitive("box", {"corner1": list(corner1), "corner2": list(corner2)}, name, layer)
 
     def cylinder(self, base: PointLike, axis: PointLike, radius: float, height: float, name: str = "", layer: str = "0") -> str:
+        """A cylinder from its base centre along ``axis``; returns its id."""
         self._need()
         return self._n.solid_primitive("cylinder", {"base": list(base), "axis": list(axis), "radius": radius, "height": height}, name, layer)
 
     def cone(self, base: PointLike, axis: PointLike, radius_base: float, radius_top: float, height: float, name: str = "", layer: str = "0") -> str:
+        """A (truncated) cone from its base centre along ``axis``; returns its id."""
         self._need()
         return self._n.solid_primitive("cone", {"base": list(base), "axis": list(axis), "radius_base": radius_base, "radius_top": radius_top,
                                                 "height": height}, name, layer)
 
     def sphere(self, centre: PointLike, radius: float, name: str = "", layer: str = "0") -> str:
+        """A sphere; returns its id."""
         self._need()
         return self._n.solid_primitive("sphere", {"centre": list(centre), "radius": radius}, name, layer)
 
@@ -957,6 +1048,7 @@ class Solids(_Namespace):
         return self._n.solid_extrude([_id(c) for c in _as_list(curves)], "vector", distance, list(_vec3(direction)), symmetric, holes, name, layer)
 
     def revolve(self, profiles, axis_point: PointLike, axis_direction: PointLike, angle_deg: float = 360.0, name: str = "", layer: str = "0") -> List[str]:
+        """Revolves closed planar curves about an axis by ``angle_deg`` (360: a solid of revolution)."""
         self._need()
         return self._n.solid_revolve([_id(c) for c in _as_list(profiles)], list(_vec3(axis_point)), list(_vec3(axis_direction)), angle_deg, name, layer)
 
@@ -969,10 +1061,13 @@ class Solids(_Namespace):
         return self._n.solid_sweep([_id(c) for c in _as_list(paths)], profile, width, height, transition, name, layer)
 
     def loft(self, sections: Sequence[str], solid: bool = True, ruled: bool = False, name: str = "", layer: str = "0") -> str:
+        """A solid (or, with ``solid=False``, a surface) through closed sections in order; ``ruled``
+        uses straight lines between sections."""
         self._need()
         return self._n.solid_loft([_id(c) for c in sections], solid, ruled, name, layer)
 
     def from_mesh(self, mesh: str, require_closed: bool = True) -> str:
+        """A solid from a closed mesh (sewn, coplanar faces merged)."""
         self._need()
         return self._n.solid_from_mesh(_id(mesh), require_closed)
 
@@ -989,19 +1084,24 @@ class Solids(_Namespace):
         return self._n.solid_boolean(_id(a), _id(b), op, remove_inputs, name, fuzzy)
 
     def union(self, a: str, b: str, **kw) -> str:
+        """Union of two objects as a new solid (see :meth:`boolean`)."""
         return self.boolean(a, b, "union", **kw)
 
     def subtract(self, a: str, b: str, **kw) -> str:
+        """``a`` minus ``b`` as a new solid (see :meth:`boolean`)."""
         return self.boolean(a, b, "difference", **kw)
 
     def intersect(self, a: str, b: str, **kw) -> str:
+        """Intersection of two objects as a new solid (see :meth:`boolean`)."""
         return self.boolean(a, b, "intersection", **kw)
 
     def fillet_edges(self, solid: str, radius: float) -> dict:
+        """Rounds every edge with ``radius`` (in place; one undo step); returns the new analysis."""
         self._need()
         return self._n.solid_fillet(_id(solid), radius)
 
     def offset(self, solid: str, distance: float) -> dict:
+        """Offsets the faces by ``distance`` (outwards > 0, inwards < 0), in place; returns the analysis."""
         self._need()
         return self._n.solid_offset(_id(solid), distance)
 
@@ -1011,6 +1111,7 @@ class Solids(_Namespace):
         return self._n.solid_info(_id(solid))
 
     def heal(self, solid: str) -> dict:
+        """Shape fixing, orientation and face unification in place: ``{"before", "after", "fixes"}``."""
         self._need()
         return self._n.solid_heal(_id(solid))
 
@@ -1020,6 +1121,7 @@ class Solids(_Namespace):
         return self._n.section_objects([_id(i) for i in _as_list(ids)], list(_vec3(point)), list(_vec3(normal)), layer)
 
     def distance(self, a: str, b: str) -> dict:
+        """Minimum distance between two objects and the closest points."""
         self._need()
         return self._n.solid_distance(_id(a), _id(b))
 
@@ -1034,6 +1136,7 @@ class Solids(_Namespace):
         return self._n.import_solids(str(file), layer)
 
     def export_file(self, ids, file: PathType) -> None:
+        """Writes solids to STEP (.step/.stp) or IGES (.iges/.igs)."""
         self._need()
         self._n.export_solids([_id(i) for i in _as_list(ids)], str(file))
 
@@ -1042,19 +1145,24 @@ class Reports(_Namespace):
     """Survey reports (HTML or PDF), stored in the project as Report entities with their file."""
 
     def conformance(self, result_id: str, format: str = "html", store: bool = True, file: Optional[PathType] = None) -> dict:
+        """Report of a stored conformance result (HTML or PDF), stored in the project and/or written to ``file``."""
         return self._n.survey_report("conformance", result_id, format, store, str(file) if file else None, False)
 
     def registration(self, registration_id: str, format: str = "html", store: bool = True, file: Optional[PathType] = None) -> dict:
+        """Report of a stored registration with residuals."""
         return self._n.survey_report("registration", registration_id, format, store, str(file) if file else None, False)
 
     def point_cloud(self, dataset_id: str, format: str = "html", store: bool = True, file: Optional[PathType] = None,
                     spacing_statistics: bool = False) -> dict:
+        """Report of a dataset (provenance, attributes, extents, optional spacing statistics)."""
         return self._n.survey_report("point_cloud", dataset_id, format, store, str(file) if file else None, spacing_statistics)
 
     def list(self) -> List[dict]:
+        """Stored reports: id, name, kind, format and creation time."""
         return self._n.reports()
 
     def content(self, report_id: str) -> bytes:
+        """The bytes of a stored report."""
         return self._n.report_bytes(report_id)
 
 
@@ -1067,54 +1175,74 @@ class Geology(_Namespace):
                                          {k: read(v) for k, v in (intervals or {}).items()}, options)
 
     def drillholes(self) -> List[str]:
+        """Drillhole ids."""
         return self._n.drillhole_ids()
 
     def trace(self, hole: str, step: float = 1.0, method: str = "minimum_curvature") -> np.ndarray:
+        """Desurveyed trace of a hole as ``(n, 3)`` points every ``step`` m (``minimum_curvature`` or ``tangent``)."""
         return self._n.drillhole_trace(hole, step, method)
 
     def composites(self, mode: str = "length", code_field: str = "", bench_base: float = 0.0, bench_height: float = 5.0, **options) -> List[dict]:
+        """Composites of every hole: ``mode`` "length" (options: length, fields, min_coverage, residual,
+        min_residual_fraction, break_field, density_field, unsampled_as_zero), "code" (by ``code_field``)
+        or "bench" (``bench_base``, ``bench_height``)."""
         return self._n.composites(options, mode, code_field, bench_base, bench_height)
 
     def create_block_model(self, name: str, origin: PointLike, block_size: PointLike, shape: Sequence[int], rotation_deg: float = 0.0,
                            description: str = "") -> str:
+        """A regular block model (optionally rotated about Z); returns its id."""
         return self._n.create_block_model(dict(name=name, origin=list(origin), block_size=list(block_size), shape=list(shape),
                                                rotation_deg=rotation_deg, description=description))
 
     def block_model(self, id: str) -> dict:
+        """Geometry and attribute arrays of a block model."""
         return self._n.block_model(id)
 
     def set_block_values(self, id: str, values: Dict[str, Any], remove: Sequence[str] = ()) -> None:
+        """Sets (or removes) attribute arrays; each array has one value per block (one undo step)."""
         self._n.set_block_values(id, {k: np.ascontiguousarray(v, dtype=float) for k, v in values.items()}, list(remove))
 
     def centroids(self, id: str) -> np.ndarray:
+        """Block centroids ``(n, 3)`` in project coordinates."""
         return self._n.block_centroids(id)
 
     def domain_proportions(self, block_model: str, mesh: str, field: str, subdivisions: int = 4) -> np.ndarray:
+        """Fraction of each block inside a closed mesh (sub-block sampling), stored in ``field``."""
         return self._n.domain_proportions(block_model, mesh, field, subdivisions)
 
     def estimate(self, block_model: str, composites: List[dict], field: str, progress: Optional[_core.Progress] = None, **options) -> dict:
+        """Grade estimation into a block model from composites: ``method`` nearest, idw (``power``),
+        simple_kriging (``mean``) or ordinary_kriging (``variogram``), with search ``passes`` and an
+        optional ``mask``; returns counts per pass."""
         return self._n.estimate(block_model, composites, field, options, progress)
 
     def grade_tonnage(self, block_model: str, grade: str, cutoffs: Sequence[float], **options) -> List[dict]:
+        """Tonnes and mean grade above each cut-off (``density`` or ``density_field``, ``proportion_field``,
+        ``other_fields``)."""
         return self._n.grade_tonnage(block_model, grade, list(cutoffs), options)
 
 
 class Geotech(_Namespace):
     def record_q(self, development, chainage: float, mapped_by: str = "", **inputs) -> str:
+        """Records a Q-system classification (rqd, jn, jr, ja, jw, srf) at a chainage of a heading."""
         return self._n.record_q(_id(development) if development else "", chainage, inputs, mapped_by)
 
 
 class Formats(_Namespace):
     def import_dxf(self, file: PathType, layer_prefix: str = "", chord_tolerance: float = 0.001) -> dict:
+        """Imports a DXF (R12–R2018 ASCII) with layers, blocks and attributes; returns the import report."""
         return self._n.import_dxf(str(file), layer_prefix, chord_tolerance)
 
     def export_dxf(self, file: PathType, ids: Sequence[str] = ()) -> dict:
+        """Exports objects (default: all) to DXF R2004; returns the export report."""
         return self._n.export_dxf(str(file), [_id(i) for i in ids])
 
     def import_omf(self, file: PathType) -> dict:
+        """Imports an OMF v1 file; returns what was imported and notes for what was not."""
         return self._n.import_omf(str(file))
 
     def export_omf(self, file: PathType, drillholes: bool = True, point_clouds: Sequence[str] = ()) -> List[str]:
+        """Exports curves, points, meshes, drillholes, block models and selected point clouds to OMF v1."""
         return self._n.export_omf(str(file), drillholes, list(point_clouds))
 
     def import_mesh(self, file: PathType, layer: str = "Surfaces") -> dict:
@@ -1168,10 +1296,12 @@ class Crs(_Namespace):
         return self._n.declare_crs(definition, set_as_project_crs)
 
     def set_project_crs(self, crs: str) -> None:
+        """Makes a declared CRS the project CRS (coordinates are not changed)."""
         self._need()
         self._n.set_project_crs(crs)
 
     def search(self, fragment: str, max_results: int = 50) -> List[dict]:
+        """CRSs whose name contains ``fragment`` (PROJ database)."""
         self._need()
         return list(_core.search_crs(fragment, max_results))
 
@@ -1181,6 +1311,7 @@ class Crs(_Namespace):
         return list(_core.candidate_operations(source, target))
 
     def transform_points(self, points, source_crs: str, target_crs: str, operation: int = 0) -> np.ndarray:
+        """Points transformed between two declared CRSs (local grids included) with candidate ``operation``."""
         self._need()
         return self._n.transform_points(_points(points), source_crs, target_crs, operation)
 
@@ -1226,59 +1357,74 @@ class Project:
     # lifecycle
     @classmethod
     def new(cls, name: str, start: str) -> "Project":
+        """A new project named ``name`` whose schedule starts on ``start`` ("YYYY-MM-DD")."""
         return cls(_core.NativeProject.create(name, start))
 
     @classmethod
     def open(cls, path: PathType) -> "Project":
+        """Opens a ``.openmine`` file (verified on load; an older schema is migrated in memory, a newer one refused)."""
         native, report = _core.NativeProject.load(str(path))
         p = cls(native)
         p.load_report = report
         return p
 
     def save(self, path: Optional[PathType] = None) -> None:
+        """Saves atomically (written to a temporary file, verified, the previous version kept as ``.bak``);
+        without ``path`` to the project's own file."""
         target = path if path is not None else self.file_path
         if not target:
             raise ValueError("The project has no file yet: give a path")
         self._native.save(str(target))
 
     def close(self) -> None:
+        """Releases the project; the object must not be used afterwards."""
         self._native.close()
 
     @property
     def name(self) -> str:
+        """Project name."""
         return self._native.name
 
     @property
     def id(self) -> str:
+        """Project identifier (uuid)."""
         return self._native.id
 
     @property
     def file_path(self) -> str:
+        """The project file, or ``""`` before the first save."""
         return str(self._native.file_path) if str(self._native.file_path) not in ("", ".") else ""
 
     @property
     def is_modified(self) -> bool:
+        """True when there are changes since the last save."""
         return self._native.is_modified
 
     @property
     def info(self) -> dict:
+        """Project settings: name, schedule start, status date, project CRS, default calendar, units."""
         return self._native.info()
 
     def set_info(self, **fields) -> None:
+        """Changes project settings (validated; one undo step)."""
         self._native.set_info(fields)
 
     def set_status_date(self, date: Optional[str]) -> None:
+        """The data date for progress and reforecasting ("YYYY-MM-DD")."""
         self._native.set_info({"status_date": date})
 
     # undo / audit
     def undo(self) -> None:
+        """Undoes the last change (a whole ``edit()`` group counts as one)."""
         self._native.undo()
 
     def redo(self) -> None:
+        """Redoes the last undone change."""
         self._native.redo()
 
     @property
     def undo_text(self) -> str:
+        """Description of the change ``undo()`` would revert ("" when there is none)."""
         return self._native.undo_text
 
     @contextlib.contextmanager
@@ -1294,18 +1440,22 @@ class Project:
             self._native.end_macro(True)
 
     def audit_log(self) -> List[dict]:
+        """The append-only audit log: every change with time, user and description."""
         return self._native.audit_log()
 
     def check(self) -> List[str]:
+        """Model integrity problems (dangling references, invalid values); empty when consistent."""
         return self._native.check()
 
     # coordinates (when PROJ is available)
     def declare_crs(self, definition: str, set_as_project_crs: bool = True) -> str:
+        """Declares a CRS (see :meth:`Crs.declare`); by default it also becomes the project CRS."""
         if not hasattr(self._native, "declare_crs"):
             raise NotImplementedError("This build has no PROJ coordinate support")
         return self._native.declare_crs(definition, set_as_project_crs)
 
     def transform_points(self, points, source_crs: str, target_crs: str) -> np.ndarray:
+        """Points transformed between two declared CRSs (see :meth:`Crs.transform_points`)."""
         return self.crs.transform_points(points, source_crs, target_crs)
 
     def __repr__(self) -> str:

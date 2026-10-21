@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(OpenMineSuite VERSION 0.1.0 DESCRIPTION "Open-source integrated mine survey, design and scheduling" LANGUAGES CXX)
+project(OpenMineSuite VERSION 0.4.0 DESCRIPTION "Open-source integrated mine survey, design and scheduling" LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

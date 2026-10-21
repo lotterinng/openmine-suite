@@ -8,6 +8,7 @@
 //                              `asset` table by relative path and SHA-256. Not embedded in SQL.
 //   MyMine.openmine.bak        previous version, kept by every successful save.
 
+#include "openmine/Version.h"
 #include "openmine/project/Project.h"
 
 #include <filesystem>
@@ -21,7 +22,7 @@ namespace openmine::persistence {
 inline constexpr int kCurrentSchemaVersion = 2;
 inline constexpr std::int32_t kApplicationId = 0x4F4D494E; // 'OMIN'
 inline constexpr const char* kFileExtension = ".openmine";
-inline constexpr const char* kAppVersion = "OpenMine Suite 0.2.0";
+inline constexpr const char* kAppVersion = "OpenMine Suite " OPENMINE_VERSION_STRING;
 
 class PersistenceError : public std::runtime_error {
 public:

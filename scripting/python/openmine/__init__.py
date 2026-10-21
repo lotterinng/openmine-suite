@@ -37,7 +37,7 @@ from ._project import (Activity, Development, PointCloud, Project, ScheduleResul
 __all__ = ["Project", "Development", "Activity", "PointCloud", "ScheduleResult", "Progress", "ValidationError", "PersistenceError",
            "CancelledError", "PointCloudError", "DxfError", "MeshFormatError", "OmfError", "GisError", "SolidError", "CrsError", "FEATURES", "current_project", "__version__"]
 
-__version__ = getattr(_core, "__version__", "0.3.0")
+__version__ = _core.__version__
 #: Optional native features of this build (``{"optimiser": True, "crs": True, ...}``).
 FEATURES = dict(_core.FEATURES)
 SCHEMA_VERSION = _core.SCHEMA_VERSION
