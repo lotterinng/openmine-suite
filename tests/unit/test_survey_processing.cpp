@@ -7,6 +7,8 @@
 #include "openmine/project/ProjectEditor.h"
 #include "openmine/survey/AsBuilt.h"
 #include "openmine/survey/Conformance.h"
+#include "openmine/survey/Derivations.h"
+#include "openmine/survey/SurfaceTools.h"
 #include "openmine/survey/KdTree.h"
 #include "openmine/survey/Meshing.h"
 #include "openmine/survey/PointCloudProject.h"
@@ -14,6 +16,7 @@
 #include "openmine/survey/Registration.h"
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <filesystem>
 #include <functional>
@@ -21,6 +24,7 @@
 #include <fstream>
 #include <numbers>
 #include <random>
+#include <set>
 
 using namespace openmine;
 using namespace openmine::survey;
@@ -793,4 +797,110 @@ TEST(SurveyConformance, AdvanceReconciliationWithShiftActuals) {
     double total = 0;
     for (const auto* a : p.model().actualsForActivity(act)) total += a->quantity;
     EXPECT_DOUBLE_EQ(total, 38);
+}
+
+TEST(SurveyDerivations, RecordedTextsSourcesUntouchedAndResults) {
+    auto pp = Project::createNew("Derivations", Date::fromYmd(2026, 11, 2));
+    Project& p = *pp;
+    std::mt19937 rng(9);
+    std::uniform_real_distribution<double> u(0, 1);
+    PointBuffer buf;
+    for (int i = 0; i < 3000; ++i) buf.xyz.push_back({1000 + u(rng), 2000 + u(rng), 100 + u(rng)});
+    for (int i = 0; i < 3000; ++i) buf.xyz.push_back({1010 + u(rng), 2000 + u(rng), 100 + u(rng)});
+    buf.xyz.push_back({1005, 2000.5, 150}); // an isolated outlier
+    const Uuid ds = commitDataset(p, prepareFromPoints(p, buf, "blobs", "", "test"));
+    const auto before = p.model().pointClouds.find(ds)->pointCount;
+
+    // The recorded texts are the documented, stable format.
+    EXPECT_EQ(statisticalOutlierDerivation(16, 2.0).text, "statistical outlier removal k=16 n=2.000000");
+    EXPECT_EQ(radiusOutlierDerivation(0.5, 3).text, "radius outlier removal r=0.500000 min=3");
+    EXPECT_EQ(voxelDerivation(0.25, VoxelMode::NearestToCentre).text, "voxel nearest-to-centre 0.250000 m");
+    EXPECT_EQ(voxelDerivation(0.25, VoxelMode::Centroid, {[](const PointBuffer& b, double) { return b; }, "Engine X"}).text, "voxel centroid 0.250000 m (Engine X)");
+    EXPECT_THROW(voxelDerivation(0.25, VoxelMode::NearestToCentre, {[](const PointBuffer& b, double) { return b; }, "Engine X"}), ValidationError);
+    EXPECT_EQ(cropBoxDerivation({{0, 0, 0}, {1, 2, 3}}, true).text, "box crop (inside) 0.000,0.000,0.000 – 1.000,2.000,3.000");
+    EXPECT_EQ(cropPolygonDerivation({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}}, {0, 0, 1}, false).text, "remove polygon");
+    EXPECT_THROW(cropBoxDerivation({{0, 0, 0}, {0, 2, 3}}, true), ValidationError);
+    EXPECT_THROW(euclideanClusterDerivation(0, 1, false), ValidationError);
+
+    const auto clean = deriveDataset(p, ds, statisticalOutlierDerivation(16, 3.0), "clean");
+    EXPECT_EQ(clean.inputCount, 6001u);
+    EXPECT_EQ(clean.outputCount, 6000u);
+    EXPECT_EQ(clean.message, "1 outliers removed");
+    EXPECT_EQ(p.model().pointClouds.find(ds)->pointCount, before); // the source is never changed
+    EXPECT_EQ(p.model().pointClouds.find(clean.id)->parentDatasetId, ds);
+    EXPECT_EQ(p.model().pointClouds.find(clean.id)->derivation, clean.derivation);
+
+    const auto seg = deriveDataset(p, clean.id, euclideanClusterDerivation(0.3, 100, false), "");
+    EXPECT_EQ(seg.message, "2 clusters; 0 points in no cluster");
+    const auto labels = datasetPoints(p, seg.id, true);
+    const int ci = labels.scalarIndex("cluster");
+    ASSERT_GE(ci, 0);
+    std::set<float> distinct(labels.scalars[static_cast<std::size_t>(ci)].begin(), labels.scalars[static_cast<std::size_t>(ci)].end());
+    EXPECT_EQ(distinct, (std::set<float>{0.f, 1.f}));
+
+    // Distances to the plane z = 100 (all within [0, 1]) with statistics.
+    auto plane = std::make_shared<MeshData>();
+    plane->vertices = {{990, 1990, 100}, {1030, 1990, 100}, {1030, 2010, 100}, {990, 2010, 100}};
+    plane->triangles = {{0, 1, 2}, {0, 2, 3}};
+    auto stats = std::make_shared<DistanceStatisticsJson>();
+    const auto dist = deriveDataset(p, clean.id, meshDistanceDerivation(plane, "z100", 0, true, stats), "");
+    EXPECT_EQ(dist.derivation, "distance to z100");
+    const auto j = nlohmann::json::parse(stats->json);
+    EXPECT_EQ(j.at("count").get<int>(), 6000);
+    EXPECT_NEAR(j.at("mean").get<double>(), 0.5, 0.03);
+    EXPECT_GE(j.at("min").get<double>(), -1e-6);
+    // One undo step per derived dataset.
+    const auto n = p.model().pointClouds.size();
+    p.commands().undo();
+    EXPECT_EQ(p.model().pointClouds.size(), n - 1);
+}
+
+TEST(SurveySurfaceTools, ToolsKeepTheSourceAndRecordTheMethod) {
+    auto pp = Project::createNew("Surfaces", Date::fromYmd(2026, 11, 2));
+    Project& p = *pp;
+    std::mt19937 rng(3);
+    std::uniform_real_distribution<double> u(0, 40);
+    std::vector<Vec3> pts;
+    for (int i = 0; i < 3000; ++i) {
+        const double x = u(rng), y = u(rng);
+        pts.push_back({x, y, 2 * std::sin(x / 6) + 0.05 * y});
+    }
+    PointBuffer b;
+    b.xyz = pts;
+    CloudSurfaceSpec spec;
+    spec.maxEdgeLength = 6;
+    const auto surf = surfaceFromPoints(b, spec);
+    EXPECT_EQ(surf.method, "Delaunay 2.5D");
+    ProjectEditor ed(p);
+    const Uuid layer = ed.addLayer("Surfaces", 0x00FF00);
+    const Uuid src = addSurfaceObject(p, surf.mesh, "terrain", layer, surf.method, Uuid{});
+    const auto tris = p.model().geometry.find(src)->mesh->triangles.size();
+    SurfaceToolOptions o;
+    o.targetTriangles = 500;
+    const auto dec = runSurfaceTool(*surfaceOf(p, src), SurfaceOperation::Decimate, o);
+    EXPECT_LE(dec.mesh.triangles.size(), 500u);
+    const Uuid did = addDerivedSurface(p, src, dec, "");
+    EXPECT_EQ(p.model().geometry.find(did)->attributes.at("source_object"), src.toString());
+    EXPECT_EQ(p.model().geometry.find(did)->attributes.at("method"), dec.method);
+    EXPECT_EQ(p.model().geometry.find(src)->mesh->triangles.size(), tris);
+    const auto cmp = runSurfaceTool(*surfaceOf(p, did), SurfaceOperation::Compare, {}, surfaceOf(p, src).get());
+    EXPECT_EQ(cmp.distances.measured, cmp.distances.vertices);
+    EXPECT_LT(std::abs(cmp.distances.mean), 0.05);
+    EXPECT_EQ(cmp.mesh.scalarName, "distance");
+    EXPECT_THROW(runSurfaceTool(*surfaceOf(p, src), SurfaceOperation::Compare, {}), ValidationError);
+    SurfaceToolOptions bad;
+    EXPECT_THROW(runSurfaceTool(*surfaceOf(p, src), SurfaceOperation::Decimate, bad), ValidationError);
+    CloudSurfaceSpec poisson;
+    poisson.method = CloudSurfaceSpec::Method::Poisson;
+    EXPECT_THROW(surfaceFromPoints(b, poisson), ValidationError); // no engine injected
+    std::size_t calls = 0;
+    const PoissonEngine fake{[&](const PointBuffer& in, int depth) {
+                                 ++calls;
+                                 EXPECT_TRUE(in.schema().normals); // normals estimated first
+                                 EXPECT_EQ(depth, 9);
+                                 return surf.mesh;
+                             },
+                             "Fake 1.0"};
+    EXPECT_EQ(surfaceFromPoints(b, poisson, fake).method, "Poisson depth=9 (Fake 1.0)");
+    EXPECT_EQ(calls, 1u);
 }

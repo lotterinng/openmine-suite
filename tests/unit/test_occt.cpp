@@ -43,11 +43,13 @@ TEST(Occt, RejectsInvalidInput) {
 #include "openmine/geometry/Profile.h"
 #include "openmine/geometry/Sweep.h"
 #include "openmine/mine_design/Development.h"
+#include "openmine/occt/Modelling.h"
 #include "openmine/occt/Solid.h"
 #include "openmine/occt/SolidObjects.h"
 #include "openmine/persistence/ProjectFile.h"
 #include "openmine/project/ProjectEditor.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -354,4 +356,46 @@ TEST(OcctSolid, MitredSweepOfASymmetricProfileIsAreaTimesCentrelineLength) {
     EXPECT_TRUE(info.closed);
     EXPECT_EQ(info.solids, 1);
     EXPECT_NEAR(info.volume, geometry::profileArea(tp) * geometry::curveLength(decline), 2e-3 * info.volume);
+}
+
+TEST(OcctModelling, ExtrusionHolesWindingAndPlanesRevolveLoftHealSection) {
+    auto pp = Project::createNew("Modelling", Date::fromYmd(2026, 11, 2));
+    Project& p = *pp;
+    ProjectEditor ed(p);
+    const Uuid layer = ed.addLayer("Solids", 0x00AAFF);
+    auto add = [&](GeometryObject g) {
+        g.layerId = layer;
+        return ed.addGeometry(std::move(g));
+    };
+    // A clockwise outer square with a counter-clockwise hole: the outer is still found first.
+    const Uuid outer = add(cad::makePolyline({{0, 0, 0}, {0, 10, 0}, {10, 10, 0}, {10, 0, 0}}, true));
+    const Uuid hole = add(cad::makePolyline({{3, 3, 0}, {7, 3, 0}, {7, 7, 0}, {3, 7, 0}}, true));
+    // A square inside in plan but 5 m higher is not in the outer's plane: it is not a hole.
+    const Uuid above = add(cad::makePolyline({{4, 4, 5}, {6, 4, 5}, {6, 6, 5}, {4, 6, 5}}, true));
+    occt::ExtrusionSpec spec;
+    spec.distance = 2;
+    const auto ids = occt::extrudeCurves(p, {hole, outer, above}, spec, "", layer);
+    ASSERT_EQ(ids.size(), 2u);
+    std::vector<double> vols;
+    for (const auto& id : ids) vols.push_back(occt::analyseSolidObject(p, id).volume);
+    std::sort(vols.begin(), vols.end());
+    EXPECT_NEAR(vols[0], 4 * 2, 1e-9);           // the raised square, extruded on its own
+    EXPECT_NEAR(vols[1], (100 - 16) * 2, 1e-9);  // the outer with its hole
+    p.commands().undo();                          // one undo step for the whole extrusion
+    EXPECT_FALSE(p.model().geometry.find(ids[0]));
+    // Invalid inputs are reported, not ignored.
+    const Uuid open = add(cad::makeLine({0, 0, 0}, {1, 0, 0}));
+    EXPECT_THROW(occt::extrudeCurves(p, {open}, spec, "", layer), ValidationError);
+    EXPECT_THROW(occt::revolveCurves(p, {outer}, {0, 0, 0}, {0, 0, 0}, 1.0, "", layer), ValidationError);
+    EXPECT_THROW(occt::loftCurves(p, {outer}, true, false, "", layer), ValidationError);
+    // Heal, fillet and section in place.
+    const Uuid block = occt::extrudeCurves(p, {outer}, spec, "block", layer).front();
+    const auto h = occt::healSolidObject(p, block);
+    EXPECT_TRUE(h.before.valid && h.after.valid);
+    const auto f = occt::filletSolidEdges(p, block, 0.2);
+    EXPECT_TRUE(f.valid);
+    EXPECT_LT(f.volume, 200.0);
+    const auto sec = occt::sectionObjects(p, {block}, {5, 5, 1}, {0, 0, 1}, layer);
+    EXPECT_EQ(sec.size(), 1u);
+    EXPECT_THROW(occt::sectionObjects(p, {block}, {5, 5, 50}, {0, 0, 1}, layer), ValidationError);
 }

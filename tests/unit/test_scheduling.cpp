@@ -4,6 +4,7 @@
 #include "openmine/scheduling/CalendarTime.h"
 #include "openmine/scheduling/Cpm.h"
 #include "openmine/scheduling/Levelling.h"
+#include "openmine/scheduling/ScenarioSchedule.h"
 #include "openmine/scheduling/Periods.h"
 #include "openmine/scheduling/Production.h"
 #include "openmine/scheduling/ScheduleTable.h"
@@ -311,6 +312,43 @@ TEST(Levelling, SharedJumboSerialisesHeadings) {
     EXPECT_NEAR(lv.makespanHours(), 16 * 24, 1e-9);
     EXPECT_EQ(rep.delayedActivities, 1);
     EXPECT_FALSE(resourceProfiles(in, lv)[0].overallocated);
+}
+
+TEST(Levelling, ScenarioScheduleLevelsOnlyWhenTheScenarioAsks) {
+    auto p = Project::createNew("Scenario levelling", Date::fromYmd(2026, 11, 2));
+    useCalendar(*p, "Continuous 7-day");
+    ProjectEditor ed(*p);
+    Resource jumbo;
+    jumbo.name = "Jumbo";
+    jumbo.capacity = 1;
+    const Uuid rj = ed.add(jumbo);
+    const Uuid a = task(ed, "A", 4), b = task(ed, "B", 4);
+    for (Uuid x : {a, b}) {
+        ActivityResourceAssignment asg;
+        asg.activityId = x;
+        asg.resourceId = rj;
+        asg.units = 1;
+        ed.add(asg);
+    }
+    Scenario none;
+    none.name = "As planned";
+    Scenario lev;
+    lev.name = "Levelled";
+    lev.levelling = LevellingMode::Heuristic;
+    const Uuid sn = ed.add(none), sl = ed.add(lev);
+    const auto base = calculateScenario(*p);
+    EXPECT_FALSE(base.levelling);
+    EXPECT_EQ(base.result.timings.at(a).es, base.result.timings.at(b).es); // both start at once: over-allocated
+    const auto asPlanned = calculateScenario(*p, scenarioById(*p, sn));
+    EXPECT_FALSE(asPlanned.levelling);
+    const auto levelled = calculateScenario(*p, scenarioById(*p, sl));
+    ASSERT_TRUE(levelled.levelling);
+    EXPECT_EQ(levelled.levelling->delayedActivities, 1);
+    EXPECT_NEAR(std::abs(levelled.result.timings.at(a).es - levelled.result.timings.at(b).es) / kDay, 4, 1e-9);
+    EXPECT_EQ(levelled.cpm.timings.at(a).es, base.result.timings.at(a).es); // the CPM is kept alongside
+    EXPECT_FALSE(resourceProfiles(levelled.input, levelled.result).front().overallocated);
+    EXPECT_EQ(scenarioById(*p, Uuid{}), nullptr);
+    EXPECT_THROW(scenarioById(*p, Uuid::generate()), ValidationError);
 }
 
 TEST(Levelling, ResourceCalendarRestrictsWork) {
