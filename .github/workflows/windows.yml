@@ -86,9 +86,20 @@ jobs:
         shell: pwsh
         run: |
           ./.github/scripts/logged.ps1 -Name configure -Grep 'error|failed|CMake Error' -Script {
-            cmake --preset windows-msvc `
-              -DOPENMINE_BUILD_PYTHON=OFF -DOPENMINE_WITH_OPEN3D=OFF -DOPENMINE_WITH_ORTOOLS=OFF `
-              -DOPENMINE_BUILD_BENCHMARKS=OFF
+            # Source downloads from hosts that rate-limit (HTTP 429) or fail transiently are retried;
+            # packages already built are kept, so a retry continues where the last attempt stopped.
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              cmake --preset windows-msvc `
+                -DOPENMINE_BUILD_PYTHON=OFF -DOPENMINE_WITH_OPEN3D=OFF -DOPENMINE_WITH_ORTOOLS=OFF `
+                -DOPENMINE_BUILD_BENCHMARKS=OFF 2>&1 | Tee-Object -Variable configureOutput
+              if ($LASTEXITCODE -eq 0) { break }
+              if ($attempt -lt 3 -and ($configureOutput -match 'Failed to download|status code (429|5\d\d)')) {
+                "download failure (attempt $attempt); retrying in 3 minutes"
+                Start-Sleep -Seconds 180
+                continue
+              }
+              throw "configure failed (exit $LASTEXITCODE)"
+            }
           }
 
       - name: Save vcpkg binary cache
