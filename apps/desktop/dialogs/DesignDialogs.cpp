@@ -32,6 +32,7 @@
 #include <QVBoxLayout>
 
 #include <cmath>
+#include <numbers>
 
 namespace openmine::app {
 
@@ -259,7 +260,7 @@ LayoutDialog::LayoutDialog(AppContext& ctx, ToolController& tools, Kind kind, Pr
             sx_->setValue(e.x);
             sy_->setValue(e.y);
             sz_->setValue(e.z);
-            double brg = std::atan2(e.x - p.x, e.y - p.y) * 180.0 / M_PI;
+            double brg = std::atan2(e.x - p.x, e.y - p.y) * 180.0 / std::numbers::pi;
             if (brg < 0) brg += 360;
             azimuth_->setValue(brg);
             if (targetZ_) targetZ_->setValue(e.z - 50);

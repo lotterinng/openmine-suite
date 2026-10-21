@@ -16,6 +16,7 @@
 #endif
 
 #include <QApplication>
+#include <QDir>
 #include <QCommandLineParser>
 #include <QFile>
 #include <QSettings>
@@ -48,7 +49,32 @@ int main(int argc, char* argv[]) {
     cli.addPositionalArgument("file", "Project (.openmine) to open, or data files to import", "[file…]");
     cli.process(app);
 
+    // PROJ (proj.db) and GDAL data installed with the application (Windows installer layout:
+    // <app>\share\proj, <app>\share\gdal); system installations keep their own settings.
+    {
+        const QDir appDir(QCoreApplication::applicationDirPath());
+        auto useData = [&](const char* var, const char* legacyVar, const QString& sub) {
+            if (!qEnvironmentVariableIsEmpty(var) || (legacyVar && !qEnvironmentVariableIsEmpty(legacyVar))) return;
+            for (const QString& c : {appDir.filePath("share/" + sub), appDir.filePath("../share/openmine/" + sub)})
+                if (QDir(c).exists()) {
+                    qputenv(var, QDir::toNativeSeparators(QDir(c).canonicalPath()).toLocal8Bit());
+                    return;
+                }
+        };
+        useData("PROJ_DATA", "PROJ_LIB", "proj");
+        useData("GDAL_DATA", nullptr, "gdal");
+    }
 #ifdef OPENMINE_APP_HAVE_PDAL
+    // PDAL loads format plugins (E57, …) from PDAL_DRIVER_PATH: point it at the plugins installed
+    // with the application unless the user set it.
+    if (qEnvironmentVariableIsEmpty("PDAL_DRIVER_PATH")) {
+        const QDir appDir(QCoreApplication::applicationDirPath());
+        QStringList dirs;
+        for (const QString& c : {appDir.filePath("../lib/pdal-plugins"), appDir.filePath("pdal-plugins")})
+            if (QDir(c).exists()) dirs << QDir::toNativeSeparators(QDir(c).canonicalPath());
+        // Only for installed layouts: otherwise PDAL keeps its own default search path.
+        if (!dirs.isEmpty()) qputenv("PDAL_DRIVER_PATH", dirs.join(QDir::listSeparator()).toLocal8Bit());
+    }
     // LAS/LAZ/E57/PLY point-cloud readers and writers.
     openmine::pdalio::registerFormats();
 #endif

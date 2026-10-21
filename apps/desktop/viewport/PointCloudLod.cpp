@@ -24,6 +24,7 @@
 #include <algorithm>
 #include <cmath>
 #include <queue>
+#include <numbers>
 
 namespace openmine::app {
 
@@ -387,7 +388,7 @@ bool PointCloudView::update(const Project& project, const coordinates::RenderOri
     const bool parallel = cam->GetParallelProjection() != 0;
     // Pixels per metre at unit distance (perspective) or everywhere (parallel).
     const double pxPerUnit = parallel ? vh / (2.0 * std::max(1e-9, cam->GetParallelScale()))
-                                      : vh / (2.0 * std::tan(cam->GetViewAngle() * M_PI / 360.0));
+                                      : vh / (2.0 * std::tan(cam->GetViewAngle() * std::numbers::pi / 360.0));
 
     std::set<Uuid> present;
     if (options_.enabled) {
@@ -554,7 +555,7 @@ std::optional<PointCloudView::Pick> PointCloudView::pick(double dx, double dy, d
     cam->GetPosition(camPos);
     const Vec3 eye{camPos[0], camPos[1], camPos[2]};
     auto worldPerPixel = [&](double depthFromEye) {
-        return parallel ? 2.0 * cam->GetParallelScale() / h : 2.0 * std::max(depthFromEye, 1e-6) * std::tan(cam->GetViewAngle() * M_PI / 360.0) / h;
+        return parallel ? 2.0 * cam->GetParallelScale() / h : 2.0 * std::max(depthFromEye, 1e-6) * std::tan(cam->GetViewAngle() * std::numbers::pi / 360.0) / h;
     };
     std::optional<Pick> best;
     for (const auto& [key, na] : actors_) {

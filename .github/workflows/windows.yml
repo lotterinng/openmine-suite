@@ -1,0 +1,151 @@
+name: Windows
+
+# Builds OpenMine Suite with MSVC + vcpkg, runs the tests and the GUI smoke test, and packages the
+# Windows installer (Inno Setup). The installer is uploaded as an artifact on every run and
+# attached to a GitHub release when a tag v* is pushed.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # releases for tags
+
+env:
+  VCPKG_TAG: 2024.11.16          # pinned vcpkg ports
+  VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-bincache
+
+jobs:
+  windows:
+    name: Windows — build, test, installer
+    runs-on: windows-2022
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Restore vcpkg binary cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ env.VCPKG_TAG }}-${{ hashFiles('vcpkg.json') }}-${{ github.run_id }}
+          restore-keys: |
+            vcpkg-${{ env.VCPKG_TAG }}-${{ hashFiles('vcpkg.json') }}-
+            vcpkg-${{ env.VCPKG_TAG }}-
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          git clone --depth 1 --branch $env:VCPKG_TAG https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+
+      - name: Configure (installs the vcpkg dependencies; hours on the first run)
+        shell: pwsh
+        run: >
+          cmake --preset windows-msvc
+          -DOPENMINE_BUILD_PYTHON=OFF -DOPENMINE_WITH_OPEN3D=OFF -DOPENMINE_WITH_ORTOOLS=OFF
+          -DOPENMINE_BUILD_BENCHMARKS=OFF
+
+      - name: Save vcpkg binary cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ env.VCPKG_TAG }}-${{ hashFiles('vcpkg.json') }}-${{ github.run_id }}
+
+      - name: Upload vcpkg logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vcpkg-logs
+          path: |
+            vcpkg/buildtrees/**/*.log
+            build/windows-msvc/vcpkg-manifest-install.log
+          if-no-files-found: ignore
+
+      - name: Build
+        run: cmake --build --preset windows-msvc
+
+      - name: Python tools for the validation tests
+        shell: pwsh
+        run: python -m pip install pytest numpy ezdxf trimesh omf mplstereonet pypdf pdfplumber openpyxl
+
+      - name: Tests (headless)
+        shell: pwsh
+        run: |
+          $vi = "${{ github.workspace }}\build\windows-msvc\vcpkg_installed\x64-windows"
+          $env:QT_PLUGIN_PATH = "$vi\Qt6\plugins"
+          $env:PROJ_DATA = "$vi\share\proj"
+          $env:GDAL_DATA = "$vi\share\gdal"
+          ctest --preset windows-msvc -LE gui --timeout 1800
+
+      - name: Mesa OpenGL for the smoke test (the runner has no GPU driver with OpenGL 3.2)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download -R pal1000/mesa-dist-win --pattern "*release-msvc.7z" --dir mesa
+          7z x (Get-ChildItem mesa\*.7z | Select-Object -First 1).FullName -omesa\x -y | Out-Null
+          Copy-Item mesa\x\x64\*.dll build\windows-msvc\bin\
+
+      - name: GUI smoke test
+        shell: pwsh
+        run: |
+          $vi = "${{ github.workspace }}\build\windows-msvc\vcpkg_installed\x64-windows"
+          $env:QT_PLUGIN_PATH = "$vi\Qt6\plugins"
+          $env:PROJ_DATA = "$vi\share\proj"
+          $env:GDAL_DATA = "$vi\share\gdal"
+          ctest --preset windows-msvc -L gui --timeout 1800
+
+      - name: Upload smoke-test log and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-gui-smoke
+          path: build/windows-msvc/gui-smoke/
+          if-no-files-found: ignore
+
+      - name: Stage the application (without the test-only Mesa DLLs)
+        shell: pwsh
+        run: |
+          Get-ChildItem mesa\x\x64\*.dll | ForEach-Object { Remove-Item -ErrorAction SilentlyContinue "build\windows-msvc\bin\$($_.Name)" }
+          ./packaging/windows/stage.ps1 -Build build/windows-msvc -Out stage
+
+      - name: Check the staged application starts
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath stage\openmine-desktop.exe -ArgumentList "--command-reference", "$env:RUNNER_TEMP\commands.md" -PassThru -Wait -Environment @{ QT_QPA_PLATFORM = "offscreen" }
+          if ($p.ExitCode -ne 0 -or -not (Test-Path "$env:RUNNER_TEMP\commands.md")) { throw "the staged application did not run (exit $($p.ExitCode))" }
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path CMakeLists.txt -Pattern 'project\(OpenMineSuite VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Qp "/DAppVersion=$version" "/DStage=$PWD\stage" "/DOutputDir=$PWD\dist" packaging\windows\openmine-suite.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+          Get-ChildItem dist
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenMine-Suite-Windows-Installer
+          path: dist/*.exe
+
+      - name: Attach installer to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.exe

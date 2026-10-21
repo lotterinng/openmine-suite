@@ -235,7 +235,7 @@ void Smoke::generateData() {
     const double step = 0.25;
     for (double ch = 0; ch <= kLen; ch += step) {
         const double zc = kZ0 + ch * kGrade / 100.0;
-        const double bulge = (ch > 40 && ch < 50) ? 0.4 * std::sin((ch - 40) / 10 * M_PI) : 0.0;
+        const double bulge = (ch > 40 && ch < 50) ? 0.4 * std::sin((ch - 40) / 10 * std::numbers::pi) : 0.0;
         for (double t = -2.5; t <= 2.5; t += step) {
             const int inten = 1000 + static_cast<int>(ch * 10) % 500;
             s << kE0 + ch + noise(rng) << ' ' << kN0 + t + noise(rng) << ' ' << zc + noise(rng) << ' ' << inten << '\n';            // floor
@@ -634,7 +634,7 @@ void Smoke::survey() {
                 const auto& r = m().conformanceResults.all().front();
                 // The bulge is 0.4·sin over 10 m on the 5 m wall: 2·0.4·10/π·5 = 12.73 m³. Scanner
                 // noise adds about as much overbreak as underbreak, so the net volume measures it.
-                const double net = r.overbreakVolume - r.underbreakVolume, expected = 2 * 0.4 * 10 / M_PI * 5;
+                const double net = r.overbreakVolume - r.underbreakVolume, expected = 2 * 0.4 * 10 / std::numbers::pi * 5;
                 check(std::abs(net - expected) < 2.5,
                       QStringLiteral("the north-wall bulge is measured: net overbreak %1 m³ (expected %2 m³; overbreak %3, underbreak %4 m³)")
                           .arg(net, 0, 'f', 2).arg(expected, 0, 'f', 2).arg(r.overbreakVolume, 0, 'f', 2).arg(r.underbreakVolume, 0, 'f', 2));
