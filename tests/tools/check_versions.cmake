@@ -1,0 +1,17 @@
+# Every place that states the version agrees with project(VERSION): vcpkg.json and the Doxyfile.
+#   cmake -DSOURCE=<repo root> -DVERSION=<x.y.z> -P check_versions.cmake
+file(READ "${SOURCE}/vcpkg.json" manifest)
+string(JSON vcpkg_version GET "${manifest}" "version-string")
+file(STRINGS "${SOURCE}/Doxyfile" doxy REGEX "^PROJECT_NUMBER")
+string(REGEX REPLACE "^PROJECT_NUMBER *= *" "" doxy "${doxy}")
+set(bad "")
+if(NOT vcpkg_version STREQUAL VERSION)
+    string(APPEND bad "vcpkg.json version-string is ${vcpkg_version}\n")
+endif()
+if(NOT doxy STREQUAL VERSION)
+    string(APPEND bad "Doxyfile PROJECT_NUMBER is ${doxy}\n")
+endif()
+if(bad)
+    message(FATAL_ERROR "The project version is ${VERSION} but:\n${bad}")
+endif()
+message(STATUS "version ${VERSION} is stated consistently")

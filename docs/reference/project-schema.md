@@ -11,6 +11,71 @@ from the DDL. Foreign keys list the referenced table and the `ON DELETE` action.
 
 49 tables: [`activity_dependency`](#activity_dependency), [`activity_design_link`](#activity_design_link), [`activity_resource_assignment`](#activity_resource_assignment), [`analysis_result`](#analysis_result), [`as_built_model`](#as_built_model), [`asset`](#asset), [`attachment`](#attachment), [`attribute_definition`](#attribute_definition), [`attribute_value`](#attribute_value), [`audit_log`](#audit_log), [`baseline_activity`](#baseline_activity), [`block_model`](#block_model), [`cad_layer`](#cad_layer), [`coordinate_reference_system`](#coordinate_reference_system), [`decline`](#decline), [`design_conformance_result`](#design_conformance_result), [`design_revision`](#design_revision), [`development_cycle`](#development_cycle), [`drillhole`](#drillhole), [`drillhole_interval`](#drillhole_interval), [`drillhole_survey`](#drillhole_survey), [`geological_object`](#geological_object), [`geometry_object`](#geometry_object), [`geotech_classification`](#geotech_classification), [`ground_support_class`](#ground_support_class), [`local_grid_definition`](#local_grid_definition), [`material`](#material), [`mine_development`](#mine_development), [`mine_level`](#mine_level), [`mining_block`](#mining_block), [`point_cloud_dataset`](#point_cloud_dataset), [`production_actual`](#production_actual), [`production_target`](#production_target), [`project_info`](#project_info), [`registration`](#registration), [`registration_pair`](#registration_pair), [`report`](#report), [`resource`](#resource), [`scenario`](#scenario), [`scenario_override`](#scenario_override), [`schedule_activity`](#schedule_activity), [`schedule_baseline`](#schedule_baseline), [`schema_migrations`](#schema_migrations), [`stope`](#stope), [`structural_measurement`](#structural_measurement), [`survey_control_point`](#survey_control_point), [`transformation_record`](#transformation_record), [`tunnel_profile`](#tunnel_profile), [`work_calendar`](#work_calendar).
 
+## Relationships
+
+Every foreign key: the child table on the left, the referenced table on the right, the column and its `ON DELETE` action as the label (`o|`: the reference may be null).
+
+```mermaid
+erDiagram
+  activity_dependency }o--|| schedule_activity : "predecessor_uuid (CASCADE)"
+  activity_dependency }o--|| schedule_activity : "successor_uuid (CASCADE)"
+  activity_design_link }o--|| schedule_activity : "activity_uuid (CASCADE)"
+  activity_resource_assignment }o--|| schedule_activity : "activity_uuid (CASCADE)"
+  activity_resource_assignment }o--|| resource : "resource_uuid (CASCADE)"
+  analysis_result }o--o| asset : "payload_asset_uuid (RESTRICT)"
+  as_built_model }o--o| mine_development : "development_uuid (SET NULL)"
+  as_built_model }o--|| geometry_object : "geometry_uuid (RESTRICT)"
+  as_built_model }o--o| registration : "registration_uuid (RESTRICT)"
+  as_built_model }o--o| point_cloud_dataset : "source_dataset_uuid (RESTRICT)"
+  attachment }o--|| asset : "asset_uuid (RESTRICT)"
+  baseline_activity }o--|| schedule_baseline : "baseline_uuid (CASCADE)"
+  block_model }o--o| asset : "data_asset_uuid (RESTRICT)"
+  coordinate_reference_system }o--o| local_grid_definition : "local_grid_uuid (RESTRICT)"
+  decline }o--o| tunnel_profile : "profile_uuid (RESTRICT)"
+  design_conformance_result }o--o| analysis_result : "analysis_result_uuid (RESTRICT)"
+  design_conformance_result }o--|| as_built_model : "as_built_uuid (CASCADE)"
+  design_conformance_result }o--|| mine_development : "development_uuid (CASCADE)"
+  drillhole_interval }o--|| drillhole : "drillhole_uuid (CASCADE)"
+  drillhole_survey }o--|| drillhole : "drillhole_uuid (CASCADE)"
+  geological_object }o--|| geometry_object : "geometry_uuid (RESTRICT)"
+  geological_object }o--o| material : "material_uuid (SET NULL)"
+  geometry_object }o--o| asset : "brep_asset_uuid (RESTRICT)"
+  geometry_object }o--|| cad_layer : "layer_uuid (RESTRICT)"
+  geometry_object }o--o| material : "material_uuid (SET NULL)"
+  geotech_classification }o--o| mine_development : "development_uuid (SET NULL)"
+  local_grid_definition }o--|| coordinate_reference_system : "base_crs_uuid (RESTRICT)"
+  mine_development }o--o| decline : "decline_uuid (SET NULL)"
+  mine_development }o--|| geometry_object : "geometry_uuid (RESTRICT)"
+  mine_development }o--o| mine_level : "level_uuid (SET NULL)"
+  mine_development }o--o| material : "material_uuid (SET NULL)"
+  mine_development }o--o| tunnel_profile : "profile_uuid (RESTRICT)"
+  mine_development }o--o| ground_support_class : "support_class_uuid (SET NULL)"
+  mining_block }o--|| geometry_object : "geometry_uuid (RESTRICT)"
+  mining_block }o--|| stope : "stope_uuid (RESTRICT)"
+  point_cloud_dataset }o--|| asset : "asset_uuid (RESTRICT)"
+  point_cloud_dataset }o--o| mine_development : "development_uuid (SET NULL)"
+  point_cloud_dataset }o--o| point_cloud_dataset : "parent_dataset_uuid (SET NULL)"
+  production_actual }o--|| schedule_activity : "activity_uuid (RESTRICT)"
+  production_actual }o--o| mine_development : "development_uuid (SET NULL)"
+  production_actual }o--o| point_cloud_dataset : "survey_dataset_uuid (SET NULL)"
+  project_info }o--o| work_calendar : "default_calendar_uuid (RESTRICT)"
+  project_info }o--o| coordinate_reference_system : "project_crs_uuid (RESTRICT)"
+  registration }o--|| point_cloud_dataset : "dataset_uuid (CASCADE)"
+  registration }o--o| point_cloud_dataset : "target_dataset_uuid (RESTRICT)"
+  registration_pair }o--|| registration : "registration_uuid (CASCADE)"
+  registration_pair }o--o| survey_control_point : "target_control_uuid (SET NULL)"
+  report }o--|| asset : "asset_uuid (RESTRICT)"
+  resource }o--o| work_calendar : "calendar_uuid (RESTRICT)"
+  scenario_override }o--|| scenario : "scenario_uuid (CASCADE)"
+  schedule_activity }o--o| work_calendar : "calendar_uuid (RESTRICT)"
+  schedule_activity }o--o| schedule_activity : "parent_uuid (RESTRICT)"
+  schedule_activity }o--o| development_cycle : "production_model_uuid (SET NULL)"
+  stope }o--|| geometry_object : "geometry_uuid (RESTRICT)"
+  stope }o--o| mine_level : "level_uuid (SET NULL)"
+  stope }o--o| material : "material_uuid (SET NULL)"
+  structural_measurement }o--o| mine_development : "development_uuid (SET NULL)"
+```
+
 ## activity_dependency
 
 | Column | Type | Null | Key / reference |

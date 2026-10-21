@@ -1,96 +1,101 @@
-# Database schema and ERD
+# Database schema
 
-The authoritative DDL is `kSchemaV1` in `core/src/persistence/ProjectFile.cpp`
-(also returned by `openmine::persistence::schemaSql()`).
+The project file is an SQLite database of **schema version 2** (49 tables). The complete,
+column-level reference with every constraint, index and a generated relationship diagram is
+[reference/project-schema.md](../reference/project-schema.md); it is produced from a file written
+by the build and checked by `ctest -L docs`, so it cannot drift from the code. This page explains
+the design rules behind it. DDL: `core/src/persistence/SchemaV2.cpp` (`persistence::schemaSql()`);
+the schema-1 reader for migration: `core/src/persistence/LegacyV1.cpp`.
 
-## Implemented schema (version 1)
+## Tables by domain
 
-```mermaid
-erDiagram
-  project_info ||--o| work_calendar : "default_calendar (RESTRICT)"
-  cad_layer ||--o{ geometry_object : "layer_uuid (RESTRICT)"
-  geometry_object ||--o| mine_development : "geometry_uuid UNIQUE (RESTRICT)"
-  work_calendar ||--o{ calendar_exception : "CASCADE"
-  work_calendar ||--o{ schedule_activity : "calendar_uuid (RESTRICT)"
-  schedule_activity ||--o{ schedule_activity : "parent_uuid WBS (RESTRICT)"
-  schedule_activity ||--o{ activity_dependency : "predecessor (CASCADE)"
-  schedule_activity ||--o{ activity_dependency : "successor (CASCADE)"
-  schedule_activity ||--o{ activity_design_link : "CASCADE"
-  mine_development ||--o{ activity_design_link : "CASCADE"
-  schedule_baseline ||--o{ baseline_activity : "CASCADE"
-  attribute_definition ||..o{ attribute_value : "entity_type + key (validated in code)"
-  geometry_object ||..o{ attribute_value : "entity_uuid (polymorphic, checked on save/load)"
-  mine_development ||..o{ attribute_value : "entity_uuid"
-```
+| Domain | Tables |
+|---|---|
+| Project | `project_info`, `schema_migrations`, `audit_log`, `asset`, `attachment`, `analysis_result`, `report`, `material`, `attribute_definition`, `attribute_value` |
+| Coordinates | `coordinate_reference_system`, `local_grid_definition`, `transformation_record` |
+| CAD | `cad_layer`, `geometry_object` |
+| Survey | `survey_control_point`, `point_cloud_dataset`, `registration`, `registration_pair`, `as_built_model`, `design_conformance_result` |
+| Mine design | `tunnel_profile`, `mine_level`, `decline`, `ground_support_class`, `mine_development`, `stope`, `mining_block`, `design_revision` |
+| Scheduling | `work_calendar`, `schedule_activity`, `activity_dependency`, `activity_design_link`, `resource`, `activity_resource_assignment`, `development_cycle`, `production_actual`, `production_target`, `schedule_baseline`, `baseline_activity`, `scenario`, `scenario_override` |
+| Geology / geotechnical | `drillhole`, `drillhole_survey`, `drillhole_interval`, `geological_object`, `block_model`, `structural_measurement`, `geotech_classification` |
 
-| Table | Primary key | Notable constraints / indices |
+## Design rules
+
+* **Identifiers.** Every entity row has a `uuid` (v4, text) primary key that never changes —
+  across undo/redo, save/load, repository checkout and plugin edits. Child rows (calendar
+  exceptions, drillhole intervals, scenario overrides, baseline rows, registration pairs) are keyed
+  by their parent's uuid plus a sequence or natural key.
+* **Metadata.** Entity tables carry `created_at`, `modified_at` (UTC ISO-8601) and `revision`
+  (incremented on every committed change; the shared repository uses it for optimistic
+  concurrency).
+* **Order.** Tables whose order is meaningful (layers, activities, dependencies) store `sort_index`.
+* **Geometry.** Vertices are packed little-endian float64 triples in a BLOB with a `CHECK` on its
+  length; meshes likewise (vertices + uint32 triangles). B-reps, octrees, block-model arrays,
+  report files and attachments live in the asset sidecar, referenced by `asset_uuid`.
+* **Enumerations** are stored as text and constrained with `CHECK (… IN (…))`.
+* **Explicit relationships.** 57 foreign keys with explicit `ON DELETE` actions.
+  `Persistence.SchemaHasExplicitRelationships` checks that every `*_uuid` column is a foreign key
+  or one of the documented exceptions below (polymorphic references, the baseline snapshot, the
+  audit log, and `current_revision_uuid` of headings and stopes, which would otherwise form a
+  cycle with `design_revision`).
+* **Polymorphic references** (an entity of any type) cannot be SQL foreign keys; they store the
+  type next to the id and are checked by `persistence::checkModel` on save and load:
+  `attribute_value(entity_uuid, entity_type)`, `activity_design_link(design_uuid, design_type)`,
+  `attachment(entity_uuid, entity_type)`, `design_revision(entity_uuid, entity_type)`,
+  `scenario_override(entity_uuid)`.
+* **Snapshots are not references.** `baseline_activity` has no foreign key to
+  `schedule_activity`: a baseline outlives deleted activities. Approved baselines and approved
+  design revisions cannot be deleted; transformation records cannot be deleted (audit trail).
+
+## Deletion policies
+
+SQL actions are the last line of defence; deletions are performed by `ProjectEditor`, which
+applies the policy as one undoable command and explains refusals.
+
+| Deleting | Effect | Policy |
 |---|---|---|
-| `schema_migrations` | `version` | one row per applied migration |
-| `project_info` | `id = 1` | `linear_unit = 'metre'`; CRS columns are user-declared |
-| `cad_layer` | `uuid` | `name UNIQUE` |
-| `geometry_object` | `uuid` | type CHECK; `length(vertices) = vertex_count*24`; `ix_geometry_layer` |
-| `attribute_definition` | `uuid` | `UNIQUE(entity_type, key)`; value_type CHECK |
-| `attribute_value` | `(entity_uuid, key)` | polymorphic; orphan check in `verify()` |
-| `work_calendar` | `uuid` | weekday mask 1–127; hours 0–24 |
-| `calendar_exception` | `(calendar_uuid, date)` | CASCADE |
-| `mine_development` | `uuid` | `heading_id UNIQUE`, `geometry_uuid UNIQUE`, width/height > 0 |
-| `schedule_activity` | `uuid` | kind CHECK; duration ≥ 0; `ix_activity_parent` |
-| `activity_dependency` | `uuid` | `UNIQUE(pred, succ)`, `pred <> succ`, type CHECK; `ix_dependency_successor` |
-| `activity_design_link` | `(activity_uuid, development_uuid)` | CASCADE both sides; `ix_link_development` |
-| `schedule_baseline` | `uuid` | `name UNIQUE` |
-| `baseline_activity` | `(baseline_uuid, activity_uuid)` | **no FK to activity** — baselines outlive deleted activities |
-| `asset` | `uuid` | `relative_path UNIQUE`, SHA-256, size (sidecar binaries; unused until Phase 3) |
-| `audit_log` | `seq AUTOINCREMENT` | append-only |
+| A layer | refused while it contains objects or is the last layer | RESTRICT |
+| A centreline / geometry | refused while a heading, stope, block, geological object or as-built uses it | RESTRICT |
+| A heading | design links removed, activities kept; actuals, as-builts, structures, classifications and point clouds lose the link; conformance results deleted; revisions kept | CASCADE / SET NULL |
+| An activity | refused with WBS children or recorded actuals; dependencies, resource assignments, design links and scenario overrides of it removed | RESTRICT / CASCADE |
+| A calendar | refused while it is the project default or used by an activity or resource | RESTRICT |
+| A point-cloud dataset | refused while it is the source of an as-built or an ICP target; its registrations removed | RESTRICT / CASCADE |
+| An applied registration | refused (transformation history) | RESTRICT |
+| A stope | refused while it has mining blocks | RESTRICT |
+| A material, support class, level, decline | references set to null | SET NULL |
+| An asset | refused while any object uses it; unused files are removed by *Compact project* | RESTRICT |
+| Any entity with attachments | its attachments are deleted with it (restored by undo) | CASCADE |
 
-### Deletion policies
+## Transaction boundaries
 
-| Parent → child | Policy | Enforced in |
-|---|---|---|
-| layer → geometry | RESTRICT | SQL FK + `ProjectEditor` |
-| geometry → development | RESTRICT ("delete the heading first") | SQL FK + `ProjectEditor::removeGeometry` |
-| development → links | CASCADE | SQL + `removeDevelopment` macro (undoable) |
-| activity → dependencies, links | CASCADE | SQL + `removeActivity` macro (undoable) |
-| activity → WBS children | RESTRICT | SQL + `removeActivity` |
-| baseline → baseline rows | CASCADE | SQL |
-| activity → baseline rows | none (snapshot) | by design |
+* **In memory:** one user action = one `Command` or `MacroCommand` = one undo step. A macro rolls
+  back its executed children if any child throws; an exception inside `CommandStack::MacroScope`
+  rolls back the whole scope.
+* **On disk:** one save = one SQLite transaction writing a fresh database file
+  (`defer_foreign_keys = ON`), followed by `integrity_check`, `foreign_key_check` and the model's
+  polymorphic checks, then an atomic rename (see [project-format.md](project-format.md)).
+* **Shared repository:** one publish = one PostgreSQL transaction creating a revision; a merge
+  that would leave dangling references is rolled back (`Fixture.InconsistentMergesAreRolledBack`).
 
-### Transaction boundaries
+## Audit
 
-* **In memory:** one user action = one `Command` (or `MacroCommand`) = one undo step. Macros
-  roll back already-executed children if any child throws.
-* **On disk:** one save = one SQLite transaction writing a fresh database file with
-  `defer_foreign_keys = ON`, verified, then atomically renamed into place.
+`audit_log` records timestamp (UTC), user, action (`Create`, `Modify`, `Delete`, `Link`,
+`Unlink`, `Undo`, `Redo`, `Recalculate`, `Migrate`, `Compact`, …), entity type, entity uuid and a
+readable detail. It is append-only: undo adds an entry rather than removing one
+(`Commands.AuditLogIsAppendOnly`).
 
-### Audit requirements
+## Migrations
 
-`audit_log` records timestamp (UTC), OS user, action (`Create|Modify|Delete|Link|Unlink|Undo|Redo|
-Recalculate|Cancel|Migrate`), entity type, entity UUID and a human-readable detail. It is
-append-only: undo adds an entry rather than removing one.
+A file of an older schema is read by that schema's reader and written in the current schema on
+the next save (the original file is never modified on load). This "read old, write current"
+approach means migration code cannot diverge from the current writer.
+`Persistence.MigratesSchemaVersion1Projects` builds a schema-1 file with the v0.1 DDL and checks
+the migrated model. A newer schema is refused with the supported version in the message.
 
-### Migrations
+## PostgreSQL / PostGIS
 
-`kMigrations[]` is an ordered list; entry *n* upgrades schema *n-1 → n* inside a transaction and
-records itself in `schema_migrations`. Loading an older file migrates a temporary copy;
-the user's file is only rewritten on the next save. Loading a newer schema is refused.
-
-## Planned schema (v2+), from the master specification
-
-| Entity | Key relationships | Phase |
-|---|---|---|
-| `coordinate_reference_system` | project → CRS; transformation metadata (PROJ pipeline, grid files) | 3 |
-| `survey_control_point` | CRS; observation metadata, accuracy class | 3 |
-| `point_cloud_dataset` | `asset` (tiles in sidecar), CRS, acquisition metadata | 3 |
-| `registration` | point_cloud_dataset → transform, residuals, method (pair/control/ICP) | 3 |
-| `as_built_geometry` | registration → mesh `asset` | 6 |
-| `design_conformance_result` | as_built × mine_development, over/underbreak, sections | 6 |
-| `mine_level`, `decline`, `stope` | typed design objects referencing geometry | 6 |
-| `geological_object` | surfaces, solids, drillholes | 6 |
-| `resource`, `resource_calendar`, `activity_resource_assignment` | resources ↔ activities | 6 |
-| `production_actual` | dated actuals per development/activity (replaces scalar actual quantity) | 5 |
-| `design_revision` | development revisions with geometry snapshots | 5 |
-| `analysis_result`, `attachment` | generic results/files via `asset` | 6 |
-
-PostgreSQL/PostGIS: the same logical schema with `uuid`, `geometry(LineStringZ, srid)` and
-`timestamptz` types, row-level audit triggers and optimistic locking by `revision`. The
-`ProjectModel` ↔ storage boundary (`saveProject`/`loadProject`) is where a `ProjectRepository`
-interface will be introduced for the enterprise backend.
+The shared repository (`integrations/postgres`) stores the same entities as **documents** (the
+lossless JSON form of each row and its child rows) per project revision, with a PostGIS
+`geometry` column (GiST-indexed) holding each spatial entity's footprint for spatial queries, an
+asset table keyed by SHA-256, revision history and advisory locks. Its tables are created on first
+use (`Repository(…, initialise=True)`) and PostGIS is enabled if the user may do so.

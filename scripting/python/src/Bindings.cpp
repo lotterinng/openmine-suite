@@ -1693,6 +1693,11 @@ void defineBindings(py::module_& m) {
          }
          return survey::commitDataset(s.get(), std::move(prep), "Import " + file.filename().string()).toString();
      }, py::arg("file"), py::arg("name") = "", py::arg("source_crs") = "", py::arg("progress") = nullptr)
+        .def("point_cloud_crs_warning", [](PyProject& s, const std::string& id) -> std::optional<std::string> {
+            const auto* d = s.get().model().pointClouds.find(uuidArg(id));
+            if (!d) throw py::key_error("No point cloud " + id);
+            return survey::crsMismatch(s.get(), *d);
+        })
         .def("point_cloud_points", [](PyProject& s, const std::string& id, std::optional<std::array<double, 6>> box) {
             std::optional<BoundingBox> b;
             if (box) b = BoundingBox{{(*box)[0], (*box)[1], (*box)[2]}, {(*box)[3], (*box)[4], (*box)[5]}};

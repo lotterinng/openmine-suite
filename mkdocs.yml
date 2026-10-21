@@ -1,0 +1,67 @@
+# Documentation site. Build with: python3 docs/tools/build_site.py  (stages docs/ and the
+# top-level documents into build/docs-site/src, then runs MkDocs in strict mode).
+site_name: OpenMine Suite
+site_description: Open-source integrated mine survey, CAD/mine design and scheduling
+docs_dir: build/docs-site/src
+site_dir: build/docs-site/html
+use_directory_urls: false
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      toggle: {icon: material/weather-sunny, name: Light}
+    - scheme: default
+      toggle: {icon: material/weather-night, name: Dark}
+  features: [navigation.sections, navigation.top, search.highlight, content.code.copy]
+markdown_extensions:
+  - tables
+  - toc: {permalink: true}
+  - admonition
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight
+validation:
+  links:
+    not_found: warn
+    anchors: warn
+    absolute_links: warn
+    unrecognized_links: warn
+nav:
+  - Home: index.md
+  - Using OpenMine:
+      - Desktop user guide: user-guide.md
+      - Python guide: python.md
+      - Command console: console-commands.md
+      - Plugins: plugins.md
+  - Architecture:
+      - Overview: ARCHITECTURE.md
+      - Documents: architecture/index.md
+      - Scheduling engine: architecture/scheduling.md
+      - As-built and conformance: architecture/conformance.md
+      - Project file format: architecture/project-format.md
+      - Database schema: architecture/database-schema.md
+      - Coordinates: architecture/coordinates.md
+      - Decisions:
+          - Index: adr/index.md
+          - 0001 Toolkit-independent core: adr/0001-toolkit-independent-core.md
+          - 0002 SQLite project container: adr/0002-sqlite-project-container.md
+          - 0003 VTK built against Qt 6 (superseded): adr/0003-build-vtk-against-qt6.md
+          - 0004 Design changes flag, never overwrite: adr/0004-design-change-flags-not-overwrites.md
+          - 0005 Own Qt 6 / VTK adapter: adr/0005-own-qt6-vtk-adapter.md
+  - Reference:
+      - Python API: reference/python-api.md
+      - Project schema: reference/project-schema.md
+      - Point-cloud octree format: formats/octree.md
+  - Project:
+      - Implementation status: IMPLEMENTATION_STATUS.md
+      - Roadmap: ROADMAP.md
+      - Requirements: requirements.md
+      - Development: DEVELOPMENT.md
+      - Contributing: CONTRIBUTING.md
+      - Security: SECURITY.md
+      - Code of conduct: CODE_OF_CONDUCT.md
+      - Licensing: licensing.md
+      - Third-party notices: THIRD_PARTY_NOTICES.md

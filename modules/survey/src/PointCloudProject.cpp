@@ -167,6 +167,63 @@ PreparedDataset prepareFromPoints(Project& p, const PointBuffer& points, const s
     return out;
 }
 
+std::string authorityOf(const std::string& def) {
+    std::string d = def;
+    // Trim.
+    while (!d.empty() && std::isspace(static_cast<unsigned char>(d.back()))) d.pop_back();
+    while (!d.empty() && std::isspace(static_cast<unsigned char>(d.front()))) d.erase(d.begin());
+    auto upper = [](std::string x) {
+        for (auto& c : x) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        return x;
+    };
+    if (d.find('[') == std::string::npos) {
+        const auto colon = d.find(':');
+        return colon == std::string::npos ? std::string() : upper(d);
+    }
+    // WKT: the identifier of the outermost object is the last AUTHORITY/ID at nesting depth 1.
+    int depth = 0;
+    std::size_t lastAt = std::string::npos;
+    for (std::size_t i = 0; i < d.size(); ++i) {
+        if (d[i] == '[' || d[i] == '(') ++depth;
+        else if (d[i] == ']' || d[i] == ')') --depth;
+        else if (depth == 1 && (d.compare(i, 10, "AUTHORITY[") == 0 || d.compare(i, 3, "ID[") == 0) && (i == 0 || !std::isalpha(static_cast<unsigned char>(d[i - 1]))))
+            lastAt = i;
+    }
+    if (lastAt == std::string::npos) return {};
+    const auto open = d.find('[', lastAt), close = d.find(']', lastAt);
+    if (open == std::string::npos || close == std::string::npos) return {};
+    std::string inside = d.substr(open + 1, close - open - 1); // "EPSG","2051"  or  "EPSG",2051
+    std::string auth, code;
+    const auto comma = inside.find(',');
+    if (comma == std::string::npos) return {};
+    auto clean = [](std::string x) {
+        std::string out;
+        for (char c : x)
+            if (c != '"' && !std::isspace(static_cast<unsigned char>(c))) out += c;
+        return out;
+    };
+    auth = clean(inside.substr(0, comma));
+    code = clean(inside.substr(comma + 1));
+    if (const auto c2 = code.find(','); c2 != std::string::npos) code = code.substr(0, c2); // ID["EPSG",2051,URI[…]]
+    return auth.empty() || code.empty() ? std::string() : upper(auth + ":" + code);
+}
+
+std::optional<std::string> crsMismatch(const Project& p, const PointCloudDataset& d) {
+    if (d.sourceCrs.empty()) return std::nullopt;
+    const std::string declared = authorityOf(d.sourceCrs);
+    const auto* pc = p.model().projectCrs();
+    const std::string label = declared.empty() ? std::string("a CRS without an authority code") : declared;
+    if (!pc || pc->authorityCode.empty())
+        return "'" + d.name + "' declares " + label + " but the project CRS is not declared; the coordinates were stored as they are";
+    if (declared.empty())
+        return "'" + d.name + "' declares " + label + "; check it matches the project CRS (" + pc->authorityCode + ") — coordinates were not transformed";
+    std::string projectCode = pc->authorityCode;
+    for (auto& c : projectCode) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    if (declared == projectCode) return std::nullopt;
+    return "'" + d.name + "' is in " + declared + " but the project CRS is " + pc->authorityCode +
+           "; coordinates were not transformed (Tools ▸ Transform objects to another CRS, or register the scan)";
+}
+
 Uuid commitDataset(Project& p, PreparedDataset prepared, const std::string& text) {
     ProjectEditor ed(p);
     CommandStack::MacroScope macro(p.commands(), text);

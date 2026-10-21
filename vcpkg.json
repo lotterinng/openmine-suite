@@ -1,14 +1,43 @@
 {
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
   "name": "openmine-suite",
   "version-string": "0.4.0",
   "description": "Open-source integrated mine survey, design and scheduling",
   "license": "Apache-2.0",
   "dependencies": [
     "sqlite3",
-    { "name": "qtbase", "default-features": false, "features": ["widgets", "opengl", "gui"] },
-    { "name": "vtk", "default-features": false, "features": ["qt", "opengl"] },
-    { "name": "opencascade", "default-features": false },
-    "gtest",
+    "eigen3",
+    "nlohmann-json",
+    "nanoflann",
+    "zlib",
+    "libxlsxwriter",
+    "clipper2",
+    { "name": "qtbase", "default-features": false, "features": ["widgets", "opengl", "gui", "png", "freetype"] },
+    "qtsvg",
+    { "name": "vtk", "default-features": false, "features": ["opengl"] },
     "pybind11"
-  ]
+  ],
+  "default-features": ["solids", "pointclouds", "gis", "repository", "tests"],
+  "features": {
+    "solids": {
+      "description": "Open CASCADE solid modelling, STEP/IGES",
+      "dependencies": [{ "name": "opencascade", "default-features": false }]
+    },
+    "pointclouds": {
+      "description": "PDAL point-cloud I/O (LAS/LAZ/E57/PLY), SMRF and Poisson",
+      "dependencies": [{ "name": "pdal", "features": ["e57"] }]
+    },
+    "gis": {
+      "description": "PROJ coordinate transformations and GDAL raster/vector exchange (no GPL drivers)",
+      "dependencies": ["proj", { "name": "gdal", "default-features": false, "features": ["geos", "sqlite3"] }]
+    },
+    "repository": {
+      "description": "PostgreSQL/PostGIS shared repository client",
+      "dependencies": ["libpq"]
+    },
+    "tests": {
+      "description": "GoogleTest",
+      "dependencies": ["gtest"]
+    }
+  }
 }

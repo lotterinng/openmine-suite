@@ -33,7 +33,7 @@ public:
 
     int addSink(Sink s);
     void removeSink(int token);
-    /// Appends to `file`; rotates to file.1 … file.<keep> when it exceeds maxBytes.
+    /// Appends to `file`; rotates to `file.1` … `file.<keep>` when it exceeds maxBytes.
     int addFileSink(const std::filesystem::path& file, std::size_t maxBytes = 5u << 20, int keep = 3);
     int addStderrSink(Level minimum = Level::Warning);
 

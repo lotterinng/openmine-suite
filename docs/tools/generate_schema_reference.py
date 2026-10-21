@@ -33,6 +33,7 @@ def describe(db: sqlite3.Connection) -> str:
     out = [HEADER.format(version=openmine.SCHEMA_VERSION)]
     tables = [r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
     out.append(f"{len(tables)} tables: " + ", ".join(f"[`{t}`](#{t})" for t in tables) + ".\n")
+    out.append(_er_diagram(db, tables))
     for t in tables:
         out.append(f"\n## {t}\n\n")
         ddl = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone()[0]
@@ -53,6 +54,22 @@ def describe(db: sqlite3.Connection) -> str:
         if idx:
             out.append("\nIndexes: " + "; ".join(f"`{i}`" for i in idx) + "\n")
     return "".join(out)
+
+
+def _er_diagram(db: sqlite3.Connection, tables) -> str:
+    """Mermaid ER diagram of every foreign key (child }o-- parent, labelled column and ON DELETE)."""
+    lines = ["\n## Relationships\n\n",
+             "Every foreign key: the child table on the left, the referenced table on the right, the "
+             "column and its `ON DELETE` action as the label (`o|`: the reference may be null).\n\n",
+             "```mermaid\nerDiagram\n"]
+    for t in tables:
+        nullable = {name: not notnull for _, name, _, notnull, _, _ in db.execute(f"PRAGMA table_info('{t}')")}
+        for row in sorted(db.execute(f"PRAGMA foreign_key_list('{t}')"), key=lambda r: r[3]):
+            parent, column, action = row[2], row[3], row[6]
+            card = "o|" if nullable.get(column, False) else "||"
+            lines.append(f'  {t} }}o--{card} {parent} : "{column} ({action})"\n')
+    lines.append("```\n")
+    return "".join(lines)
 
 
 def _constraints(ddl: str):

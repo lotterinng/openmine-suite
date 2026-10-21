@@ -266,3 +266,32 @@ TEST(SurveyProject, ImportTransformDeriveExport) {
     EXPECT_THROW(exportDataset(p, id, dir / "out.unknown"), PointCloudError);
     fs::remove_all(dir);
 }
+
+TEST(SurveyProject, DeclaredCrsIsComparedNeverApplied) {
+    EXPECT_EQ(authorityOf("epsg:2051"), "EPSG:2051");
+    EXPECT_EQ(authorityOf(R"(PROJCS["Hartebeesthoek94 / Lo25",GEOGCS["Hartebeesthoek94",DATUM["Hartebeesthoek94",AUTHORITY["EPSG","6148"]],AUTHORITY["EPSG","4148"]],UNIT["metre",1],AUTHORITY["EPSG","2051"]])"),
+              "EPSG:2051");
+    EXPECT_EQ(authorityOf(R"(PROJCRS["WGS 84 / UTM zone 35S",BASEGEOGCRS["WGS 84",ID["EPSG",4326]],CS[Cartesian,2],ID["EPSG",32735]])"), "EPSG:32735");
+    EXPECT_EQ(authorityOf(R"(LOCAL_CS["mine grid"])"), "");
+    EXPECT_EQ(authorityOf("+proj=tmerc +lon_0=25"), "");
+
+    auto p = Project::createNew("CRS", Date::fromYmd(2026, 11, 2));
+    PointCloudDataset d;
+    d.name = "scan";
+    EXPECT_FALSE(crsMismatch(*p, d)); // declares nothing
+    d.sourceCrs = "EPSG:2051";
+    ASSERT_TRUE(crsMismatch(*p, d));  // the project CRS is not declared
+    EXPECT_NE(crsMismatch(*p, d)->find("not declared"), std::string::npos);
+    CoordinateReferenceSystem lo25;
+    lo25.name = "Hartebeesthoek94 / Lo25";
+    lo25.authorityCode = "EPSG:2051";
+    lo25.kind = CrsKind::Projected;
+    ProjectEditor ed(*p);
+    ProjectInfo info = p->model().info;
+    info.projectCrsId = ed.add(lo25);
+    ed.setProjectInfo(info);
+    EXPECT_FALSE(crsMismatch(*p, d));
+    d.sourceCrs = "EPSG:32735";
+    ASSERT_TRUE(crsMismatch(*p, d));
+    EXPECT_NE(crsMismatch(*p, d)->find("not transformed"), std::string::npos);
+}

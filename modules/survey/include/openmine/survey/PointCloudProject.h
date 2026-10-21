@@ -12,6 +12,7 @@
 #include "openmine/project/Project.h"
 
 #include <filesystem>
+#include <optional>
 #include <functional>
 #include <memory>
 
@@ -52,6 +53,14 @@ PreparedDataset prepareFromPoints(Project& project, const PointBuffer& points, c
                                   const std::string& sourceFormat, jobs::Progress& progress = jobs::nullProgress());
 /// Adds the asset and dataset (UI thread, one undo step). Returns the dataset id.
 Uuid commitDataset(Project& project, PreparedDataset prepared, const std::string& commandText = "Import point cloud");
+/// A warning when a dataset's declared CRS (an authority code such as "EPSG:2051", or WKT whose
+/// outermost AUTHORITY/ID names one) is not the project CRS, or the project has none. Imports
+/// never transform coordinates implicitly, so the user must be told. nullopt when they agree or
+/// the dataset declares nothing.
+std::optional<std::string> crsMismatch(const Project& project, const PointCloudDataset& dataset);
+/// "EPSG:2051" from a code or from the outermost AUTHORITY["EPSG","2051"] / ID["EPSG",2051] of WKT.
+std::string authorityOf(const std::string& crsDefinition);
+
 /// prepareImport + commitDataset.
 Uuid importPointCloud(Project& project, const std::filesystem::path& file, const ImportOptions& options = {},
                       jobs::Progress& progress = jobs::nullProgress());

@@ -124,3 +124,25 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME report_validation COMMAND ${Python3_EXECUTABLE} -m pytest -q -p no:cacheprovider --basetemp=${CMAKE_CURRENT_BINARY_DIR}/pytest-test_reports ${CMAKE_CURRENT_SOURCE_DIR}/integration/test_reports.py)
     set_tests_properties(report_validation PROPERTIES ENVIRONMENT "OPENMINE_REPORT_TOOL=$<TARGET_FILE:report_tool>" LABELS integration)
 endif()
+
+add_test(NAME version_strings_agree
+         COMMAND ${CMAKE_COMMAND} -DSOURCE=${CMAKE_SOURCE_DIR} -DVERSION=${PROJECT_VERSION} -P ${CMAKE_SOURCE_DIR}/tests/tools/check_versions.cmake)
+set_tests_properties(version_strings_agree PROPERTIES LABELS "docs")
+
+# Documentation builds: the C++ API reference (Doxygen) without warnings, and the MkDocs site in
+# strict mode (every link and page resolves). Each runs when its tool is installed.
+find_program(DOXYGEN_EXECUTABLE doxygen)
+if(DOXYGEN_EXECUTABLE)
+    add_test(NAME doxygen_reference_builds
+             COMMAND ${CMAKE_COMMAND} -DDOXYGEN=${DOXYGEN_EXECUTABLE} -DSOURCE=${CMAKE_SOURCE_DIR} -DVERSION=${PROJECT_VERSION}
+                     -P ${CMAKE_SOURCE_DIR}/tests/tools/check_doxygen.cmake)
+    set_tests_properties(doxygen_reference_builds PROPERTIES LABELS "docs" RUN_SERIAL TRUE)
+endif()
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    execute_process(COMMAND ${Python3_EXECUTABLE} -c "import mkdocs, material" RESULT_VARIABLE _mkdocs_rc OUTPUT_QUIET ERROR_QUIET)
+    if(_mkdocs_rc EQUAL 0)
+        add_test(NAME docs_site_builds COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/docs/tools/build_site.py)
+        set_tests_properties(docs_site_builds PROPERTIES LABELS "docs" RUN_SERIAL TRUE)
+    endif()
+endif()

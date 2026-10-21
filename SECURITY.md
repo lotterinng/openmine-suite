@@ -18,4 +18,8 @@ We aim to acknowledge reports within 5 working days.
   care, as you would any document format.
 * Python scripts and plugins run with the user's permissions. Only run scripts and plugins you
   trust.
-* The enterprise PostgreSQL backend (planned) will require TLS and least-privilege roles.
+* Native plugins run in-process with full access; the host protects the project model (validated,
+  undoable edits, exceptions caught at the boundary) but cannot sandbox native code. Disable plugins
+  you do not trust in Settings ▸ Preferences ▸ Plugins.
+* The PostgreSQL shared repository uses libpq connection strings: use TLS (`sslmode=verify-full`)
+  and least-privilege roles; repository users need no superuser rights once PostGIS is enabled.

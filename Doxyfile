@@ -1,0 +1,57 @@
+# C++ API reference. Run from the repository root:  doxygen Doxyfile  → build/doxygen/html/index.html
+PROJECT_NAME           = "OpenMine Suite"
+PROJECT_NUMBER         = 0.4.0
+PROJECT_BRIEF          = "Open-source integrated mine survey, CAD/mine design and scheduling"
+OUTPUT_DIRECTORY       = build/doxygen
+INPUT                  = docs/doxygen-main.md \
+                         core/include \
+                         modules/cad/include \
+                         modules/mine_design/include \
+                         modules/survey/include \
+                         modules/scheduling/include \
+                         modules/planning/include \
+                         modules/reporting/include \
+                         modules/geology/include \
+                         modules/geotechnical/include \
+                         integrations/file_formats/include \
+                         integrations/omf/include \
+                         integrations/opencascade/include \
+                         integrations/pdal/include \
+                         integrations/open3d/include \
+                         integrations/proj/include \
+                         integrations/gdal/include \
+                         integrations/ortools/include \
+                         integrations/postgres/include \
+                         sdk/include \
+                         sdk/host/include
+USE_MDFILE_AS_MAINPAGE = docs/doxygen-main.md
+FILE_PATTERNS          = *.h *.md
+RECURSIVE              = YES
+EXCLUDE_PATTERNS       = */build/*
+EXTRACT_ALL            = YES
+EXTRACT_STATIC         = YES
+EXTRACT_PRIVATE        = NO
+JAVADOC_AUTOBRIEF      = YES
+QT_AUTOBRIEF           = YES
+MARKDOWN_SUPPORT       = YES
+BUILTIN_STL_SUPPORT    = YES
+SOURCE_BROWSER         = YES
+STRIP_FROM_PATH        = .
+STRIP_FROM_INC_PATH    = core/include modules/cad/include modules/mine_design/include modules/survey/include \
+                         modules/scheduling/include modules/planning/include modules/reporting/include \
+                         modules/geology/include modules/geotechnical/include integrations/file_formats/include \
+                         integrations/omf/include integrations/opencascade/include integrations/pdal/include \
+                         integrations/open3d/include integrations/proj/include integrations/gdal/include \
+                         integrations/ortools/include integrations/postgres/include sdk/include sdk/host/include
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+PREDEFINED             = OPENMINE_PLUGIN_EXPORT= __cplusplus=202002L
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+HAVE_DOT               = NO
+QUIET                  = YES
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = NO
+WARN_LOGFILE           = build/doxygen/warnings.log

@@ -5,42 +5,181 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PDAL_VERSION: 2.8.4
+  CLIPPER2_VERSION: Clipper2_1.4.0
+  OPEN3D_VERSION: 0.18.0
+  ORTOOLS_URL: https://github.com/google/or-tools/releases/download/v9.12/or-tools_amd64_ubuntu-24.04_cpp_v9.12.4544.tar.gz
+
 jobs:
-  linux-core:
-    name: Linux — core, modules, OCCT, Python (headless)
+  linux:
+    name: Linux — full build, all tests, GUI smoke test, documentation
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_PASSWORD: openmine
+          POSTGRES_DB: openmine_test
+        ports: ["54329:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DEPS: /opt/openmine-deps
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential ninja-build cmake git pkg-config \
+            qt6-base-dev qt6-svg-dev qt6-pdf-dev libqt6opengl6-dev libgl-dev libvtk9-dev \
+            libsqlite3-dev libeigen3-dev nlohmann-json3-dev libnanoflann-dev zlib1g-dev libxlsxwriter-dev \
+            libocct-foundation-dev libocct-modeling-data-dev libocct-modeling-algorithms-dev libocct-data-exchange-dev \
+            libproj-dev libgdal-dev libpq-dev libgtest-dev libgeotiff-dev liblaszip-dev libxerces-c-dev libcurl4-openssl-dev \
+            libc++1 libc++abi1 libgomp1 python3-dev python3-pip xvfb doxygen postgresql-client
+          python3 -m pip install --break-system-packages "pybind11>=2.13" numpy pytest \
+            ezdxf trimesh omf mplstereonet pypdf pdfplumber openpyxl mkdocs mkdocs-material
+
+      - name: Cache source-built dependencies
+        id: deps
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.DEPS }}
+          key: deps-${{ runner.os }}-pdal${{ env.PDAL_VERSION }}-${{ env.CLIPPER2_VERSION }}-o3d${{ env.OPEN3D_VERSION }}-ortools9.12-v1
+
+      - name: Build Clipper2, PDAL; fetch Open3D and OR-Tools
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: |
+          sudo mkdir -p $DEPS && sudo chown $USER $DEPS
+          git clone --depth 1 --branch $CLIPPER2_VERSION https://github.com/AngusJohnson/Clipper2 /tmp/clipper2
+          cmake -S /tmp/clipper2/CPP -B /tmp/clipper2-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$DEPS/clipper2 \
+            -DCLIPPER2_TESTS=OFF -DCLIPPER2_EXAMPLES=OFF -DCLIPPER2_UTILS=OFF
+          ninja -C /tmp/clipper2-build install
+          git clone --depth 1 --branch $PDAL_VERSION https://github.com/PDAL/PDAL /tmp/pdal
+          cmake -S /tmp/pdal -B /tmp/pdal-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$DEPS/pdal \
+            -DWITH_TESTS=OFF -DBUILD_PLUGIN_E57=ON -DWITH_COMPLETION=OFF
+          ninja -C /tmp/pdal-build install
+          curl -sSL https://github.com/isl-org/Open3D/releases/download/v$OPEN3D_VERSION/open3d-devel-linux-x86_64-cxx11-abi-$OPEN3D_VERSION.tar.xz | tar -xJ -C $DEPS
+          mv $DEPS/open3d-devel-linux-x86_64-cxx11-abi-$OPEN3D_VERSION $DEPS/open3d
+          curl -sSL $ORTOOLS_URL | tar -xz -C $DEPS
+          mv $DEPS/or-tools_* $DEPS/ortools
+
+      - name: Configure
+        run: |
+          cmake --preset linux-debug -DOPENMINE_WARNINGS_AS_ERRORS=ON \
+            -DCMAKE_PREFIX_PATH="$DEPS/pdal;$DEPS/clipper2;$DEPS/ortools" -DOpen3D_DIR=$DEPS/open3d/lib/cmake/Open3D \
+            -DOPENMINE_TEST_PG_DSN="host=127.0.0.1 port=54329 dbname=openmine_test user=postgres password=openmine"
+
+      - name: Build
+        run: cmake --build --preset linux-debug
+
+      - name: Tests (headless)
+        run: |
+          export LD_LIBRARY_PATH=$DEPS/pdal/lib:$DEPS/clipper2/lib:$DEPS/ortools/lib:$DEPS/open3d/lib
+          ctest --preset linux-debug -LE gui --timeout 1800
+
+      - name: GUI smoke test
+        run: |
+          export LD_LIBRARY_PATH=$DEPS/pdal/lib:$DEPS/clipper2/lib:$DEPS/ortools/lib:$DEPS/open3d/lib
+          xvfb-run -a -s "-screen 0 1920x1080x24" ctest --preset linux-debug -L gui --timeout 1800
+
+      - name: Upload smoke-test log and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-smoke
+          path: build/linux-debug/gui-smoke/
+          if-no-files-found: ignore
+
+      - name: Upload documentation
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation
+          path: |
+            build/docs-site/html
+            build/doxygen/html
+
+  linux-minimal:
+    name: Linux — core and modules only (no optional integrations, no app)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Install dependencies
+      - name: Install packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ninja-build libsqlite3-dev libgtest-dev \
-            libocct-modeling-algorithms-dev libocct-modeling-data-dev libocct-foundation-dev python3-dev python3-pip
-          python3 -m pip install --break-system-packages "pybind11>=2.13" pytest
-      - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DOPENMINE_BUILD_APP=OFF -DOPENMINE_WARNINGS_AS_ERRORS=ON
-      - name: Build
-        run: cmake --build build
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
+          sudo apt-get install -y --no-install-recommends ninja-build cmake libsqlite3-dev libeigen3-dev nlohmann-json3-dev \
+            libnanoflann-dev zlib1g-dev libxlsxwriter-dev libgtest-dev git
+          git clone --depth 1 --branch Clipper2_1.4.0 https://github.com/AngusJohnson/Clipper2 /tmp/clipper2
+          cmake -S /tmp/clipper2/CPP -B /tmp/clipper2-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/tmp/clipper2-install \
+            -DCLIPPER2_TESTS=OFF -DCLIPPER2_EXAMPLES=OFF -DCLIPPER2_UTILS=OFF
+          ninja -C /tmp/clipper2-build install
+      - name: Configure, build, test
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DOPENMINE_WARNINGS_AS_ERRORS=ON -DCMAKE_PREFIX_PATH=/tmp/clipper2-install \
+            -DOPENMINE_BUILD_APP=OFF -DOPENMINE_BUILD_PYTHON=OFF -DOPENMINE_WITH_OCCT=OFF -DOPENMINE_WITH_PDAL=OFF \
+            -DOPENMINE_WITH_OPEN3D=OFF -DOPENMINE_WITH_PROJ=OFF -DOPENMINE_WITH_GDAL=OFF -DOPENMINE_WITH_ORTOOLS=OFF \
+            -DOPENMINE_WITH_POSTGRES=OFF
+          cmake --build build
+          LD_LIBRARY_PATH=/tmp/clipper2-install/lib ctest --test-dir build --output-on-failure
+
+  benchmarks:
+    name: Linux — engine benchmarks against budgets (Release)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build cmake libsqlite3-dev libeigen3-dev nlohmann-json3-dev \
+            libnanoflann-dev zlib1g-dev libxlsxwriter-dev git
+          git clone --depth 1 --branch Clipper2_1.4.0 https://github.com/AngusJohnson/Clipper2 /tmp/clipper2
+          cmake -S /tmp/clipper2/CPP -B /tmp/clipper2-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/tmp/clipper2-install \
+            -DCLIPPER2_TESTS=OFF -DCLIPPER2_EXAMPLES=OFF -DCLIPPER2_UTILS=OFF
+          ninja -C /tmp/clipper2-build install
+      - name: Build and run
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=/tmp/clipper2-install -DOPENMINE_BUILD_APP=OFF \
+            -DOPENMINE_BUILD_PYTHON=OFF -DOPENMINE_BUILD_TESTS=OFF -DOPENMINE_WITH_OCCT=OFF -DOPENMINE_WITH_PDAL=OFF -DOPENMINE_WITH_OPEN3D=OFF \
+            -DOPENMINE_WITH_PROJ=OFF -DOPENMINE_WITH_GDAL=OFF -DOPENMINE_WITH_ORTOOLS=OFF -DOPENMINE_WITH_POSTGRES=OFF
+          cmake --build build --target openmine_bench
+          LD_LIBRARY_PATH=/tmp/clipper2-install/lib build/bin/openmine_bench --json benchmarks.json --check benchmarks/budgets.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmarks
+          path: benchmarks.json
+          if-no-files-found: ignore
 
   windows:
     name: Windows — MSVC + vcpkg (full app)
     runs-on: windows-2022
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
     steps:
       - uses: actions/checkout@v4
       - uses: ilammy/msvc-dev-cmd@v1
+      - name: Export GitHub Actions cache variables for vcpkg
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
       - name: Bootstrap vcpkg
         run: |
           git clone https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
           & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
       - name: Configure
-        run: cmake --preset windows-msvc -DOPENMINE_BUILD_PYTHON=OFF
+        run: cmake --preset windows-msvc -DOPENMINE_BUILD_PYTHON=OFF -DOPENMINE_WITH_OPEN3D=OFF -DOPENMINE_WITH_ORTOOLS=OFF
       - name: Build
         run: cmake --build --preset windows-msvc
-      - name: Test (non-GUI)
+      - name: Tests (headless)
         run: ctest --preset windows-msvc -LE gui
       - name: GUI smoke test
         run: ctest --preset windows-msvc -L gui

@@ -64,7 +64,7 @@ enum class AssetKind { PointCloud, Mesh, Brep, BlockModel, Attachment, Report, O
 struct Asset {
     Uuid id;
     AssetKind kind = AssetKind::Other;
-    std::string relativePath; ///< relative to <project>.openmine-assets/
+    std::string relativePath; ///< relative to `<project>.openmine-assets/`
     std::string sha256;       ///< of the file, or of the manifest for folder assets
     std::int64_t sizeBytes = 0;
     bool isDirectory = false;

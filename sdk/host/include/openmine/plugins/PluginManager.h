@@ -21,7 +21,7 @@ struct PluginManifest {
     std::string id, name, version, library, description, author, license;
     int apiVersion = 0;
     std::filesystem::path folder;
-    std::filesystem::path libraryPath() const; ///< platform file name (lib<name>.so, <name>.dll, lib<name>.dylib)
+    std::filesystem::path libraryPath() const; ///< platform file name (`lib<name>.so`, `<name>.dll`, `lib<name>.dylib`)
 };
 
 /// Reads and validates "plugin.json" in a folder. Throws std::runtime_error with the reason.

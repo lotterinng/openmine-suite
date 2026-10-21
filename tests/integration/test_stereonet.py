@@ -101,8 +101,17 @@ def test_joint_set_means_match_kmeans(tmp_path):
     ours = tool(tmp_path, {"op": "sets", "planes": planes, "k": 3})
     dips = np.array([p[0] for p in planes])
     strikes = (np.array([p[1] for p in planes]) - 90) % 360
-    centers = mpl.kmeans(strikes, dips, num=3, measurement="poles")
-    theirs = [vec(float(b[0]), float(p[0])) for p, b in (sm.geographic2plunge_bearing(*c) for c in centers)]
+    # mplstereonet's k-means starts from random poles (numpy's global generator) and can stop in a
+    # local optimum; like any k-means user, take the best of several seeded restarts.
+    pole_vecs = [vec((a + 180) % 360, 90 - d) for d, a in ((p[0], p[1]) for p in planes)]
+    best_score, theirs = None, None
+    for seed in range(10):
+        np.random.seed(seed)
+        centers = mpl.kmeans(strikes, dips, num=3, measurement="poles")
+        cand = [vec(float(b[0]), float(p[0])) for p, b in (sm.geographic2plunge_bearing(*c) for c in centers)]
+        score = sum(min(axial_angle(v, c) for c in cand) for v in pole_vecs)
+        if best_score is None or score < best_score:
+            best_score, theirs = score, cand
     for o in ours:
         best = min(axial_angle(vec(o[0], o[1]), t) for t in theirs)
         assert best < 1.0

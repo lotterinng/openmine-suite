@@ -9,6 +9,7 @@
 
 #include <sqlite3.h>
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <limits>
@@ -448,6 +449,35 @@ TEST(Persistence, SchemaHasExplicitRelationships) {
                           "REFERENCES point_cloud_dataset(uuid) ON DELETE CASCADE", "REFERENCES survey_control_point(uuid) ON DELETE SET NULL",
                           "CREATE TABLE production_actual", "CREATE TABLE design_revision", "CREATE TABLE activity_resource_assignment"})
         EXPECT_NE(ddl.find(s), std::string::npos) << s;
+    // Every *_uuid column is a foreign key, except the documented polymorphic references,
+    // snapshots and the audit log (docs/architecture/database-schema.md).
+    const std::set<std::string> documented = {
+        "attachment.entity_uuid",          "design_revision.entity_uuid",      "attribute_value.entity_uuid",
+        "activity_design_link.design_uuid", "scenario_override.entity_uuid",    "baseline_activity.activity_uuid",
+        "audit_log.entity_uuid",            "mine_development.current_revision_uuid", "stope.current_revision_uuid"};
+    sqlite3* db = nullptr;
+    ASSERT_EQ(sqlite3_open(":memory:", &db), SQLITE_OK);
+    ASSERT_EQ(sqlite3_exec(db, ddl.c_str(), nullptr, nullptr, nullptr), SQLITE_OK);
+    auto rows = [&](const std::string& sql, int column) {
+        std::vector<std::string> out;
+        sqlite3_stmt* st = nullptr;
+        sqlite3_prepare_v2(db, sql.c_str(), -1, &st, nullptr);
+        while (sqlite3_step(st) == SQLITE_ROW) out.emplace_back(reinterpret_cast<const char*>(sqlite3_column_text(st, column)));
+        sqlite3_finalize(st);
+        return out;
+    };
+    int fkCount = 0;
+    std::set<std::string> undocumented;
+    for (const auto& t : rows("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'", 0)) {
+        const auto fks = rows("PRAGMA foreign_key_list('" + t + "')", 3);
+        fkCount += static_cast<int>(fks.size());
+        for (const auto& c : rows("PRAGMA table_info('" + t + "')", 1))
+            if (c.size() > 5 && c.ends_with("_uuid") && std::find(fks.begin(), fks.end(), c) == fks.end() && !documented.count(t + "." + c))
+                undocumented.insert(t + "." + c);
+    }
+    sqlite3_close(db);
+    EXPECT_TRUE(undocumented.empty()) << *undocumented.begin();
+    EXPECT_EQ(fkCount, 57);
 }
 
 // ---- entity documents (repositories) --------------------------------------------------------------

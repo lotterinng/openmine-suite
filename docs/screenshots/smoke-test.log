@@ -1,4 +1,4 @@
-OpenMine Suite GUI smoke test — 2026-10-18T15:12:10
+OpenMine Suite GUI smoke test — 2026-10-21T13:46:03
 Qt 6.4.2, output in /home/claude/openmine-suite/build/core/gui-smoke
 
 == Project
@@ -15,8 +15,24 @@ PASS  project CRS is EPSG:32735
       > LAYER Centrelines #3CB4FF  →  Current layer: Centrelines
 PASS  LAYER creates the current layer
 PASS  current layer is Centrelines
-PASS  action registry (152 actions)
+PASS  action registry (186 actions)
 PASS  disabled actions say why (0 without a reason)
+
+== Workspace
+PASS  the ten ribbon workspaces: Home, Survey, CAD, Mine Design, Scheduler, Geology, Geotechnical, Analysis, Reporting, Automation
+PASS  menu File
+PASS  menu Edit
+PASS  menu View
+PASS  menu Tools
+PASS  menu Window
+PASS  menu Settings
+PASS  menu Help
+PASS  quick-access toolbar customised
+PASS  quick-access toolbar stored in the user settings
+PASS  quick-access defaults restored
+         Preferences applied
+PASS  preferences applied
+PASS  preferences stored in the user settings
 
 == CAD
          Polyline created: length 100.125 m
@@ -24,9 +40,24 @@ PASS  disabled actions say why (0 without a reason)
 PASS  POLYLINE by typed coordinates
 PASS  centreline length is exact
 PASS  polyline drawn with viewport clicks
-PASS  picked vertices land on the work plane (max error 0.096 m at this zoom)
-      > 50000.000,20040.000,1000.000  →  Polyline created: length 100.125 m
-      > @20,0,0  →  Polyline created: length 100.125 m
+PASS  picked vertices land on the work plane (max error 0.097 m at this zoom)
+PASS  a click on the polyline in the viewport selects it
+PASS  the selected polyline shows 3 grips
+PASS  a click on a grip starts moving it
+PASS  the second click moves the vertex (one undo step)
+         Undone: Move grip
+      > UNDO  →  Undone: Move grip
+PASS  undo restores the vertex
+         1  vertex  50009.930, 20019.934, 1000.000
+         2  vertex  50040.033, 20025.019, 1000.000
+         3  vertex  50069.934, 20019.934, 1000.000
+      > GRIP  →  3  vertex  50069.934, 20019.934, 1000.000
+      > GRIP 1 @0,0,2  →  3  vertex  50069.934, 20019.934, 1000.000
+PASS  GRIP moves a grip by typed coordinates
+         Undone: Move grip
+      > UNDO  →  Undone: Move grip
+      > 50000.000,20040.000,1000.000  →  Undone: Move grip
+      > @20,0,0  →  Undone: Move grip
 PASS  line from typed tool input (x,y,z then @dx,dy,dz)
          Move: 1 object(s)
       > MOVE 0,5,0  →  Move: 1 object(s)
@@ -76,10 +107,72 @@ PASS  TEXT
       > DISTANCE 50000.000,20000.000,1000.000 @30<45  →  Distance: slope 30.000 m · plan 30.000 m · ΔZ 0.000 m · bearing 45.0000° · grade 0.00 %
 PASS  DISTANCE with polar input
 
+== 3D modelling
+         Rectangle created: length 60.000 m
+      > RECTANGLE 50200.000,20000.000,1000.000 50220.000,20010.000,1000.000  →  Rectangle created: length 60.000 m
+         Rectangle created: length 16.000 m
+      > RECTANGLE 50203.000,20003.000,1000.000 50207.000,20007.000,1000.000  →  Rectangle created: length 16.000 m
+         Extrude: 1 solid(s), 1104.00 m³
+      > EXTRUDE 6  →  Extrude: 1 solid(s), 1104.00 m³
+PASS  EXTRUDE the outline with its hole
+PASS  extruded solid volume 1104.000 m³ (expected 1104)
+         Extrude: valid, closed
+Volume 1104.000 m³ · area 824.000 m²
+1 solid(s), 1 shell(s), 10 faces, 24 edges, 16 vertices
+Centre of mass 50210.435, 20005.000, 1003.000
+      > SOLIDCHECK  →  Extrude: valid, closed
+Volume 1104.000 m³ · area 824.000 m²
+1 solid(s), 1 shell(s), 10 faces, 24 edges, 16 vertices
+Centre of mass 50210.435, 20005.000, 1003.000
+PASS  solid check reports validity and volume
+         Extrude: valid → valid; 2 fix(es): Shape was already valid
+      > HEAL  →  Extrude: valid → valid; 2 fix(es): Shape was already valid
+PASS  heal (a valid solid stays valid)
+         Rectangle created: length 16.000 m
+      > RECTANGLE 50350.000,20000.000,1000.000 50354.000,20004.000,1000.000  →  Rectangle created: length 16.000 m
+         Extrude: 1 solid(s), 64.00 m³
+      > EXTRUDE 4  →  Extrude: 1 solid(s), 64.00 m³
+         Extrude: 61.592 m³, valid
+      > SOLIDFILLET 0.5  →  Extrude: 61.592 m³, valid
+PASS  SOLIDFILLET rounds every edge (61.547 m³ < 64)
+         Undone: Fillet solid edges
+      > UNDO  →  Undone: Fillet solid edges
+PASS  the fillet is one undo step
+         Extrude: 121.948 m³, valid
+      > SOLIDOFFSET 0.5  →  Extrude: 121.948 m³, valid
+PASS  SOLIDOFFSET 0.5: 121.89 m³ (Steiner 121.95)
+         Polyline created: length 60.075 m
+      > POLYLINE 50200.000,20030.000,1000.000 50230.000,20030.000,998.500 50230.000,20060.000,997.000  →  Polyline created: length 60.075 m
+         Sweep profile along path: 1 solid(s), 1501.87 m³
+      > SWEEP 5 5  →  Sweep profile along path: 1 solid(s), 1501.87 m³
+PASS  SWEEP a 5 × 5 m profile along a bent path
+PASS  swept volume 1501.9 m³ ≈ 25 m² × 60.07 m
+         Rectangle created: length 40.000 m
+      > RECTANGLE 50260.000,20000.000,1000.000 50270.000,20010.000,1000.000  →  Rectangle created: length 40.000 m
+         Rectangle created: length 16.000 m
+      > RECTANGLE 50263.000,20003.000,1008.000 50267.000,20007.000,1008.000  →  Rectangle created: length 16.000 m
+         Loft through sections: 1 solid(s), 416.00 m³
+      > LOFT RULED  →  Loft through sections: 1 solid(s), 416.00 m³
+PASS  LOFT two sections (ruled)
+PASS  loft volume 416.00 m³ (frustum 416.00 m³)
+         Revolve: 1 solid(s), 226.07 m³
+PASS  revolved ring volume 226.07 m³ (exact 226.19 m³)
+         2 section curve(s) on layer 'Sections'
+      > SECTIONOBJ  →  2 section curve(s) on layer 'Sections'
+PASS  section by the work plane: 2 curve(s)
+         Line created: length 10.000 m
+      > LINE 50400.000,20000.000,1000.000 50410.000,20000.000,1000.000  →  Line created: length 10.000 m
+         Line created: length 10.000 m
+      > LINE 50410.000,20000.000,1000.000 50410.000,20010.000,1000.000  →  Line created: length 10.000 m
+      > CHAMFER 2  →  Line created: length 10.000 m
+PASS  CHAMFER tool with 2 m distances
+PASS  chamfer trims both lines by 2 m and adds the chamfer line
+
 == Mine design
+      !  No level '675' is defined: recorded as the heading's level text
          Heading DEV_675_A: 100.12 m, 2503.1 m³
-      > HEADING DEV_675_A 5 5  →  Heading DEV_675_A: 100.12 m, 2503.1 m³
-PASS  HEADING makes the centreline a 5 × 5 m heading
+      > HEADING DEV_675_A 5 5 675  →  Heading DEV_675_A: 100.12 m, 2503.1 m³
+PASS  HEADING makes the centreline a 5 × 5 m heading on level 675
 PASS  development created
 PASS  design volume 2503.1 m³ = section × length
          1 activity created at 4.00 m/day
@@ -115,12 +208,12 @@ PASS  stope created from a closed outline
 PASS  stope subdivided into 1 mining blocks
          1 excavation solid(s), 2753.4 m³ in total
 PASS  exact excavation solid (Open CASCADE sweep)
-      scene extents 217.8 × 92.8 × 75.5 m
+      scene extents 410.0 × 113.0 × 75.5 m
 PASS  every object lies within the mine area (no stray coordinates)
       > SECTION DEV_675_A 50  →  1 excavation solid(s), 2753.4 m³ in total
 PASS  SECTION at chainage 50 opens a section view
 PASS  a view shows the section
-PASS  view image design_section.png (460 × 506) shows the scene (3.4 % drawn)
+PASS  view image design_section.png (460 × 554) shows the scene (2.5 % drawn)
       > LAYOUT 1  →  1 excavation solid(s), 2753.4 m³ in total
 PASS  back to one view
 
@@ -135,10 +228,10 @@ PASS  point-cloud dataset committed
 PASS  33684 points indexed (33684 generated)
 PASS  imported dataset keeps its stored coordinates (identity transform)
 PASS  LOD shows 3269 points
-PASS  view image survey_cloud.png (924 × 506) shows the scene (4.0 % drawn)
+PASS  view image survey_cloud.png (924 × 554) shows the scene (4.8 % drawn)
          33,684 points; centroid 50050.000, 20000.006, 1000.000; mean spacing 0.2114 m, median 0.2282 m; extent 100.07 × 5.49 × 10.05 m
 PASS  statistics stored as a reproducible analysis result
-         Subsample point cloud: 33,244 points in 'heading_scan (subsampled)' — 33,244 of 33,684 points kept
+         Subsample point cloud: 33,244 points in 'heading_scan (subsampled)' — 33244 of 33684 points kept
 PASS  subsampled derived dataset (original untouched)
          Estimate normals: 33,684 points in 'heading_scan (normals)'
 PASS  normals as a derived dataset
@@ -165,13 +258,59 @@ PASS  the Open3D ICP engine is offered
 PASS  the Open3D normals engine is offered
          Estimate normals: 33,684 points in 'heading_scan (normals)'
 PASS  normals by Open3D stored as a derived dataset recording the engine
-         As-built 'DEV_675_A as-built': 95,339 triangles
+         As-built 'DEV_675_A as-built': 90,971 triangles
 PASS  as-built mesh from the scan (Poisson)
-         Conformance: overbreak 57.6 m³ (2.3 %), underbreak 17.21 m³, 101 valid stations
+         Conformance: overbreak 20.3 m³ (0.8 %), underbreak 8.10 m³, 101 valid stations
 PASS  design conformance analysed
-PASS  the north-wall bulge is measured as overbreak (57.64 m³)
+PASS  the north-wall bulge is measured: net overbreak 12.22 m³ (expected 12.73 m³; overbreak 20.32, underbreak 8.10 m³)
          Exported 112 stations to stations.csv
 PASS  station table exported
+
+== Surfaces and point-cloud tools
+         Segment into clusters started as a background job (WAIT to wait for it)
+      > SEGMENT 0.6 100  →  Segment into clusters started as a background job (WAIT to wait for it)
+         Segment into clusters: 33,684 points in 'heading_scan (clusters)' — 1 clusters; 0 points in no cluster
+PASS  SEGMENT into connected components (derived dataset with a cluster field)
+PASS  the derived dataset carries the 'cluster' field
+         Crop by box started as a background job (WAIT to wait for it)
+         Crop by box: 6,722 points in 'heading_scan (cropped)' — 6722 of 33684 points kept
+      > CROP 50010.000,19995.000,990.000 50030.000,20005.000,1010.000  →  Crop by box: 6,722 points in 'heading_scan (cropped)' — 6722 of 33684 points kept
+PASS  CROP by box
+PASS  cropped dataset has 6722 points
+         Remove outliers started as a background job (WAIT to wait for it)
+         Remove outliers: 33,548 points in 'heading_scan (cleaned)' — 136 outliers removed
+      > FILTER OUTLIERS 16 2  →  Remove outliers: 33,548 points in 'heading_scan (cleaned)' — 136 outliers removed
+PASS  FILTER OUTLIERS (console)
+         Subsample point cloud started as a background job (WAIT to wait for it)
+         Subsample point cloud: 8,319 points in 'heading_scan (subsampled)' — 8319 of 33684 points kept
+      > FILTER VOXEL 0.5  →  Subsample point cloud: 8,319 points in 'heading_scan (subsampled)' — 8319 of 33684 points kept
+PASS  FILTER VOXEL (console)
+         Subsample point cloud started as a background job (WAIT to wait for it)
+         Subsample point cloud: 8,319 points in 'heading_scan (subsampled)' — 8319 of 33684 points kept
+      > FILTER VOXEL 0.5 OPEN3D  →  Subsample point cloud: 8,319 points in 'heading_scan (subsampled)' — 8319 of 33684 points kept
+PASS  FILTER VOXEL with the Open3D engine
+PASS  Open3D voxel dataset: 8319 points
+         Surface (Delaunay 2.5D) started as a background job (WAIT to wait for it)
+         Surface 'heading_scan surface': 61,708 triangles (Delaunay 2.5D)
+      > MESH DELAUNAY 2  →  Surface 'heading_scan surface': 61,708 triangles (Delaunay 2.5D)
+PASS  MESH DELAUNAY (console)
+      > DECIMATE 15427  →  Surface 'heading_scan surface': 61,708 triangles (Delaunay 2.5D)
+         'heading_scan surface (decimated)': 61708 → 15427 triangles
+PASS  DECIMATE
+PASS  decimated 61708 → 15427 triangles
+         'heading_scan surface (smoothed)': 5 Taubin iterations (λ 0.500, μ -0.530)
+      > SMOOTH 5  →  'heading_scan surface (smoothed)': 5 Taubin iterations (λ 0.500, μ -0.530)
+PASS  SMOOTH keeps the topology
+      > REPAIR  →  'heading_scan surface (smoothed)': 5 Taubin iterations (λ 0.500, μ -0.530)
+         'heading_scan surface (repaired)': 0 vertices merged, 0 degenerate and 0 duplicate triangles removed, 0 flipped, 0 holes filled; 0 non-manifold edges and 1 boundary loops remain
+PASS  REPAIR
+         'heading_scan surface (decimated) (distance)': distance to reference: mean 0.0003 m, RMS 0.1077 m, min -0.9996 m, median 0.0000 m, max 0.8110 m (7812 of 7812 vertices)
+PASS  compare the decimated surface with the original
+PASS  per-vertex distances stored on the comparison
+         ICP started as a background job (WAIT to wait for it)
+      > REGISTER ICP heading_scan 1  →  ICP started as a background job (WAIT to wait for it)
+         ICP stored: fitness 1.000, inlier RMS 0 m, 1 iterations (ICP engine: OpenMine ICP)
+PASS  REGISTER ICP (console)
 
 == Geology and geotechnical
 PASS  drillhole tables validate without errors
@@ -222,23 +361,63 @@ PASS  schedule exported to XLSX
          Schedule exported to /home/claude/openmine-suite/build/core/gui-smoke/out/schedule.csv
 PASS  schedule exported to CSV
 PASS  4D plan snapshot at the playback time
-PASS  view image schedule_4d.png (924 × 506) shows the scene (13.4 % drawn)
+PASS  view image schedule_4d.png (924 × 554) shows the scene (8.2 % drawn)
+
+== Scheduling libraries
+         Resource 'Jumbo' (Equipment, capacity 1)
+      > RESOURCE Jumbo 1 Equipment  →  Resource 'Jumbo' (Equipment, capacity 1)
+         Resource 'Loader LH517' (Equipment, capacity 1)
+      > RESOURCE Loader LH517 1 Equipment  →  Resource 'Loader LH517' (Equipment, capacity 1)
+PASS  RESOURCE adds equipment to the library
+         Jumbo assigned to 1 activity
+      > ASSIGN Jumbo 1 DRIVES  →  Jumbo assigned to 1 activity
+PASS  ASSIGN a resource to the activity
+PASS  assignment stored (drives the rate)
+PASS  resource library dialog lists resources and assignments
+         Calendar 'Two shifts weekdays' saved
+PASS  calendar saved and made the project default
+PASS  calendar summary: <b>100.0 working hours per week</b> (2 shift(s), 1 exception
+PASS  calendar shifts, exception and default stored
+         Schedule: 2 activities, finish 2026-02-20 10:49, 1 critical (0.5 ms)
+      > SCHEDULE  →  Schedule: 2 activities, finish 2026-02-20 10:49, 1 critical (0.5 ms)
+PASS  working only 100 h a week pushes the heading's finish later
+PASS  development cycle saved
+PASS  cycle evaluated: <b>Cycle 553 min</b> · advance 3.60 m per cycle · 30 bucket loads · 20 bolts<br>
+         1 activity now take their rate from the cycle
+PASS  the activity takes its rate from the cycle
+PASS  cycle link stored on the activity
+         Schedule: 2 activities, finish 2026-01-30 19:19, 1 critical (0.3 ms)
+      > SCHEDULE  →  Schedule: 2 activities, finish 2026-01-30 19:19, 1 critical (0.3 ms)
+PASS  duration basis: Cycle '5x5 jumbo cycle' 6.65 m/day
+PASS  six monthly production targets
+PASS  filter critical: 1 of 2 activities
+PASS  text filter hides non-matching activities
+PASS  grouped by resource (a 'Jumbo' group)
+PASS  screenshot scheduler_grouped.png
 
 == Data exchange
-         Exported 157171 DXF entities (all geometry) to all.dxf
+         Exported 337946 DXF entities (all geometry) to all.dxf
+      !  Solid 'Extrude' was exported as its tessellation (polyface mesh); DXF has no open B-rep format
+      !  Solid 'Extrude' was exported as its tessellation (polyface mesh); DXF has no open B-rep format
+      !  Solid 'Sweep profile along path' was exported as its tessellation (polyface mesh); DXF has no open B-rep format
+      !  Solid 'Loft through sections' was exported as its tessellation (polyface mesh); DXF has no open B-rep format
+      !  Solid 'Revolve' was exported as its tessellation (polyface mesh); DXF has no open B-rep format
       !  Polyline 'DEC1_ centreline' has arcs and varying elevation: arcs were tessellated (3D polylines have no bulges)
       !  Solid 'DEV_675_A excavation' was exported as its tessellation (polyface mesh); DXF has no open B-rep format
       !  Mesh 'heading_scan (subsampled) surface' exceeds the polyface limit (32767 vertices/faces) and was written as 61810 3DFACE entities
-      !  Mesh 'DEV_675_A as-built' exceeds the polyface limit (32767 vertices/faces) and was written as 95339 3DFACE entities
+      !  Mesh 'DEV_675_A as-built' exceeds the polyface limit (32767 vertices/faces) and was written as 90971 3DFACE entities
+      !  Mesh 'heading_scan surface' exceeds the polyface limit (32767 vertices/faces) and was written as 61708 3DFACE entities
+      !  Mesh 'heading_scan surface (smoothed)' exceeds the polyface limit (32767 vertices/faces) and was written as 61708 3DFACE entities
+      !  Mesh 'heading_scan surface (repaired)' exceeds the polyface limit (32767 vertices/faces) and was written as 61708 3DFACE entities
 PASS  DXF export
-PASS  DXF reads back (24 objects)
+PASS  DXF reads back (43 objects)
 PASS  OMF export started
          Exported OMF all.omf
       !  'Text 12': Text objects have no OMF equivalent; skipped
-PASS  OMF reads back (26 elements)
-         Exported 1 surface(s), 95339 triangles to surface.obj
+PASS  OMF reads back (48 elements)
+         Exported 1 surface(s), 15427 triangles to surface.obj
 PASS  OBJ export of a surface
-         surface.obj: 95339 triangles, area 2014.7 m²
+         surface.obj: 15427 triangles, area 13084.8 m²
 PASS  OBJ re-import
 PASS  OBJ round trip keeps every triangle
          Exported 1 solid(s) to solid.step
@@ -250,8 +429,22 @@ PASS  point-cloud export started
 PASS  point cloud written in project coordinates
 
 == Views and panels
+      > LAYOUT 2  →  Exported the point cloud (project coordinates) to cloud.xyz
+PASS  two views side by side
+      > ZOOM EXTENTS  →  Exported the point cloud (project coordinates) to cloud.xyz
+PASS  view image view_pair_1.png (461 × 554) shows the scene (10.9 % drawn)
+      > ZOOM EXTENTS  →  Exported the point cloud (project coordinates) to cloud.xyz
+PASS  view image view_pair_2.png (460 × 554) shows the scene (5.4 % drawn)
       > LAYOUT 4  →  Exported the point cloud (project coordinates) to cloud.xyz
 PASS  four views
+      > ZOOM EXTENTS  →  Exported the point cloud (project coordinates) to cloud.xyz
+PASS  view image view_quad_1.png (460 × 276) shows the scene (9.1 % drawn)
+      > ZOOM EXTENTS  →  Exported the point cloud (project coordinates) to cloud.xyz
+PASS  view image view_quad_2.png (460 × 276) shows the scene (7.9 % drawn)
+      > ZOOM EXTENTS  →  Exported the point cloud (project coordinates) to cloud.xyz
+PASS  view image view_quad_3.png (460 × 275) shows the scene (6.9 % drawn)
+      > ZOOM EXTENTS  →  Exported the point cloud (project coordinates) to cloud.xyz
+PASS  view image view_quad_4.png (460 × 275) shows the scene (7.5 % drawn)
 PASS  screenshot views_quad.png
       > LAYOUT 1  →  Exported the point cloud (project coordinates) to cloud.xyz
 PASS  one view
@@ -259,7 +452,7 @@ PASS  one view
 PASS  plan view
       > ZOOM EXTENTS  →  Exported the point cloud (project coordinates) to cloud.xyz
 PASS  zoom extents
-PASS  view image view_plan.png (924 × 506) shows the scene (10.0 % drawn)
+PASS  view image view_plan.png (924 × 554) shows the scene (6.4 % drawn)
 PASS  screenshot main_window_dark.png
       > THEME LIGHT  →  Exported the point cloud (project coordinates) to cloud.xyz
 PASS  light theme
@@ -275,13 +468,36 @@ PASS  the Python edit reached the model
          Undone: Create layer 'From Python'
       > UNDO  →  Undone: Create layer 'From Python'
 PASS  Python edits are undoable
-         Plugin commands: bad.invalid, bad.late, bad.open-edit, bad.throws, stations.summary, stations.traverse
-      > PLUGIN  →  Plugin commands: bad.invalid, bad.late, bad.open-edit, bad.throws, stations.summary, stations.traverse
+         Plugin commands: bad.invalid, bad.late, bad.open-edit, bad.throws, levels.layers (Python), levels.summary (Python), stations.summary, stations.traverse
+      > PLUGIN  →  Plugin commands: bad.invalid, bad.late, bad.open-edit, bad.throws, levels.layers (Python), levels.summary (Python), stations.summary, stations.traverse
 PASS  plugin command listing
+PASS  native sample plugin loaded from the plugin path
+PASS  native plugin command runs: {"count":3,"extent":[[49995.0,19995.0,996.0],[50105.0,20006.0,1002.0]]}
+      !  Plugin org.openmine.tests.future not loaded: Plugin API version 99 is not supported (host provides 1)
+         1 plugin(s) loaded
+         2 Python plugin command(s) available
+PASS  a plugin disabled in the preferences is unloaded at the rescan
+      !  Plugin org.openmine.tests.future not loaded: Plugin API version 99 is not supported (host provides 1)
+         2 plugin(s) loaded
+         2 Python plugin command(s) available
+PASS  re-enabling the plugin loads it again
+PASS  Python sample plugin discovered in the plugin folder
+PASS  Python plugin reads the project: {"(no level)": {"headings": 1, "metres": 353.207, "volume_m3": 10343.424}, "675": {"headings": 6, "metres": 260.145, "volume_m3": 6503.623}}
+         {"created": ["Smoke level 675"]}
+      > PLUGIN levels.layers {"prefix": "Smoke level "}  →  {"created": ["Smoke level 675"]}
+PASS  Python plugin edits the project through the API
+         Undone: levels.layers (levels)
+      > UNDO  →  Undone: levels.layers (levels)
+PASS  a Python plugin command is one undo step
+PASS  a failing Python plugin command is reported and rolled back: ValueError: prefix must be a non-empty text
       > HELP  →  While a drawing tool runs: x,y,z | x,y (z = work plane) | @dx,dy[,dz] relative | @distance<bearing polar | a number (distance, radius, angle, factor)
-PASS  72 console commands
+PASS  97 console commands
 
 == Persistence
+PASS  attachment source written
+         Attached face-note.txt to DEV_675_A
+      > ATTACH /home/claude/openmine-suite/build/core/gui-smoke/out/face-note.txt Face inspection note  →  Attached face-note.txt to DEV_675_A
+PASS  ATTACH copies a file onto the selected heading
          Saved smoke.openmine
          Saved /home/claude/openmine-suite/build/core/gui-smoke/out/smoke.openmine
       > SAVE /home/claude/openmine-suite/build/core/gui-smoke/out/smoke.openmine  →  Saved /home/claude/openmine-suite/build/core/gui-smoke/out/smoke.openmine
@@ -290,10 +506,10 @@ PASS  no unsaved changes after saving
          File: OK (schema v2)
          File: OK (schema v2)
          Model: 0 referential problem(s)
-         Assets: 12 checked, 0 with problems
-      > CHECK  →  Assets: 12 checked, 0 with problems
+         Assets: 25 checked, 0 with problems
+      > CHECK  →  Assets: 25 checked, 0 with problems
 PASS  integrity check
-      > CLOSE  →  Assets: 12 checked, 0 with problems
+      > CLOSE  →  Assets: 25 checked, 0 with problems
 PASS  project closed
          Opened smoke.openmine (schema v2)
       > OPEN /home/claude/openmine-suite/build/core/gui-smoke/out/smoke.openmine  →  Opened smoke.openmine (schema v2)
@@ -301,9 +517,45 @@ PASS  project reopened
 PASS  every entity type round-trips through the project file
 PASS  survey dataset unchanged after reopening
 PASS  baseline preserved
-         Schedule: 2 activities, finish 2026-02-12 12:49, 1 critical (0.2 ms)
-      > SCHEDULE  →  Schedule: 2 activities, finish 2026-02-12 12:49, 1 critical (0.2 ms)
+         Schedule: 2 activities, finish 2026-01-30 19:19, 1 critical (0.3 ms)
+      > SCHEDULE  →  Schedule: 2 activities, finish 2026-01-30 19:19, 1 critical (0.3 ms)
 PASS  schedule recalculates after reopening
 PASS  screenshot reopened.png
+         Saved face-note-extracted.txt
+PASS  the attachment reopens on its heading, byte for byte
+      > DELETE  →  Saved face-note-extracted.txt
+PASS  attachment deleted (its stored file is kept for undo)
+           unused: brep/3167e3c5-21fe-4399-9480-3e945d05bebd.brep
+           unused: brep/fedfc75c-9ef2-4aec-b698-936522875d7c.brep
+           unused: attachment/e6ea5358-46b4-4d8c-b2ee-4374cdaf3748.txt
+           unregistered: pointcloud/19076247-c6a5-496e-9424-0bc03487f8f5
+           unregistered: pointcloud/2d86e572-7642-49d0-93f5-a3e1d95af1a9
+           unregistered: pointcloud/a618d941-47bd-4f46-b9d6-8e37db2d29fb
+           unregistered: pointcloud/31ab13d4-eda5-4e71-bbc9-c0d954866b2c
+           unregistered: pointcloud/9b11512d-3d6c-422d-aaed-1b758b73a99f
+           unregistered: pointcloud/1fa06cd7-707f-4edb-8c45-d5327a056c54
+           unregistered: pointcloud/d403adfd-f934-4007-85fc-c7df59419237
+           unregistered: pointcloud/d134d6b5-31fa-4317-bc22-db96d1fd6c6f
+           unregistered: pointcloud/59e3267b-39b6-43c1-8a1c-79d3c11a8e67
+           unregistered: brep/fd40221b-59af-40c4-a94d-808061149c03.brep
+           unregistered: brep/9044feff-67d1-45f5-b10b-11c68ebdf129.brep
+           unregistered: brep/22e67b0e-a1bd-4282-b5f4-dad4ff5394c7.brep
+           unregistered: brep/9ffa15b8-1bc4-44c5-bed8-7a8c43f2ed5e.brep
+           unregistered: brep/9b19de5f-e194-4a51-81d7-2ba122fe9ded.brep
+           unregistered: brep/28d020e1-a573-469d-aadd-ab90ea1272fb.brep
+           unregistered: brep/e0150171-19fd-4234-baf2-8815a7e5d0e2.brep
+           unregistered: blockmodel/ccfcd20e-f719-46f0-9fc0-50755e48311c.f64
+           unregistered: report/aa47e1ed-53a4-4917-b27f-431abf7d95da.pdf
+           unregistered: report/0ba97f66-2621-461e-a7ee-660fc4ba9d39.pdf
+           unregistered: report/e1815b4b-e055-4678-a2a5-638d31642f06.pdf
+           unregistered: report/813a97a9-9005-4a7e-9082-877b4c77dbe1.pdf
+           unregistered: report/4cbfd5e8-9a26-4fc7-b976-d2382ac0f152.pdf
+         Compacting would remove 3 unused asset(s) and 22 unregistered file(s), 8.10 MB
+      > COMPACT DRYRUN  →  Compacting would remove 3 unused asset(s) and 22 unregistered file(s), 8.10 MB
+PASS  COMPACT DRYRUN lists without removing
+         Project compacted: removed 3 unused asset(s) and 22 unregistered file(s), 8.10 MB
+      > COMPACT  →  Project compacted: removed 3 unused asset(s) and 22 unregistered file(s), 8.10 MB
+PASS  COMPACT removes the unused file, saves and clears the undo history
+PASS  every asset still in use is intact after compacting (22 verified by SHA-256)
 
-148 passed, 0 failed, 0 skipped
+239 passed, 0 failed, 0 skipped

@@ -938,3 +938,21 @@ def test_grip_editing_moves_defining_points_and_flags_headings():
         p.cad.move_grip(arc, 2, (0, 0, 0))  # zero radius
     with pytest.raises(KeyError):
         p.cad.grips("00000000-0000-4000-8000-000000000000")
+
+
+def test_point_cloud_crs_is_recorded_and_mismatch_reported(tmp_path):
+    f = tmp_path / "scan.xyz"
+    np.savetxt(f, np.random.default_rng(1).uniform(0, 10, size=(500, 3)) + [-25000.0, 2900000.0, 1200.0], fmt="%.4f")
+    p = Project.new("CRS", start="2026-11-02")
+    with pytest.warns(UserWarning, match="project CRS is not declared"):
+        s = p.survey.import_pointcloud(f, source_crs="EPSG:2051")
+    assert p.documents.get("PointCloudDataset", s.id)["columns"]["source_crs"] == "EPSG:2051"
+    if openmine.FEATURES["crs"]:
+        p.crs.declare("EPSG:2051", set_as_project_crs=True)
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            same = p.survey.import_pointcloud(f, source_crs="EPSG:2051")  # no warning
+        with pytest.warns(UserWarning, match="not transformed"):
+            other = p.survey.import_pointcloud(f, source_crs="EPSG:32735")
+        assert np.array_equal(other.xyz, same.xyz)  # stored as read

@@ -3,65 +3,97 @@
 **Open-source, integrated mine survey, CAD/mine design and scheduling — one application, one
 project, one model.**
 
-OpenMine Suite is an original desktop application (C++20 · Qt 6 · VTK · Open CASCADE · SQLite)
-that aims to cover, in one shared environment, the workflow mining teams currently spread across
-point-cloud survey tools, mine CAD and mine schedulers:
+OpenMine Suite is an original desktop application (C++20 · Qt 6 · VTK · Open CASCADE · PDAL ·
+Open3D · PROJ · GDAL · OR-Tools · SQLite/PostgreSQL · Python) that covers, in one shared
+environment, the workflow mining teams currently spread across point-cloud survey tools, mine CAD
+and mine schedulers:
 
 > survey scan → registration → as-built → design → attributes → schedule activities → resources →
 > schedule → actuals → reconciliation → reforecast → reports
 
-It is pre-1.0. **What works today is listed precisely in [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md);**
-everything else is roadmap. Unfinished tools are visible in the UI but disabled and labelled with
-their planned phase — nothing pretends to work.
+It is pre-1.0 (v0.4.0). **What works, with the test that proves it, is listed in
+[`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md)**; what is not done is listed there too.
+Optional components missing from a build are shown as unavailable with the reason — nothing
+pretends to work.
 
-## What v0.1 does
+![OpenMine Suite](docs/screenshots/main_window_dark.png)
 
-* Native Qt 6 desktop shell: menu bar, 10 ribbon workspaces, dockable Project Explorer,
-  Properties editor, Command Console and Scheduler, status bar, dark and light themes.
-* VTK 3D viewport: draw lines/polylines on a work plane with grid and endpoint snapping, pick to
-  select, standard views, perspective/parallel, development envelopes, planned-vs-actual advance,
-  large-coordinate render origin.
-* Development headings as domain objects (heading ID, level, zone, profile, chainage, status…)
-  with derived length, gradient and volume (Open CASCADE swept solid).
-* Linked, rate-driven schedule activities; CPM with FS/SS/FF/SF + lags, floats, critical path,
-  WBS, calendars, baselines and status-date reforecast; Gantt with dependency arrows.
-* Design changes **flag** linked activities instead of silently changing quantities;
-  recalculation is explicit and audited; baselines are immutable.
-* `.openmine` project files: documented SQLite schema, atomic verified saves, migrations,
-  audit log, bit-exact coordinates.
-* Python API (`from openmine import Project`) for the same workflow.
+## What it does
 
-## Quick start
+* **Survey** — LAS/LAZ/E57/PLY/XYZ/PTS/PTX import into an out-of-core octree; filters,
+  normals, segmentation and ground classification as *derived* datasets (scans are never
+  modified); point-pair, control and ICP registration with residual reports; Delaunay and Poisson
+  surfaces; volumes; as-built surfaces and design conformance (overbreak/underbreak, clearance,
+  face position); CRS transformations and local mine grids.
+* **CAD** — the usual drawing, snapping and editing tools including grips, offset/trim/extend/
+  fillet/chamfer, dimensions and hatches; Open CASCADE solids (extrude, revolve, sweep, loft,
+  booleans, fillet, offset, healing); DXF, OBJ/PLY/STL, STEP/IGES, OMF, GIS formats.
+* **Mine design** — declines, ramps, alignments, ore and access drives, crosscuts; development
+  headings with derived quantities; design rules and gradient profiles; levels, stopes, mining
+  blocks; approved design revisions.
+* **Scheduling** — calendar-time CPM on shift and resource calendars, rates from development
+  cycles, dated actuals and status-date reforecasts, baselines, scenarios, levelling and OR-Tools
+  optimisation, production against targets, 4D playback; Gantt, XLSX and PDF.
+* **Integration** — design changes *flag* linked activities instead of silently changing them;
+  survey face positions reconcile reported advance; one undo stack and audit log for everything.
+* **Geology and geotechnical** — drillholes, compositing, block models, variography and
+  kriging; stereonets, joint sets, kinematic analysis, Q, RMR89, GSI, Hoek–Brown.
+* **Automation** — a 97-command console, a Python API (`from openmine import Project`) and an
+  embedded Python console, native (C ABI) and Python plugins, a PostgreSQL/PostGIS shared
+  repository.
 
-See [`DEVELOPMENT.md`](DEVELOPMENT.md) for Windows (MSVC + vcpkg) and Linux builds.
+## Quick start (Linux)
+
+See [`DEVELOPMENT.md`](DEVELOPMENT.md) for dependencies and Windows (MSVC + vcpkg).
 
 ```bash
-cmake --preset linux-debug -DVTK_DIR=/opt/vtk-qt6/lib/cmake/vtk-9.3
+cmake --preset linux-debug -DCMAKE_PREFIX_PATH="/opt/pdal;/opt/clipper2;/opt/ortools" \
+      -DOpen3D_DIR=/opt/open3d-devel-linux-x86_64-cxx11-abi-0.18.0/lib/cmake/Open3D
 cmake --build --preset linux-debug
 ctest --preset linux-debug
-./build/linux-debug/apps/desktop/openmine-desktop
+./build/linux-debug/bin/openmine-desktop
 ```
 
-Console example:
+Console:
 
 ```
 POLYLINE -25000,2900000,1200 @-90,0,-11.25 @0,-60,-7.5
 HEADING LEG2_675_D3_DEC 5.5 5.5 675
 ACTIVITY 5
-SAVE C:/Mines/Jupiter.openmine
+SAVE /data/Jupiter.openmine
+```
+
+Python:
+
+```python
+from openmine import Project
+project = Project.new("Jupiter Mine", start="2026-11-02")
+design = project.cad.create_development(name="LEG2_675_D3_DEC", length=150, width=5.5, height=5.5,
+                                        start=(-25000, 2900000, 1200), azimuth_deg=270, gradient_percent=-12.5)
+activity = project.scheduler.create_activity(name="Develop LEG2_675_D3_DEC", geometry=design, production_rate=5.0)
+scan = project.survey.import_pointcloud("scan.laz").remove_outliers()
+report = project.survey.compare_design(design, scan)
+project.save("JUP_Mine.openmine")
 ```
 
 ## Documentation
 
 | Document | Contents |
 |---|---|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | layers, state model, object model, UI, risks |
-| [docs/architecture/database-schema.md](docs/architecture/database-schema.md) | ERD, constraints, deletion policies, migrations |
-| [docs/architecture/scheduling.md](docs/architecture/scheduling.md) | CPM definitions and validation |
-| [docs/architecture/project-format.md](docs/architecture/project-format.md) | `.openmine` container |
-| [docs/architecture/coordinates.md](docs/architecture/coordinates.md) | CRS policy, precision |
-| [docs/licensing.md](docs/licensing.md) | dependency licence audit |
+| [docs/user-guide.md](docs/user-guide.md) | the desktop application, workflow by workflow |
+| [docs/python.md](docs/python.md) · [docs/reference/python-api.md](docs/reference/python-api.md) | Python guide (examples run as tests) and generated API reference |
+| [docs/console-commands.md](docs/console-commands.md) | command console reference (generated) |
+| [docs/plugins.md](docs/plugins.md) | native C ABI and Python plugins |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | layers, state model, threading, UI, risks |
+| [docs/architecture/](docs/architecture/index.md) | scheduling engine, conformance, project format, database schema, coordinates |
+| [docs/reference/project-schema.md](docs/reference/project-schema.md) | project file schema (generated) |
+| [docs/formats/octree.md](docs/formats/octree.md) | point-cloud octree format |
+| [docs/adr/](docs/adr/index.md) | architecture decision records |
+| [docs/licensing.md](docs/licensing.md) · [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) | licence audit and notices |
 | [ROADMAP.md](ROADMAP.md) · [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) | plan and status |
+| [DEVELOPMENT.md](DEVELOPMENT.md) · [CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) · [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | working on OpenMine |
+
+`python3 docs/tools/build_site.py` builds the documentation site (MkDocs) and `doxygen Doxyfile` the C++ API reference; both are checked by `ctest -L docs`.
 
 ## Licence
 

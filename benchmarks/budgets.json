@@ -1,0 +1,13 @@
+{
+  "_comment": "Seconds allowed for the full-size benchmarks in a Release build on a 2-core CI runner (openmine_bench --check).",
+  "cpm": 3.0,
+  "levelling": 10.0,
+  "project-save": 15.0,
+  "project-load": 15.0,
+  "octree-build": 30.0,
+  "octree-read": 10.0,
+  "kdtree-build": 5.0,
+  "kdtree-knn16": 10.0,
+  "statistical-outliers": 30.0,
+  "voxel-0.25m": 10.0
+}

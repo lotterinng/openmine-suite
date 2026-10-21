@@ -26,6 +26,6 @@ commands `stations.summary` and `stations.traverse`. It is built and exercised b
 (`tests/plugins/misbehaving`) that checks the host's protections.
 
 Python plugins are packages using the `openmine` Python API, discovered through the
-`openmine.plugins` entry-point group (see `scripting/python`).
+`openmine.plugins` entry-point group; `samples/python_levels` is an example (see `docs/plugins.md`).
 
 Licensing: plugins may use any licence compatible with dynamic loading by an Apache-2.0 host.

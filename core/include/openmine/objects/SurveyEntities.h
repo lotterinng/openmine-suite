@@ -56,7 +56,7 @@ struct PointCloudDataset {
     std::string scanner;
     bool visible = true;
     double pointSize = 2.0;
-    std::string colorMode = "Elevation"; ///< Elevation | Intensity | RGB | Classification | Scalar:<name> | Single
+    std::string colorMode = "Elevation"; ///< Elevation | Intensity | RGB | Classification | `Scalar:<name>` | Single
     Uuid developmentId;            ///< optional: heading this scan covers
     EntityMetadata meta;
 };

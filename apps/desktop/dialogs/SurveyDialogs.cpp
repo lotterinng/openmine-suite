@@ -202,6 +202,8 @@ std::vector<int> PointCloudImportDialog::start() {
                                                               .arg(qstr(prepared->dataset.name))
                                                               .arg(prepared->dataset.pointCount)
                                                               .arg(qstr(prepared->dataset.sourceFormat)));
+                                                if (const auto* ds = c->project().model().pointClouds.find(id))
+                                                    if (const auto w = survey::crsMismatch(c->project(), *ds)) c->report(qstr(*w), MessageLevel::Warning);
                                                 c->select(EntityKind::PointCloud, id);
                                             };
                                         },

@@ -134,4 +134,9 @@ if(OPENMINE_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
+option(OPENMINE_BUILD_BENCHMARKS "Build the engine benchmarks" ON)
+if(OPENMINE_BUILD_BENCHMARKS)
+    add_subdirectory(benchmarks)
+endif()
+
 message(STATUS "OpenMine: app=${OPENMINE_BUILD_APP} tests=${OPENMINE_BUILD_TESTS} python=${OPENMINE_BUILD_PYTHON} occt=${OPENMINE_WITH_OCCT}")

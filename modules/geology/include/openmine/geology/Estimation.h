@@ -123,7 +123,7 @@ struct EstimationOptions {
     double simpleMean = 0;                    ///< SK
     std::array<int, 3> discretisation{1, 1, 1}; ///< points per block (1,1,1 = point at centroid)
     std::string maskField;                    ///< estimate only blocks where mask > 0 (empty = all)
-    bool diagnostics = true;                  ///< writes <out>_NS, _DIST, _PASS, and for kriging _KV, _SLOPE (OK), _NEGW
+    bool diagnostics = true;                  ///< writes `<out>_NS`, `_DIST`, `_PASS`, and for kriging `_KV`, `_SLOPE` (OK), `_NEGW`
     int threads = 0;                          ///< 0 = hardware concurrency
 };
 

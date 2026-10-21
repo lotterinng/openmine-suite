@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import math
+import warnings
 from dataclasses import dataclass
 from os import PathLike
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple, Union
@@ -903,8 +904,15 @@ class Survey(_Namespace):
     def import_pointcloud(self, file: PathType, name: str = "", source_crs: str = "",
                           progress: Optional[_core.Progress] = None) -> PointCloud:
         """Imports a scan (LAS/LAZ, E57, PLY, XYZ/CSV/TXT/ASC, and the PDAL formats when built with
-        PDAL) into an octree dataset; ``source_crs`` reprojects it into the project CRS."""
-        return PointCloud(self._p, self._n.import_point_cloud(str(file), name, source_crs, progress))
+        PDAL) into an octree dataset. Coordinates are stored exactly as read — never transformed
+        implicitly. ``source_crs`` records the scan's CRS (default: the one the file declares); when
+        it is not the project CRS a ``UserWarning`` says so (transform with :meth:`Crs.transform_objects`
+        or register the scan)."""
+        cloud = PointCloud(self._p, self._n.import_point_cloud(str(file), name, source_crs, progress))
+        message = self._n.point_cloud_crs_warning(cloud.id)
+        if message:
+            warnings.warn(message, UserWarning, stacklevel=2)
+        return cloud
 
     import_point_cloud = import_pointcloud
 

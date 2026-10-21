@@ -642,7 +642,10 @@ Design objects (developments, stopes, mining blocks) linked to an activity.
 ### `import_pointcloud(file: PathType, name: str = , source_crs: str = , progress: Optional[_core.Progress] = None) -> PointCloud`
 
 Imports a scan (LAS/LAZ, E57, PLY, XYZ/CSV/TXT/ASC, and the PDAL formats when built with
-PDAL) into an octree dataset; ``source_crs`` reprojects it into the project CRS.
+PDAL) into an octree dataset. Coordinates are stored exactly as read — never transformed
+implicitly. ``source_crs`` records the scan's CRS (default: the one the file declares); when
+it is not the project CRS a ``UserWarning`` says so (transform with :meth:`Crs.transform_objects`
+or register the scan).
 
 ### `import_point_cloud`
 

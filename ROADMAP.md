@@ -1,49 +1,65 @@
 # Roadmap
 
-Phases follow the master specification. A feature is "done" only when it has automated tests
-and is listed as implemented in `IMPLEMENTATION_STATUS.md`.
+Phases follow the master specification. A feature is "done" only when it has automated tests and
+is listed as implemented in `IMPLEMENTATION_STATUS.md`. Version history: v0.1 (Phase 1 + vertical
+slice), v0.2 (CAD, survey I/O and processing, calendar-time scheduling), v0.3 (solids, geology,
+geotechnical, repository, plugins, reports), v0.4 (shared project-level operations behind the
+desktop, console and Python; as-built conformance; scheduling libraries; generated references).
 
-## Phase 1 — Architecture and foundation ✅ (v0.1)
-Architecture, ERD, licence audit, repository, CMake/presets, Qt 6 shell with ribbon (10
-workspaces), dockable explorer/properties/console/scheduler, VTK viewport, project
-create/open/save, dark/light themes.
+## Phase 1 — Architecture and foundation ✅
+- [x] Architecture, ERD, licence audit, repository, CMake presets, CI definition
+- [x] Qt 6 shell: menus, 10 ribbon workspaces, dockable panels, status bar, themes
+- [x] VTK viewports, project create/open/save/close, undo/redo, audit log
 
-## Phase 2 — Initial CAD (next)
-- [x] Line / polyline (viewport and console), selection, grid + endpoint snap, layers, attributes,
-      persistence, undo/redo, move/copy/rotate, delete *(delivered early in v0.1)*
-- [ ] Arc, circle, spline, rectangle, polygon, text, dimensions, hatch
-- [ ] Offset, trim, extend, split, join, explode, fillet, chamfer, mirror, scale
-- [ ] Midpoint, centre, intersection, perpendicular, tangent, nearest snaps
-- [ ] Vertex grip editing and box/multi-selection in the viewport
-- [ ] DXF import/export (round-trip tested)
+## Phase 2 — CAD ✅
+- [x] Lines, polylines with arcs, polygons, rectangles, circles, arcs, splines, text, dimensions, hatches
+- [x] Offset, trim, extend, split, join, explode, fillet, chamfer, move/copy/rotate/mirror/scale
+- [x] Object snaps (endpoint, midpoint, centre, intersection, perpendicular, tangent, nearest, node, grid, surface), ortho, typed input
+- [x] Box/multi-selection, grip editing, layers, schema-driven attributes
+- [x] DXF R2004 import/export (validated against ezdxf); solids with Open CASCADE; STEP/IGES
 
-## Phase 3 — Initial survey
-- [ ] PDAL integration: LAS/LAZ (LASzip) and E57 import; CSV/XYZ/PTS points
-- [ ] Out-of-core octree tiles in the asset sidecar; background loading with progress/cancel
-- [ ] Point-cloud rendering (LOD), crop (box/polygon), statistical/radius outlier, voxel filters
-- [ ] Coordinate display and point picking; distances
-- [ ] Point-pair and control registration with residual/QA reporting; ICP (Open3D)
-- [ ] Surface generation (Delaunay 2.5D, Poisson) and mesh export
-- [ ] PROJ CRS transformations (Lo-system ↔ WGS84 with verified parameters)
+## Phase 3 — Survey ✅
+- [x] LAS/LAZ/E57/PLY (PDAL), XYZ/CSV/PTS/PTX; out-of-core LOD octree with background loading
+- [x] Crop, outlier, voxel/spacing filters, normals, segmentation, ground classification — as derived datasets
+- [x] Point-pair/control registration with residual reports; ICP (built-in and Open3D)
+- [x] Delaunay and Poisson surfaces, mesh tools, volumes; OBJ/PLY/STL
+- [x] PROJ transformations, CRS identification, local grids
 
-## Phase 4 — Scheduler completion
-- [x] Activity model, WBS, Gantt, dependencies (FS/SS/FF/SF + lags), calendars, CPM, floats,
-      critical path, geometry links, save/load, validation tests *(delivered early in v0.1)*
-- [ ] Per-activity and resource calendars (calendar-time CPM)
-- [ ] In-grid editing, drag-to-link in the Gantt, filtering/grouping
-- [ ] Baseline vs forecast variance columns; scenario copies
-- [ ] XLSX and PDF export
+## Phase 4 — Scheduler ✅
+- [x] Calendar-time CPM with shift calendars, resource calendars, constraints, negative float
+- [x] Rates, development cycles, resources, levelling, OR-Tools optimisation as scenarios
+- [x] Gantt with in-grid editing, dependencies, baselines and variances; CSV/XLSX/PDF exports
 
-## Phase 5 — Integrated mine workflow
-- [x] Heading → linked activity → rate/calendar → dates *(v0.1)*
-- [x] Actual advance → remaining quantity → reforecast from status date *(v0.1, single actual value)*
-- [x] Planned vs actual development in 3D *(v0.1, advance overlay)*
-- [ ] Dated `ProductionActual` records; survey-derived face positions
-- [ ] Reports (PDF/HTML) and dashboards
-- [ ] `DesignRevision` history with geometry snapshots
+## Phase 5 — Integrated mine workflow ✅
+- [x] Design → linked activity → rate/calendar → dates; geometry changes flag, never overwrite
+- [x] Dated actuals, survey-derived face positions reconciled with reported advance, reforecast
+- [x] Planned vs actual in 3D, 4D playback, scenario comparison
+- [x] Design revisions; reports (HTML/PDF/XLSX)
 
-## Phase 6 — Advanced
-Tunnel profiles and swept solids in the viewport (OCCT adapter exists), stope solids, overbreak/
-underbreak conformance, chainage sections, OR-Tools resource-constrained scheduling, 4D playback,
-geology (drillholes, surfaces, block models), geotechnical tools, PostgreSQL/PostGIS backend,
-plugin SDK, embedded Python console.
+## Phase 6 — Advanced ✅ (first versions)
+- [x] Tunnel profiles and swept solids, stopes and mining blocks, as-built conformance
+- [x] Geology (drillholes, compositing, block models, variography, kriging) and geotechnical tools
+- [x] PostgreSQL/PostGIS shared repository; plugin SDK (C ABI + Python); embedded Python console
+
+## Next (v0.5 and beyond)
+
+Verification and delivery
+- [ ] Execute the Windows CI job (MSVC + vcpkg), fix what it finds, publish an installer that keeps
+      LGPL libraries replaceable
+- [ ] Publish the Python package as wheels (Linux, Windows)
+- [ ] Validate against production datasets (scans of real headings, a full mine schedule) with
+      published comparisons against established tools' outputs
+- [x] Engine benchmarks with budgets in CI (`benchmarks/`: CPM, levelling, save/load, octree, k-d tree, filters)
+- [ ] Larger-scale budgets (10⁸-point import) and viewport frame-time measurements
+
+Features
+- [ ] Scheduling: progress override as an alternative to retained logic; activity splitting and
+      partial resource units in levelling; cost tracking against `costPerHour`
+- [ ] Survey: E57 embedded images and scan-position metadata; classification editing tools
+- [ ] Geology: sub-blocked models; implicit surfaces from contacts
+- [ ] Design: associative dimensions; parametric stope shapes optimised against block models
+- [ ] Exchange: DWG through an optional, separately licensed plugin (ODA), never in-process GPL code
+- [ ] Collaboration: repository web viewer; comments on entities
+
+Documentation
+- [ ] Desktop user guide with screenshots per workflow (survey → design → schedule → reconcile)
