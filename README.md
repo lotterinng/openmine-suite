@@ -42,7 +42,20 @@ pretends to work.
   embedded Python console, native (C ABI) and Python plugins, a PostgreSQL/PostGIS shared
   repository.
 
-## Quick start (Linux)
+## Install (Ubuntu 24.04)
+
+Download `openmine-suite_<version>_amd64.deb` and install it — double-click it in the Files app, or:
+
+```bash
+sudo apt install ./openmine-suite_0.4.0_amd64.deb
+```
+
+Then start **OpenMine Suite** from the applications menu, or run `openmine-suite` (optionally with a
+`.openmine` file). Python scripts: `openmine-python script.py`. Remove with
+`sudo apt remove openmine-suite`. The package bundles PDAL, Open3D, OR-Tools and Clipper2 under
+`/opt/openmine-suite`; everything else comes from Ubuntu packages, which apt installs automatically.
+
+## Build from source (Linux)
 
 See [`DEVELOPMENT.md`](DEVELOPMENT.md) for dependencies and Windows (MSVC + vcpkg).
 

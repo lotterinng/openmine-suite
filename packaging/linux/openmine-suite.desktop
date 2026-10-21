@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=OpenMine Suite
+GenericName=Mine survey, design and scheduling
+Comment=Integrated mine survey, CAD/mine design and scheduling
+Exec=/usr/bin/openmine-suite %f
+Icon=openmine-suite
+Terminal=false
+Categories=Science;Engineering;Geoscience;
+MimeType=application/x-openmine-project;
+Keywords=mining;survey;point cloud;CAD;schedule;Gantt;LiDAR;
+StartupWMClass=openmine-desktop

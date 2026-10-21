@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- OpenMine Suite application icon (original artwork, Apache-2.0) -->
+  <rect x="8" y="8" width="240" height="240" rx="44" fill="#1d232b"/>
+  <!-- isometric block -->
+  <polygon points="128,46 206,90 128,134 50,90" fill="#3fa9f5"/>
+  <polygon points="50,90 128,134 128,214 50,170" fill="#2b7cb8"/>
+  <polygon points="206,90 128,134 128,214 206,170" fill="#1f5c8a"/>
+  <!-- decline spiralling down the block -->
+  <path d="M72 112 L150 156 L184 136 L106 92 L78 108" fill="none" stroke="#ffb300" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="72" cy="112" r="9" fill="#ffb300"/>
+</svg>

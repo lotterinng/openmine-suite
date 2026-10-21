@@ -93,6 +93,24 @@ sudo -u postgres psql -h 127.0.0.1 -p 54329 -c "CREATE DATABASE openmine_test"
 sudo -u postgres psql -h 127.0.0.1 -p 54329 -d openmine_test -c "CREATE EXTENSION postgis"
 ```
 
+### Ubuntu package
+
+```bash
+cmake -S . -B build/pkg -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH="/opt/pdal;/opt/clipper2;/opt/ortools" \
+  -DOpen3D_DIR=/opt/open3d-devel-linux-x86_64-cxx11-abi-0.18.0/lib/cmake/Open3D \
+  -DPython_EXECUTABLE=/usr/bin/python3.12 -DOPENMINE_BUILD_TESTS=OFF -DOPENMINE_BUILD_BENCHMARKS=OFF
+cmake --build build/pkg
+python3 -m pip install --break-system-packages patchelf
+packaging/linux/make_deb.sh build/pkg dist        # → dist/openmine-suite_<version>_amd64.deb
+```
+
+Build against the distribution's Python (3.12 on Ubuntu 24.04): the package runs the embedded
+console and `openmine-python` with `/usr/bin/python3.12`. The script bundles the libraries Ubuntu
+does not package (everything resolved under `/opt`), gives every ELF file a relative `RUNPATH`,
+adds the PDAL plugins, the sample plugins, licence texts, a desktop entry, an icon and the
+`.openmine` MIME type, and computes `Depends` with `dpkg-shlibdeps`.
+
 ## Windows 10/11 x64 (primary target)
 
 ```powershell
