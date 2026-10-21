@@ -35,6 +35,13 @@ jobs:
         with:
           arch: x64
 
+      # The developer environment points VCPKG_ROOT at Visual Studio's bundled vcpkg; this build
+      # uses its own clone at the pinned tag.
+      - name: Use the pinned vcpkg
+        shell: pwsh
+        run: |
+          "VCPKG_ROOT=${{ github.workspace }}\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Restore vcpkg binary cache
         id: vcpkg-cache
         uses: actions/cache/restore@v4
