@@ -8,6 +8,9 @@ on:
       - ".github/workflows/windows.yml"
       - ".github/scripts/**"
       - "packaging/windows/**"
+      - "packaging/vcpkg-overlays/**"
+      - "vcpkg.json"
+      - "vcpkg-configuration.json"
   pull_request:
   workflow_dispatch:
 

@@ -8,6 +8,11 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+    # Changes that only concern the Linux jobs or packages do not rebuild Windows.
+    paths-ignore:
+      - ".github/workflows/ci.yml"
+      - ".github/scripts/logged.sh"
+      - "packaging/linux/**"
   pull_request:
   workflow_dispatch:
 
