@@ -11,9 +11,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A newer push waits for the running build (its vcpkg binary cache is saved when it ends).
 concurrency:
   group: windows-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: write   # releases for tags
@@ -125,6 +126,7 @@ jobs:
           $env:QT_PLUGIN_PATH = "$vi\Qt6\plugins"
           $env:PROJ_DATA = "$vi\share\proj"
           $env:GDAL_DATA = "$vi\share\gdal"
+          $env:PDAL_DRIVER_PATH = "$vi\bin"      # PDAL's format plugins (E57, pgpointcloud)
           ./.github/scripts/logged.ps1 -Name tests -Tail 120 -Grep '\*\*\*Failed|\*\*\*Exception|Timeout|\[  FAILED|Failure|Error|error' -Script {
             ctest --preset windows-msvc -LE gui --timeout 1800
           }
@@ -145,6 +147,7 @@ jobs:
           $env:QT_PLUGIN_PATH = "$vi\Qt6\plugins"
           $env:PROJ_DATA = "$vi\share\proj"
           $env:GDAL_DATA = "$vi\share\gdal"
+          $env:PDAL_DRIVER_PATH = "$vi\bin"      # PDAL's format plugins (E57, pgpointcloud)
           ./.github/scripts/logged.ps1 -Name smoke -Tail 120 -Grep 'FAIL|Failed|Error|error' -Script {
             ctest --preset windows-msvc -L gui --timeout 1800
             if ($LASTEXITCODE -and (Test-Path build\windows-msvc\gui-smoke)) {

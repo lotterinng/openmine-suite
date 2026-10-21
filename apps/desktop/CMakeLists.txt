@@ -104,8 +104,11 @@ if(OPENMINE_BUILD_TESTS)
     endif()
     add_test(NAME gui_smoke_test
              COMMAND ${_smoke_launcher} $<TARGET_FILE:openmine-desktop> --smoke-test ${CMAKE_BINARY_DIR}/gui-smoke)
-    set_tests_properties(gui_smoke_test PROPERTIES TIMEOUT 1800 LABELS "gui"
-                         ENVIRONMENT "QT_QPA_PLATFORM=xcb;LIBGL_ALWAYS_SOFTWARE=1;OPENMINE_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins")
+    set(_smoke_env "OPENMINE_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins")
+    if(UNIX AND NOT APPLE)
+        list(APPEND _smoke_env "QT_QPA_PLATFORM=xcb" "LIBGL_ALWAYS_SOFTWARE=1")
+    endif()
+    set_tests_properties(gui_smoke_test PROPERTIES TIMEOUT 1800 LABELS "gui" ENVIRONMENT "${_smoke_env}")
     # docs/console-commands.md lists every console command of a build with PROJ (CRS is the only
     # conditional command).
     if(TARGET openmine_crs)
