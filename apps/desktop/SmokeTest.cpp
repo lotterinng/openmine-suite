@@ -52,6 +52,7 @@
 #include <QTextStream>
 #include <QThread>
 #include <QProgressDialog>
+#include <QPushButton>
 #include <QTimer>
 
 #include <cmath>
@@ -859,21 +860,22 @@ void Smoke::scripting() {
             line("      Python transcript:\n" + w_.python()->transcript().right(2000));
         check(m().layers.size() == n + 1, "the Python edit reached the model");
         check(cmd("UNDO") && m().layers.size() == n, "Python edits are undoable");
-        // A runaway loop: the "Running Python…" dialog appears and its Interrupt button stops it
+        // A runaway loop (a single statement, so the console runs it at once): the "Running Python…" dialog appears and its Interrupt button stops it
         // (the pump keeps the UI responsive; the interrupt raises KeyboardInterrupt in the loop).
         int cancelClicks = 0;
         QTimer clicker;
         QObject::connect(&clicker, &QTimer::timeout, [&] {
             for (auto* tw : QApplication::topLevelWidgets())
-                if (auto* pd = qobject_cast<QProgressDialog*>(tw); pd && pd->isVisible()) {
-                    ++cancelClicks;
-                    pd->cancel();
-                }
+                if (auto* pd = qobject_cast<QProgressDialog*>(tw); pd && pd->isVisible())
+                    if (auto* button = pd->findChild<QPushButton*>(); button && button->isVisible()) {
+                        ++cancelClicks;
+                        button->click(); // the dialog's Interrupt button
+                    }
         });
         clicker.start(250);
         QElapsedTimer loopTime;
         loopTime.start();
-        const bool loopOk = cmd("PYTHON while True: pass");
+        const bool loopOk = cmd("PYTHON exec(\"while True: pass\")"); // one complete statement
         clicker.stop();
         const qint64 ms = loopTime.elapsed();
         check(!loopOk && cancelClicks > 0 && ms < 20000 && w_.python()->transcript().contains("KeyboardInterrupt"),
