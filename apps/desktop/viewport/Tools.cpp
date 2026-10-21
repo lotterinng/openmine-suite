@@ -8,6 +8,7 @@
 #include "openmine/geometry/Polygon2D.h"
 #include "openmine/geometry/Polyline.h"
 #include "openmine/mine_design/Development.h"
+#include "openmine/mine_design/GeometryEdits.h"
 #include "openmine/project/ProjectEditor.h"
 
 #ifdef OPENMINE_APP_HAVE_OCCT
@@ -687,8 +688,8 @@ void ToolController::applyTransform(const Transform3& t, bool copy, const QStrin
     ctx_.tryEdit(what, [&] {
         auto& p = ctx_.project();
         CommandStack::MacroScope macro(p.commands(), sstr(what));
-        ProjectEditor ed(p);
         std::vector<SelectionItem> created;
+        std::vector<Uuid> others;
         for (const auto* g : objs) {
             if (g->type == GeometryType::Solid) {
 #ifdef OPENMINE_APP_HAVE_OCCT
@@ -699,16 +700,11 @@ void ToolController::applyTransform(const Transform3& t, bool copy, const QStrin
 #endif
                 continue;
             }
-            GeometryObject n = cad::transformed(*g, t);
-            if (copy) {
-                n.id = {};
-                n.attributes = g->attributes;
-                created.push_back({EntityKind::Geometry, ed.addGeometry(std::move(n))});
-            } else {
-                // Centrelines: flag linked schedule quantities (never change them silently).
-                mine_design::updateGeometryWithImpact(p, n, sstr(what));
-            }
+            others.push_back(g->id);
         }
+        // Centrelines: linked schedule quantities are flagged (never changed silently).
+        if (!others.empty())
+            for (const auto& id : mine_design::transformObjects(p, others, t, copy, sstr(what)).created) created.push_back({EntityKind::Geometry, id});
         macro.commit();
         if (copy) ctx_.selectMany(created);
     });
@@ -746,139 +742,45 @@ void ToolController::complete() {
         break;
     }
     case Tool::Offset: {
-        const auto* g = m.geometry.find(picked_.at(0));
-        if (!g) break;
-        ctx_.tryEdit(tr("Offset"), [&] {
-            auto o = cad::offset(*g, offsetDistance_, pickedAt_.at(1));
-            o.id = {};
-            o.layerId = g->layerId;
-            ProjectEditor(ctx_.project()).addGeometry(std::move(o), "Offset");
-        });
+        const Uuid id = picked_.at(0);
+        const Vec3 side = pickedAt_.at(1);
+        ctx_.tryEdit(tr("Offset"), [&] { mine_design::offsetObject(ctx_.project(), id, offsetDistance_, side); });
         break;
     }
     case Tool::Trim:
     case Tool::Extend: {
-        const auto* target = m.geometry.find(picked_.at(0));
-        if (!target) break;
-        std::vector<const GeometryObject*> edges;
+        const Uuid target = picked_.at(0);
+        if (!m.geometry.find(target)) break;
+        // Cutting edges / boundaries: the selected curves, else every curve on a visible layer.
+        std::vector<Uuid> edges;
         for (const auto* g : selectedObjects())
-            if (g->id != target->id && geometry::isCurve(g->type)) edges.push_back(g);
-        if (edges.empty())
-            for (const auto& g : m.geometry.all())
-                if (g.id != target->id && geometry::isCurve(g.type)) {
-                    const auto* layer = m.layers.find(g.layerId);
-                    if (!layer || layer->visible) edges.push_back(&g);
-                }
+            if (g->id != target && geometry::isCurve(g->type)) edges.push_back(g->id);
         const bool trim = tool_ == Tool::Trim;
+        const Vec3 pick = pickedAt_.at(0);
         ctx_.tryEdit(trim ? tr("Trim") : tr("Extend"), [&] {
-            auto& p = ctx_.project();
-            if (trim) {
-                auto pieces = cad::trim(*target, edges, pickedAt_.at(0));
-                CommandStack::MacroScope macro(p.commands(), "Trim");
-                ProjectEditor ed(p);
-                if (pieces.empty()) {
-                    ed.removeGeometry(target->id);
-                } else {
-                    // The first piece keeps the object's identity (and any development link).
-                    GeometryObject first = pieces.front();
-                    first.id = target->id;
-                    first.meta = target->meta;
-                    mine_design::updateGeometryWithImpact(p, first, "Trim");
-                    for (std::size_t i = 1; i < pieces.size(); ++i) {
-                        auto n = pieces[i];
-                        n.id = {};
-                        ed.addGeometry(std::move(n));
-                    }
-                }
-                macro.commit();
-            } else {
-                auto ext = cad::extend(*target, edges, pickedAt_.at(0));
-                ext.id = target->id;
-                ext.meta = target->meta;
-                mine_design::updateGeometryWithImpact(p, ext, "Extend");
-            }
+            if (trim) mine_design::trimObject(ctx_.project(), target, edges, pick);
+            else mine_design::extendObject(ctx_.project(), target, edges, pick);
         });
         break;
     }
     case Tool::Fillet: {
         if (picked_.size() < 2) break;
-        const auto* a = m.geometry.find(picked_[0]);
-        const auto* b = m.geometry.find(picked_[1]);
-        if (!a || !b) break;
-        ctx_.tryEdit(tr("Fillet"), [&] {
-            auto& p = ctx_.project();
-            CommandStack::MacroScope macro(p.commands(), "Fillet");
-            ProjectEditor ed(p);
-            if (a->id == b->id) {
-                auto f = cad::filletPolylineVertex(*a, pickedAt_[1], filletRadius_);
-                f.id = a->id;
-                f.meta = a->meta;
-                mine_design::updateGeometryWithImpact(p, f, "Fillet");
-            } else {
-                auto r = cad::fillet(*a, pickedAt_[0], *b, pickedAt_[1], filletRadius_);
-                r.first.id = a->id;
-                r.first.meta = a->meta;
-                r.second.id = b->id;
-                r.second.meta = b->meta;
-                mine_design::updateGeometryWithImpact(p, r.first, "Fillet");
-                mine_design::updateGeometryWithImpact(p, r.second, "Fillet");
-                if (r.join) {
-                    auto j = *r.join;
-                    j.id = {};
-                    j.layerId = a->layerId;
-                    ed.addGeometry(std::move(j));
-                }
-            }
-            macro.commit();
-        });
+        const Uuid a = picked_[0], b = picked_[1];
+        const Vec3 pa = pickedAt_[0], pb = pickedAt_[1];
+        ctx_.tryEdit(tr("Fillet"), [&] { mine_design::filletObjects(ctx_.project(), a, pa, b, pb, filletRadius_); });
         break;
     }
     case Tool::Chamfer: {
         if (picked_.size() < 2) break;
-        const auto* a = m.geometry.find(picked_[0]);
-        const auto* b = m.geometry.find(picked_[1]);
-        if (!a || !b) break;
-        ctx_.tryEdit(tr("Chamfer"), [&] {
-            if (a->id == b->id) throw ValidationError("Chamfer two different curves");
-            auto& p = ctx_.project();
-            CommandStack::MacroScope macro(p.commands(), "Chamfer");
-            ProjectEditor ed(p);
-            auto r = cad::chamfer(*a, pickedAt_[0], *b, pickedAt_[1], chamferA_, chamferB_);
-            r.first.id = a->id;
-            r.first.meta = a->meta;
-            r.second.id = b->id;
-            r.second.meta = b->meta;
-            mine_design::updateGeometryWithImpact(p, r.first, "Chamfer");
-            mine_design::updateGeometryWithImpact(p, r.second, "Chamfer");
-            if (r.join) {
-                auto j = *r.join;
-                j.id = {};
-                j.layerId = a->layerId;
-                ed.addGeometry(std::move(j));
-            }
-            macro.commit();
-        });
+        const Uuid a = picked_[0], b = picked_[1];
+        const Vec3 pa = pickedAt_[0], pb = pickedAt_[1];
+        ctx_.tryEdit(tr("Chamfer"), [&] { mine_design::chamferObjects(ctx_.project(), a, pa, b, pb, chamferA_, chamferB_); });
         break;
     }
     case Tool::Split: {
-        const auto* g = m.geometry.find(picked_.at(0));
-        if (!g) break;
-        ctx_.tryEdit(tr("Split"), [&] {
-            auto& p = ctx_.project();
-            auto pieces = cad::split(*g, pickedAt_.at(0));
-            CommandStack::MacroScope macro(p.commands(), "Split");
-            ProjectEditor ed(p);
-            GeometryObject first = pieces.at(0);
-            first.id = g->id;
-            first.meta = g->meta;
-            mine_design::updateGeometryWithImpact(p, first, "Split");
-            for (std::size_t i = 1; i < pieces.size(); ++i) {
-                auto n = pieces[i];
-                n.id = {};
-                ed.addGeometry(std::move(n));
-            }
-            macro.commit();
-        });
+        const Uuid id = picked_.at(0);
+        const Vec3 at = pickedAt_.at(0);
+        ctx_.tryEdit(tr("Split"), [&] { mine_design::splitObject(ctx_.project(), id, at); });
         break;
     }
     case Tool::MeasureArea: {

@@ -6,7 +6,9 @@
 // a project goes through the editor: validated, undoable and audited exactly as in the application.
 #include "Bindings.h"
 
+#include "openmine/cad/Annotation.h"
 #include "openmine/cad/Edit.h"
+#include "openmine/formats/Dxf.h"
 #include "openmine/formats/DxfProject.h"
 #include "openmine/formats/MeshFormats.h"
 #include "openmine/geology/BlockModel.h"
@@ -17,9 +19,15 @@
 #include "openmine/geometry/Curves.h"
 #include "openmine/geometry/MeshOps.h"
 #include "openmine/geometry/Polyline.h"
+#include "openmine/geometry/Profile.h"
 #include "openmine/geotechnical/RockMass.h"
 #include "openmine/geotechnical/Stereonet.h"
 #include "openmine/mine_design/Development.h"
+#include "openmine/mine_design/GeometryEdits.h"
+#include "openmine/mine_design/Stopes.h"
+#include "openmine/mine_design/Revisions.h"
+#include "openmine/mine_design/Layout.h"
+#include "openmine/mine_design/Headings.h"
 #include "openmine/omf/OmfProject.h"
 #include "openmine/persistence/EntityCodec.h"
 #include "openmine/persistence/ProjectFile.h"
@@ -29,9 +37,15 @@
 #include "openmine/reporting/ScheduleExport.h"
 #include "openmine/reporting/SurveyReports.h"
 #include "openmine/scheduling/Cpm.h"
+#include "openmine/scheduling/Levelling.h"
+#include "openmine/scheduling/Periods.h"
+#include "openmine/scheduling/Production.h"
+#include "openmine/scheduling/ScenarioSchedule.h"
 #include "openmine/scheduling/ScheduleTable.h"
 #include "openmine/survey/AsBuilt.h"
 #include "openmine/survey/Conformance.h"
+#include "openmine/survey/Derivations.h"
+#include "openmine/survey/SurfaceTools.h"
 #include "openmine/survey/Meshing.h"
 #include "openmine/survey/PointCloudProject.h"
 #include "openmine/survey/Processing.h"
@@ -51,6 +65,7 @@
 #include "openmine/repository/PgRepository.h"
 #endif
 #ifdef OPENMINE_PY_HAVE_OCCT
+#include "openmine/occt/Modelling.h"
 #include "openmine/occt/SolidObjects.h"
 #endif
 #ifdef OPENMINE_PY_HAVE_PDAL
@@ -70,6 +85,7 @@
 #include <optional>
 #include <set>
 #include <fstream>
+#include <numbers>
 #include <sstream>
 
 namespace py = pybind11;
@@ -272,6 +288,99 @@ py::dict bufferDict(const survey::PointBuffer& b) {
         d[py::str(b.schema().scalarFields[s])] = a;
     }
     return d;
+}
+
+Vec3 vec(const std::array<double, 3>& a) { return {a[0], a[1], a[2]}; }
+
+std::vector<Uuid> uuids(const std::vector<std::string>& ids) {
+    std::vector<Uuid> out;
+    out.reserve(ids.size());
+    for (const auto& id : ids) out.push_back(uuidArg(id));
+    return out;
+}
+
+py::dict editDict(const mine_design::EditResult& r) {
+    auto strs = [](const std::vector<Uuid>& v) {
+        std::vector<std::string> o;
+        for (const auto& u : v) o.push_back(u.toString());
+        return o;
+    };
+    py::dict d;
+    d["changed"] = strs(r.changed);
+    d["created"] = strs(r.created);
+    d["removed"] = strs(r.removed);
+    d["notes"] = r.notes;
+    d["flagged_activities"] = r.flaggedActivities;
+    return d;
+}
+
+/// A NewDevelopment from keyword data (heading_id, name, level — a MineLevel code/name/id or free
+/// text —, zone, activity_type, width, height, chainage_from, profile, material, support_class, decline).
+mine_design::NewDevelopment developmentSpec(const Project& p, const py::dict& spec) {
+    static const std::set<std::string> known{"heading_id", "name", "level", "zone", "activity_type", "width", "height", "chainage_from",
+                                             "profile", "material", "support_class", "decline", "decline_number"};
+    for (const auto& kv : spec)
+        if (!known.count(kv.first.cast<std::string>())) throw py::value_error("Unknown development field '" + kv.first.cast<std::string>() + "'");
+    mine_design::NewDevelopment n;
+    if (spec.contains("heading_id")) n.headingId = spec["heading_id"].cast<std::string>();
+    if (spec.contains("name")) n.name = spec["name"].cast<std::string>();
+    if (spec.contains("level")) {
+        const auto lv = spec["level"].cast<std::string>();
+        const auto u = Uuid::parse(lv);
+        for (const auto& l : p.model().levels.all())
+            if ((u && l.id == *u) || l.code == lv || l.name == lv) n.levelId = l.id;
+        if (n.levelId.isNil()) n.level = lv;
+    }
+    if (spec.contains("zone")) n.zone = spec["zone"].cast<std::string>();
+    if (spec.contains("activity_type")) n.activityType = spec["activity_type"].cast<std::string>();
+    if (spec.contains("width")) n.width = spec["width"].cast<double>();
+    if (spec.contains("height")) n.height = spec["height"].cast<double>();
+    if (spec.contains("chainage_from")) n.chainageFrom = spec["chainage_from"].cast<double>();
+    if (spec.contains("profile")) n.profileId = uuidArg(spec["profile"].cast<std::string>());
+    if (spec.contains("material")) n.materialId = uuidArg(spec["material"].cast<std::string>());
+    else if (!p.model().materials.empty()) n.materialId = p.model().materials.all().front().id;
+    if (spec.contains("support_class")) n.supportClassId = uuidArg(spec["support_class"].cast<std::string>());
+    if (spec.contains("decline")) n.declineId = uuidArg(spec["decline"].cast<std::string>());
+    if (spec.contains("decline_number")) n.declineNumber = spec["decline_number"].cast<std::string>();
+    return n;
+}
+
+py::dict layoutDict(const mine_design::LayoutResult& r) {
+    py::dict d;
+    d["vertices"] = fromPoints(r.vertices);
+    d["bulges"] = r.bulges;
+    d["plan_length"] = r.planLength;
+    d["length_3d"] = r.length3d;
+    d["notes"] = r.notes;
+    return d;
+}
+
+mine_design::LayoutResult layoutFrom(const py::dict& d) {
+    mine_design::LayoutResult r;
+    r.vertices = toPoints(d["vertices"].cast<Points>());
+    if (d.contains("bulges")) r.bulges = d["bulges"].cast<std::vector<double>>();
+    r.bulges.resize(r.vertices.size(), 0.0);
+    return r;
+}
+
+mine_design::Side sideFrom(const std::string& s) {
+    if (s == "left") return mine_design::Side::Left;
+    if (s == "right") return mine_design::Side::Right;
+    if (s == "both") return mine_design::Side::Both;
+    throw py::value_error("side must be 'left', 'right' or 'both'");
+}
+
+mine_design::TurnDirection turnFrom(const std::string& s) {
+    if (s == "left") return mine_design::TurnDirection::Left;
+    if (s == "right") return mine_design::TurnDirection::Right;
+    throw py::value_error("turn must be 'left' or 'right'");
+}
+
+geometry::Ring planRing(const Points& pts) {
+    geometry::Ring r;
+    for (const auto& v : toPoints(pts)) r.push_back({v.x, v.y});
+    if (r.size() > 1 && distance(r.front(), r.back()) < 1e-9) r.pop_back();
+    return r;
 }
 
 py::dict conformanceDict(const survey::ConformanceReport& r) {
@@ -510,6 +619,20 @@ void defineBindings(py::module_& m) {
     py::register_exception<persistence::PersistenceError>(m, "PersistenceError", PyExc_IOError);
     py::register_exception<jobs::CancelledError>(m, "CancelledError", PyExc_RuntimeError);
     py::register_exception<survey::PointCloudError>(m, "PointCloudError", PyExc_RuntimeError);
+    // File-format errors (unreadable or invalid files): RuntimeError subclasses with their own names.
+    py::register_exception<formats::DxfError>(m, "DxfError", PyExc_RuntimeError);
+    py::register_exception<formats::MeshFormatError>(m, "MeshFormatError", PyExc_RuntimeError);
+    py::register_exception<omf::OmfError>(m, "OmfError", PyExc_RuntimeError);
+#ifdef OPENMINE_PY_HAVE_GIS
+    py::register_exception<gis::GisError>(m, "GisError", PyExc_RuntimeError);
+#endif
+#ifdef OPENMINE_PY_HAVE_OCCT
+    py::register_exception<occt::SolidError>(m, "SolidError", PyExc_RuntimeError);
+#endif
+#ifdef OPENMINE_PY_HAVE_CRS
+    // An unknown or unsuitable CRS definition is invalid input.
+    py::register_exception<crs::CrsError>(m, "CrsError", PyExc_ValueError);
+#endif
 
     py::class_<jobs::Progress>(m, "Progress", "Progress and cancellation of a long operation (cancel() may be called from another thread).")
         .def(py::init<>())
@@ -658,8 +781,27 @@ void defineBindings(py::module_& m) {
             d["bulges"] = g.bulges;
             d["attributes"] = g.attributes;
             if (g.mesh) d["mesh"] = fromMesh(*g.mesh);
-            if (!g.vertices.empty() && geometry::isCurve(g.type))
-                d["length"] = g.bulges.empty() ? geometry::length3d(g.vertices, g.closed) : geometry::length3dBulged(g.vertices, g.bulges, g.closed);
+            if (geometry::isCurve(g.type)) d["length"] = geometry::curveLength(g);
+            if (g.type == GeometryType::Arc || g.type == GeometryType::Circle) {
+                py::dict a;
+                a["centre"] = py::make_tuple(g.arc.center.x, g.arc.center.y, g.arc.center.z);
+                a["radius"] = g.arc.radius;
+                a["start_deg"] = g.arc.startAngle * 180.0 / std::numbers::pi;
+                a["end_deg"] = g.arc.endAngle * 180.0 / std::numbers::pi;
+                d["arc"] = a;
+            }
+            if (g.type == GeometryType::Hatch) d["hatch_area"] = cad::hatchArea(g);
+            if (g.type == GeometryType::Text) {
+                d["text"] = g.text.text;
+                d["text_height"] = g.text.height;
+                d["rotation_deg"] = g.text.rotation * 180.0 / std::numbers::pi;
+            }
+            if (g.type == GeometryType::Dimension) {
+                d["dimension_kind"] = toString(g.dimension.kind);
+                const auto dg = cad::dimensionGraphics(g);
+                d["dimension_value"] = dg.value;
+                d["dimension_text"] = dg.text;
+            }
             if (g.mesh) {
                 d["area"] = geometry::meshArea(*g.mesh);
                 d["volume"] = geometry::meshSignedVolume(*g.mesh);
@@ -674,28 +816,115 @@ void defineBindings(py::module_& m) {
             return out;
         }, py::arg("type") = py::none(), py::arg("layer") = py::none())
         .def("remove_geometry", [](PyProject& s, const std::string& id) { ProjectEditor(s.get()).removeGeometry(uuidArg(id)); })
-        .def("offset_curve", [](PyProject& s, const std::string& id, double distance, std::array<double, 3> side) {
-            auto r = cad::offset(geometryOf(s.get(), id), distance, {side[0], side[1], side[2]});
-            r.id = Uuid{};
-            return ProjectEditor(s.get()).addGeometry(std::move(r), "Offset").toString();
-        }, py::arg("id"), py::arg("distance"), py::arg("side_point"));
+        .def("offset_curve", [](PyProject& s, const std::string& id, double distance, std::array<double, 3> side, bool round) {
+            return mine_design::offsetObject(s.get(), uuidArg(id), distance, vec(side), round).toString();
+        }, py::arg("id"), py::arg("distance"), py::arg("side_point"), py::arg("round_joins") = false)
+        .def("add_cad_object", [](PyProject& s, const std::string& kind, const py::dict& a, const std::string& name, const std::string& layer,
+                                  const std::map<std::string, std::string>& attrs) {
+            auto pt = [&](const char* k) {
+                if (!a.contains(k)) throw py::value_error(std::string("'") + kind + "' needs " + k);
+                return vec(a[k].cast<std::array<double, 3>>());
+            };
+            auto num = [&](const char* k, std::optional<double> def = std::nullopt) {
+                if (!a.contains(k)) {
+                    if (def) return *def;
+                    throw py::value_error(std::string("'") + kind + "' needs " + k);
+                }
+                return a[k].cast<double>();
+            };
+            constexpr double deg = std::numbers::pi / 180.0;
+            GeometryObject g;
+            if (kind == "arc3") g = cad::makeArc3(pt("p1"), pt("p2"), pt("p3"));
+            else if (kind == "arc") g = cad::makeArc(pt("centre"), num("radius"), num("start_deg") * deg, num("end_deg") * deg);
+            else if (kind == "circle") g = cad::makeCircle(pt("centre"), num("radius"));
+            else if (kind == "rectangle") g = cad::makeRectangle(pt("corner1"), pt("corner2"));
+            else if (kind == "polygon")
+                g = cad::makePolygon(pt("centre"), num("radius"), static_cast<int>(num("sides")), num("rotation_deg", 0.0) * deg,
+                                     a.contains("inscribed") ? a["inscribed"].cast<bool>() : true);
+            else if (kind == "spline") {
+                if (!a.contains("points")) throw py::value_error("'spline' needs points");
+                g = cad::makeSpline(toPoints(a["points"].cast<Points>()), a.contains("closed") && a["closed"].cast<bool>());
+            } else if (kind == "text") {
+                const std::string al = a.contains("align") ? a["align"].cast<std::string>() : "left";
+                const TextAlign align = al == "center" || al == "centre" ? TextAlign::Center : al == "right" ? TextAlign::Right : TextAlign::Left;
+                if (al != "left" && al != "center" && al != "centre" && al != "right") throw py::value_error("align must be left, centre or right");
+                g = cad::makeText(pt("insertion"), a.contains("text") ? a["text"].cast<std::string>() : std::string(), num("height", 1.0),
+                                  num("rotation_deg", 0.0) * deg, align);
+            } else if (kind == "dimension") {
+                const auto k = enumFromString<DimensionKind>(a.contains("kind") ? a["kind"].cast<std::string>() : "Aligned");
+                if (!k) throw py::value_error("Unknown dimension kind (Aligned, Horizontal, Vertical, Angular, Radius, Diameter, Elevation)");
+                if (!a.contains("points")) throw py::value_error("'dimension' needs points");
+                g = cad::makeDimension(*k, toPoints(a["points"].cast<Points>()), num("text_height", 1.0), static_cast<int>(num("precision", 3)));
+            } else if (kind == "hatch") {
+                if (!a.contains("loops")) throw py::value_error("'hatch' needs loops (a list of closed boundaries)");
+                std::vector<std::vector<Vec3>> loops;
+                for (const auto& l : a["loops"]) loops.push_back(toPoints(l.cast<Points>()));
+                g = cad::makeHatch(loops, a.contains("pattern") ? a["pattern"].cast<std::string>() : "ANSI31", num("spacing", 1.0), num("angle_deg", 0.0) * deg);
+            } else {
+                throw py::value_error("Unknown object kind '" + kind + "' (arc3, arc, circle, rectangle, polygon, spline, text, dimension, hatch)");
+            }
+            g.name = name;
+            g.layerId = layerArg(s.get(), layer);
+            g.attributes = attrs;
+            return ProjectEditor(s.get()).addGeometry(std::move(g), "Add " + kind).toString();
+        }, py::arg("kind"), py::arg("parameters"), py::arg("name") = "", py::arg("layer") = "0",
+             py::arg("attributes") = std::map<std::string, std::string>{})
+        .def("transform_objects", [](PyProject& s, const std::vector<std::string>& ids, const std::vector<double>& m, bool copy, const std::string& text) {
+            if (m.size() != 16) throw py::value_error("The transform must have 16 values (4×4, row-major)");
+            std::array<double, 16> a{};
+            std::copy(m.begin(), m.end(), a.begin());
+            const Transform3 t(a);
+            auto& p = s.get();
+            CommandStack::MacroScope macro(p.commands(), text);
+            mine_design::EditResult r;
+            std::vector<Uuid> others;
+            for (const auto& id : ids) {
+                const Uuid u = uuidArg(id);
+                if (geometryOf(p, id).type == GeometryType::Solid) {
+#ifdef OPENMINE_PY_HAVE_OCCT
+                    const Uuid n = occt::transformSolidObject(p, u, t, copy);
+                    (copy ? r.created : r.changed).push_back(n);
+                    continue;
+#else
+                    throw py::value_error("Solids can only be transformed in builds with Open CASCADE");
+#endif
+                }
+                others.push_back(u);
+            }
+            if (!others.empty()) {
+                auto o = mine_design::transformObjects(p, others, t, copy, text);
+                r.changed.insert(r.changed.end(), o.changed.begin(), o.changed.end());
+                r.created.insert(r.created.end(), o.created.begin(), o.created.end());
+                r.flaggedActivities = o.flaggedActivities;
+            }
+            macro.commit();
+            return editDict(r);
+        }, py::arg("ids"), py::arg("matrix"), py::arg("copy") = false, py::arg("text") = "Transform")
+        .def("trim_curve", [](PyProject& s, const std::string& id, const std::vector<std::string>& edges, std::array<double, 3> pick) {
+            return editDict(mine_design::trimObject(s.get(), uuidArg(id), uuids(edges), vec(pick)));
+        }, py::arg("id"), py::arg("cutting_edges"), py::arg("pick"))
+        .def("extend_curve", [](PyProject& s, const std::string& id, const std::vector<std::string>& bounds, std::array<double, 3> pick) {
+            return editDict(mine_design::extendObject(s.get(), uuidArg(id), uuids(bounds), vec(pick)));
+        }, py::arg("id"), py::arg("boundaries"), py::arg("pick"))
+        .def("split_curve", [](PyProject& s, const std::string& id, std::array<double, 3> at) {
+            return editDict(mine_design::splitObject(s.get(), uuidArg(id), vec(at)));
+        }, py::arg("id"), py::arg("at"))
+        .def("join_curves", [](PyProject& s, const std::vector<std::string>& ids, double tol) {
+            return editDict(mine_design::joinObjects(s.get(), uuids(ids), tol));
+        }, py::arg("ids"), py::arg("tolerance") = 1e-4)
+        .def("explode_objects", [](PyProject& s, const std::vector<std::string>& ids) { return editDict(mine_design::explodeObjects(s.get(), uuids(ids))); },
+             py::arg("ids"))
+        .def("fillet_curves", [](PyProject& s, const std::string& a, std::array<double, 3> pa, const std::string& b, std::array<double, 3> pb, double r) {
+            return editDict(mine_design::filletObjects(s.get(), uuidArg(a), vec(pa), uuidArg(b), vec(pb), r));
+        }, py::arg("first"), py::arg("pick_first"), py::arg("second"), py::arg("pick_second"), py::arg("radius"))
+        .def("chamfer_curves", [](PyProject& s, const std::string& a, std::array<double, 3> pa, const std::string& b, std::array<double, 3> pb, double d1,
+                                  double d2) {
+            return editDict(mine_design::chamferObjects(s.get(), uuidArg(a), vec(pa), uuidArg(b), vec(pb), d1, d2));
+        }, py::arg("first"), py::arg("pick_first"), py::arg("second"), py::arg("pick_second"), py::arg("distance1"), py::arg("distance2"));
 
     // ---- mine design -----------------------------------------------------------------------------------------
     P.def("create_development", [](PyProject& s, const std::string& geometryId, const py::dict& spec) {
-         mine_design::NewDevelopment n;
-         if (spec.contains("heading_id")) n.headingId = spec["heading_id"].cast<std::string>();
-         if (spec.contains("name")) n.name = spec["name"].cast<std::string>();
-         if (spec.contains("level")) n.level = spec["level"].cast<std::string>();
-         if (spec.contains("zone")) n.zone = spec["zone"].cast<std::string>();
-         if (spec.contains("activity_type")) n.activityType = spec["activity_type"].cast<std::string>();
-         if (spec.contains("width")) n.width = spec["width"].cast<double>();
-         if (spec.contains("height")) n.height = spec["height"].cast<double>();
-         if (spec.contains("chainage_from")) n.chainageFrom = spec["chainage_from"].cast<double>();
-         if (spec.contains("profile")) n.profileId = uuidArg(spec["profile"].cast<std::string>());
-         if (spec.contains("material")) n.materialId = uuidArg(spec["material"].cast<std::string>());
-         else if (!s.get().model().materials.empty()) n.materialId = s.get().model().materials.all().front().id;
-         if (spec.contains("support_class")) n.supportClassId = uuidArg(spec["support_class"].cast<std::string>());
-         return mine_design::createDevelopment(s.get(), uuidArg(geometryId), n).toString();
+         return mine_design::createDevelopment(s.get(), uuidArg(geometryId), developmentSpec(s.get(), spec)).toString();
      })
         .def("create_linked_activity", [](PyProject& s, const std::string& dev, double rate, const std::string& name) {
             return mine_design::createLinkedActivity(s.get(), uuidArg(dev), rate, name).toString();
@@ -727,7 +956,276 @@ void defineBindings(py::module_& m) {
         })
         .def("development_envelope", [](PyProject& s, const std::string& id) {
             return fromMesh(mine_design::excavationEnvelope(s.get(), developmentOf(s.get(), id)));
-        });
+        })
+        // layout generators (results are previews: nothing is added until create_headings)
+        .def("layout", [](PyProject& s, const std::string& kind, const py::dict& a) {
+            auto num = [&](const char* k, std::optional<double> def = std::nullopt) {
+                if (!a.contains(k)) {
+                    if (def) return *def;
+                    throw py::value_error(kind + " layout needs " + k);
+                }
+                return a[k].cast<double>();
+            };
+            auto pt = [&](const char* k) {
+                if (!a.contains(k)) throw py::value_error(kind + " layout needs " + k);
+                return vec(a[k].cast<std::array<double, 3>>());
+            };
+            auto str = [&](const char* k, const char* def) { return a.contains(k) ? a[k].cast<std::string>() : std::string(def); };
+            py::list out;
+            if (kind == "horizontal") {
+                out.append(layoutDict(mine_design::horizontalAlignment(toPoints(a["points"].cast<Points>()), num("radius"), num("grade_percent", 0.0),
+                                                                       a.contains("use_point_elevations") && a["use_point_elevations"].cast<bool>())));
+            } else if (kind == "decline") {
+                mine_design::DeclineSpec d;
+                d.start = pt("start");
+                d.startAzimuthDeg = num("azimuth_deg", 0.0);
+                d.gradePercent = num("grade_percent", -12.5);
+                d.straightLength = num("straight_length", 80.0);
+                d.curveRadius = num("radius", 25.0);
+                d.turn = turnFrom(str("turn", "right"));
+                d.targetElevation = num("target_elevation");
+                d.maxLegs = static_cast<int>(num("max_legs", 200));
+                out.append(layoutDict(mine_design::declineLayout(d)));
+            } else if (kind == "spiral") {
+                out.append(layoutDict(mine_design::spiralDecline(pt("start"), num("azimuth_deg", 0.0), num("grade_percent", -12.5), num("radius", 25.0),
+                                                                 turnFrom(str("turn", "right")), num("target_elevation"))));
+            } else if (kind == "ramp") {
+                mine_design::RampSpec r;
+                r.start = pt("start");
+                r.startAzimuthDeg = num("azimuth_deg", 0.0);
+                r.targetElevation = num("target_elevation");
+                r.gradePercent = num("grade_percent", -14.3);
+                r.radius = num("radius", 20.0);
+                r.turn = turnFrom(str("turn", "right"));
+                r.straightLength = num("straight_length", 40.0);
+                out.append(layoutDict(mine_design::rampLayout(r)));
+            } else if (kind == "access") {
+                out.append(layoutDict(mine_design::accessDriveLayout(pt("start"), num("azimuth_deg", 0.0), pt("target"), num("radius", 20.0),
+                                                                     num("max_grade_percent", 15.0))));
+            } else if (kind == "ore_drive") {
+                mine_design::OreDriveSpec o;
+                o.offset = num("offset", 5.0);
+                o.side = sideFrom(str("side", "left"));
+                o.gradePercent = num("grade_percent", 1.0);
+                if (a.contains("start_elevation")) o.startElevation = a["start_elevation"].cast<double>();
+                o.followContactElevation = a.contains("follow_contact_elevation") && a["follow_contact_elevation"].cast<bool>();
+                out.append(layoutDict(mine_design::oreDriveLayout(toPoints(a["contact"].cast<Points>()), o)));
+            } else if (kind == "crosscuts") {
+                mine_design::CrosscutSpec c;
+                if (a.contains("chainages")) c.chainages = a["chainages"].cast<std::vector<double>>();
+                c.interval = num("interval", 25.0);
+                c.firstChainage = num("first_chainage", 10.0);
+                c.length = num("length", 30.0);
+                c.side = sideFrom(str("side", "right"));
+                c.angleDeg = num("angle_deg", 90.0);
+                c.gradePercent = num("grade_percent", 1.0);
+                c.startOffset = num("start_offset", 0.0);
+                const auto& parent = developmentOf(s.get(), a["parent"].cast<std::string>());
+                const auto* g = s.get().model().geometry.find(parent.geometryId);
+                if (!g) throw py::value_error("The parent heading has no centreline");
+                for (const auto& l : mine_design::crosscutLayouts(g->vertices, g->bulges, c)) out.append(layoutDict(l));
+            } else if (kind == "vertical") {
+                std::vector<mine_design::Vpi> vpis;
+                for (const auto& v : a["vpis"]) {
+                    const auto t = v.cast<std::vector<double>>();
+                    if (t.size() < 2) throw py::value_error("Each VPI is (chainage, elevation[, curve_length])");
+                    vpis.push_back({t[0], t[1], t.size() > 2 ? t[2] : 0.0});
+                }
+                std::vector<double> bulges = a.contains("bulges") ? a["bulges"].cast<std::vector<double>>() : std::vector<double>{};
+                out.append(layoutDict(mine_design::verticalAlignment(toPoints(a["points"].cast<Points>()), bulges, vpis, num("step", 1.0))));
+            } else {
+                throw py::value_error("Unknown layout '" + kind + "' (horizontal, decline, spiral, ramp, access, ore_drive, crosscuts, vertical)");
+            }
+            return out;
+        }, py::arg("kind"), py::arg("parameters"))
+        .def("create_headings", [](PyProject& s, const py::list& layouts, const py::dict& spec, const std::string& layer, const std::string& prefix) {
+            std::vector<mine_design::LayoutResult> ls;
+            for (const auto& l : layouts) ls.push_back(layoutFrom(l.cast<py::dict>()));
+            if (ls.empty()) throw py::value_error("No layouts to create");
+            std::vector<std::string> out;
+            for (const auto& id : mine_design::createHeadings(s.get(), ls, developmentSpec(s.get(), spec), layerArg(s.get(), layer), prefix)) out.push_back(id.toString());
+            return out;
+        }, py::arg("layouts"), py::arg("template"), py::arg("layer") = "0", py::arg("prefix") = "")
+        .def("create_crosscuts", [](PyProject& s, const std::string& parent, const py::dict& a, const std::string& layer) {
+            mine_design::CrosscutSpec c;
+            if (a.contains("chainages")) c.chainages = a["chainages"].cast<std::vector<double>>();
+            if (a.contains("interval")) c.interval = a["interval"].cast<double>();
+            if (a.contains("first_chainage")) c.firstChainage = a["first_chainage"].cast<double>();
+            if (a.contains("length")) c.length = a["length"].cast<double>();
+            if (a.contains("side")) c.side = sideFrom(a["side"].cast<std::string>());
+            if (a.contains("angle_deg")) c.angleDeg = a["angle_deg"].cast<double>();
+            if (a.contains("grade_percent")) c.gradePercent = a["grade_percent"].cast<double>();
+            if (a.contains("start_offset")) c.startOffset = a["start_offset"].cast<double>();
+            std::vector<std::string> out;
+            for (const auto& id : mine_design::createCrosscuts(s.get(), uuidArg(parent), c, layerArg(s.get(), layer))) out.push_back(id.toString());
+            return out;
+        }, py::arg("parent"), py::arg("spec") = py::dict(), py::arg("layer") = "0")
+        .def("gradient_profile", [](PyProject& s, const std::string& geometryId) {
+            const auto& g = geometryOf(s.get(), geometryId);
+            py::list out;
+            for (const auto& seg : mine_design::gradientProfile(g.vertices, g.bulges)) {
+                py::dict d;
+                d["segment"] = seg.index;
+                d["chainage_from"] = seg.chainageFrom;
+                d["chainage_to"] = seg.chainageTo;
+                d["plan_length"] = seg.planLength;
+                d["rise"] = seg.rise;
+                d["grade_percent"] = seg.gradePercent;
+                d["radius"] = seg.radius;
+                d["one_in"] = seg.oneIn();
+                out.append(d);
+            }
+            return out;
+        }, py::arg("geometry"))
+        .def("check_design_rules", [](PyProject& s, const std::string& geometryId, const py::dict& r) {
+            mine_design::DesignRules rules;
+            if (r.contains("max_grade_percent")) rules.maxGradePercent = r["max_grade_percent"].cast<double>();
+            if (r.contains("max_grade_on_curves_percent")) rules.maxGradeOnCurvesPercent = r["max_grade_on_curves_percent"].cast<double>();
+            if (r.contains("min_radius")) rules.minRadius = r["min_radius"].cast<double>();
+            if (r.contains("max_grade_change_percent")) rules.maxGradeChangePercent = r["max_grade_change_percent"].cast<double>();
+            const auto& g = geometryOf(s.get(), geometryId);
+            py::list out;
+            for (const auto& v : mine_design::checkDesignRules(g.vertices, g.bulges, rules)) {
+                py::dict d;
+                d["chainage"] = v.chainage;
+                d["rule"] = v.rule;
+                d["value"] = v.value;
+                d["limit"] = v.limit;
+                out.append(d);
+            }
+            return out;
+        }, py::arg("geometry"), py::arg("rules") = py::dict())
+        .def("grade_curve", [](PyProject& s, const std::string& geometryId, std::optional<double> startElevation, std::optional<double> grade) {
+            GeometryObject g = geometryOf(s.get(), geometryId);
+            if (grade) g.vertices = mine_design::applyGrade(g.vertices, g.bulges, startElevation.value_or(g.vertices.empty() ? 0.0 : g.vertices.front().z), *grade);
+            else g.vertices = mine_design::gradeBetweenEnds(g.vertices, g.bulges);
+            return mine_design::updateGeometryWithImpact(s.get(), g, "Grade " + g.name); // flagged activities
+        }, py::arg("geometry"), py::arg("start_elevation") = py::none(), py::arg("grade_percent") = py::none())
+        .def("design_impacts", [](PyProject& s) {
+            py::list out;
+            for (const auto& i : mine_design::detectDesignImpacts(s.get())) {
+                py::dict d;
+                d["development"] = i.developmentId.toString();
+                d["heading_id"] = i.headingId;
+                d["approved_length"] = i.approvedLength;
+                d["current_length"] = i.currentLength;
+                std::vector<std::string> acts;
+                for (const auto& a : i.activityIds) acts.push_back(a.toString());
+                d["activities"] = acts;
+                out.append(d);
+            }
+            return out;
+        })
+        .def("apply_design_quantities", [](PyProject& s, const std::string& activity) { mine_design::applyDesignQuantities(s.get(), uuidArg(activity)); },
+             py::arg("activity"))
+        .def("development_quantities", [](PyProject& s) {
+            py::list out;
+            for (const auto& q : mine_design::developmentQuantities(s.get())) {
+                py::dict d;
+                d["heading_id"] = q.headingId;
+                d["level"] = q.level;
+                d["zone"] = q.zone;
+                d["activity_type"] = q.activityType;
+                d["status"] = q.status;
+                d["profile"] = q.profile;
+                d["material"] = q.material;
+                d["length"] = q.length;
+                d["plan_length"] = q.planLength;
+                d["gradient_percent"] = q.gradient;
+                d["section_area"] = q.area;
+                d["volume"] = q.volume;
+                d["tonnes"] = q.tonnes;
+                d["loose_volume"] = q.looseVolume;
+                d["scheduled_quantity"] = q.scheduledQuantity;
+                d["schedule_matches_design"] = q.scheduleMatchesDesign;
+                out.append(d);
+            }
+            return out;
+        })
+        // levels
+        .def("add_level", [](PyProject& s, const std::string& name, const std::string& code, double elevation, const std::string& zone) {
+            MineLevel l;
+            l.name = name.empty() ? (code.empty() ? "Level " + std::to_string(static_cast<int>(elevation)) : code + " Level") : name;
+            l.code = code;
+            l.elevation = elevation;
+            l.zone = zone;
+            return ProjectEditor(s.get()).add(l).toString();
+        }, py::arg("name") = "", py::arg("code") = "", py::arg("elevation") = 0.0, py::arg("zone") = "")
+        .def("assign_developments_to_levels", [](PyProject& s, double tol) { return mine_design::assignDevelopmentsToLevels(s.get(), tol); },
+             py::arg("tolerance") = 5.0)
+        // stopes
+        .def("create_stope", [](PyProject& s, const py::dict& spec, const std::optional<Points>& outline, std::optional<double> floorZ,
+                                std::optional<double> backZ, const std::optional<std::string>& geometry) {
+            mine_design::NewStope n;
+            static const std::set<std::string> known{"name", "code", "level", "material", "method", "zone", "grade", "grade_unit", "dilution_percent",
+                                                     "recovery_percent", "layer"};
+            for (const auto& kv : spec)
+                if (!known.count(kv.first.cast<std::string>())) throw py::value_error("Unknown stope field '" + kv.first.cast<std::string>() + "'");
+            if (spec.contains("name")) n.name = spec["name"].cast<std::string>();
+            if (spec.contains("code")) n.code = spec["code"].cast<std::string>();
+            if (spec.contains("level")) {
+                const auto lv = spec["level"].cast<std::string>();
+                for (const auto& l : s.get().model().levels.all())
+                    if (l.code == lv || l.name == lv || l.id.toString() == lv) n.levelId = l.id;
+                if (n.levelId.isNil()) throw py::key_error("No level '" + lv + "'");
+            }
+            if (spec.contains("material")) n.materialId = uuidArg(spec["material"].cast<std::string>());
+            else if (!s.get().model().materials.empty()) n.materialId = s.get().model().materials.all().front().id;
+            if (spec.contains("method")) {
+                const auto m = enumFromString<StopeMethod>(spec["method"].cast<std::string>());
+                if (!m) throw py::value_error("Unknown stope method");
+                n.method = *m;
+            }
+            if (spec.contains("zone")) n.zone = spec["zone"].cast<std::string>();
+            if (spec.contains("grade")) n.grade = spec["grade"].cast<double>();
+            if (spec.contains("grade_unit")) n.gradeUnit = spec["grade_unit"].cast<std::string>();
+            if (spec.contains("dilution_percent")) n.dilutionPercent = spec["dilution_percent"].cast<double>();
+            if (spec.contains("recovery_percent")) n.recoveryPercent = spec["recovery_percent"].cast<double>();
+            if (spec.contains("layer")) n.layerId = layerArg(s.get(), spec["layer"].cast<std::string>());
+            if (geometry) return mine_design::createStopeFromGeometry(s.get(), uuidArg(*geometry), n).toString();
+            if (!outline || !floorZ || !backZ) throw py::value_error("A stope needs an outline with floor and back elevations, or a closed geometry");
+            return mine_design::createStopeFromOutline(s.get(), planRing(*outline), *floorZ, *backZ, n).toString();
+        }, py::arg("spec"), py::arg("outline") = py::none(), py::arg("floor") = py::none(), py::arg("back") = py::none(), py::arg("geometry") = py::none())
+        .def("stope_metrics", [](PyProject& s, const std::string& id) {
+            const auto* st = s.get().model().stopes.find(uuidArg(id));
+            if (!st) throw py::key_error("No stope '" + id + "'");
+            const auto m = mine_design::stopeMetrics(s.get(), *st);
+            py::dict d;
+            d["volume"] = m.volume;
+            d["tonnes"] = m.tonnes;
+            d["diluted_tonnes"] = m.dilutedTonnes;
+            d["recovered_tonnes"] = m.recoveredTonnes;
+            d["contained_metal"] = m.containedMetal;
+            d["mined_grade"] = m.minedGrade;
+            d["watertight"] = m.watertight;
+            return d;
+        }, py::arg("id"))
+        .def("subdivide_stope", [](PyProject& s, const std::string& id, const Points& outline, double floorZ, double backZ, double strike, double panel,
+                                   double lift) {
+            std::vector<std::string> out;
+            for (const auto& b : mine_design::subdivideStope(s.get(), uuidArg(id), planRing(outline), floorZ, backZ, strike, panel, lift)) out.push_back(b.toString());
+            return out;
+        }, py::arg("id"), py::arg("outline"), py::arg("floor"), py::arg("back"), py::arg("strike_azimuth_deg"), py::arg("panel_length"),
+             py::arg("lift_height") = 0.0)
+        // revisions
+        .def("capture_revision", [](PyProject& s, const std::string& entity, const std::string& code, const std::string& comment) {
+            return mine_design::captureRevision(s.get(), uuidArg(entity), code, comment).toString();
+        }, py::arg("entity"), py::arg("code"), py::arg("comment") = "")
+        .def("approve_revision", [](PyProject& s, const std::string& id) { mine_design::approveRevision(s.get(), uuidArg(id)); }, py::arg("id"))
+        .def("restore_revision", [](PyProject& s, const std::string& id) { mine_design::restoreRevision(s.get(), uuidArg(id)); }, py::arg("id"))
+        .def("compare_revisions", [](PyProject& s, const std::string& from, const std::optional<std::string>& to) {
+            const auto c = mine_design::compareRevisions(s.get(), uuidArg(from), to ? std::optional<Uuid>(uuidArg(*to)) : std::nullopt);
+            py::dict d;
+            d["from"] = c.fromCode;
+            d["to"] = c.toCode;
+            d["length_change"] = c.lengthChange;
+            d["volume_change"] = c.volumeChange;
+            d["max_vertex_deviation"] = c.maxVertexDeviation;
+            d["vertex_count_from"] = c.vertexCountFrom;
+            d["vertex_count_to"] = c.vertexCountTo;
+            d["attribute_changes"] = c.attributeChanges;
+            return d;
+        }, py::arg("from_revision"), py::arg("to_revision") = py::none());
 
     // ---- scheduling ----------------------------------------------------------------------------------------
     P.def("add_activity", [](PyProject& s, const py::dict& d) {
@@ -735,7 +1233,6 @@ void defineBindings(py::module_& m) {
          a.name = d["name"].cast<std::string>();
          if (d.contains("wbs")) a.wbsCode = d["wbs"].cast<std::string>();
          if (d.contains("duration_hours")) a.durationHours = d["duration_hours"].cast<double>();
-         if (d.contains("duration_days")) a.durationHours = d["duration_days"].cast<double>() * 24;
          if (d.contains("quantity")) a.quantity = d["quantity"].cast<double>();
          if (d.contains("unit")) a.quantityUnit = d["unit"].cast<std::string>();
          if (d.contains("rate_per_day")) {
@@ -746,6 +1243,13 @@ void defineBindings(py::module_& m) {
          if (d.contains("work_area")) a.workArea = d["work_area"].cast<std::string>();
          if (d.contains("calendar")) a.calendarId = uuidArg(d["calendar"].cast<std::string>());
          if (d.contains("parent")) a.parentId = uuidArg(d["parent"].cast<std::string>());
+         if (d.contains("duration_days")) {
+             // A "day" is the standard working hours of the activity's calendar (else the project's).
+             const auto& m = s.get().model();
+             const auto* cal = m.calendars.find(a.calendarId.isNil() ? m.info.defaultCalendarId : a.calendarId);
+             if (!a.calendarId.isNil() && !cal) throw py::key_error("No calendar " + a.calendarId.toString());
+             a.durationHours = d["duration_days"].cast<double>() * (cal ? cal->standardHoursPerDay : 24.0);
+         }
          if (d.contains("milestone") && d["milestone"].cast<bool>()) {
              a.kind = ActivityKind::Milestone;
              a.durationHours = 0;
@@ -794,12 +1298,21 @@ void defineBindings(py::module_& m) {
             return ProjectEditor(s.get()).add(a).toString();
         }, py::arg("activity"), py::arg("date"), py::arg("quantity"), py::arg("note") = "")
         .def("calculate_schedule", [](PyProject& s, const std::optional<std::string>& scenario) {
-            const auto in = scheduling::buildScheduleInput(s.get(), scenarioArg(s.get(), scenario));
-            return scheduleDict(scheduling::calculateSchedule(in));
+            const auto calc = scheduling::calculateScenario(s.get(), scenarioArg(s.get(), scenario));
+            auto d = scheduleDict(calc.result);
+            if (calc.levelling) {
+                py::dict l;
+                l["delayed_activities"] = calc.levelling->delayedActivities;
+                l["total_delay_hours"] = calc.levelling->totalDelayHours;
+                l["makespan_increase_hours"] = calc.levelling->makespanIncreaseHours;
+                d["levelling"] = l;
+            }
+            return d;
         }, py::arg("scenario") = py::none())
         .def("schedule_table", [](PyProject& s, const std::optional<std::string>& scenario, const std::optional<std::string>& baseline) {
-            const auto in = scheduling::buildScheduleInput(s.get(), scenarioArg(s.get(), scenario));
-            const auto r = scheduling::calculateSchedule(in);
+            const auto calc = scheduling::calculateScenario(s.get(), scenarioArg(s.get(), scenario));
+            const auto& in = calc.input;
+            const auto& r = calc.result;
             const ScheduleBaseline* b = baseline ? s.get().model().baselines.find(uuidArg(*baseline)) : nullptr;
             py::list l;
             for (const auto& row : scheduling::scheduleTable(s.get(), in, r, b)) {
@@ -844,30 +1357,229 @@ void defineBindings(py::module_& m) {
             }
             return l;
         })
-        .def("add_scenario", [](PyProject& s, const std::string& name, const std::vector<std::tuple<std::string, std::string, std::string>>& overrides) {
+        .def("add_scenario", [](PyProject& s, const std::string& name, const std::vector<std::tuple<std::string, std::string, std::string>>& overrides,
+                                const std::string& levelling) {
             Scenario sc;
             sc.name = name;
             for (const auto& [e, f, v] : overrides) sc.overrides.push_back({e.empty() ? Uuid{} : uuidArg(e), f, v});
+            const auto lm = enumFromString<LevellingMode>(levelling);
+            if (!lm) throw py::value_error("levelling must be None, Heuristic or Optimised");
+            sc.levelling = *lm;
             return ProjectEditor(s.get()).add(sc).toString();
-        })
+        }, py::arg("name"), py::arg("overrides") = std::vector<std::tuple<std::string, std::string, std::string>>{}, py::arg("levelling") = "None")
+        // calendars
+        .def("add_calendar", [](PyProject& s, const std::string& name, const std::string& kind, const py::list& shifts, const py::list& exceptions,
+                                double hoursPerDay, bool makeDefault) {
+            WorkCalendar c;
+            c.name = name;
+            const auto k = enumFromString<CalendarKind>(kind);
+            if (!k) throw py::value_error("kind must be Project, Shift or Resource");
+            c.kind = *k;
+            static const char* days[] = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"};
+            auto minutes = [](const std::string& hhmm) {
+                const auto colon = hhmm.find(':');
+                if (colon == std::string::npos) throw py::value_error("Times are \"HH:MM\", got '" + hhmm + "'");
+                const int h = std::stoi(hhmm.substr(0, colon)), m = std::stoi(hhmm.substr(colon + 1));
+                if (h < 0 || h > 24 || m < 0 || m > 59 || (h == 24 && m)) throw py::value_error("Invalid time '" + hhmm + "'");
+                return h * 60 + m;
+            };
+            for (const auto& item : shifts) {
+                const auto d = item.cast<py::dict>();
+                ShiftDefinition sh;
+                sh.name = d.contains("name") ? d["name"].cast<std::string>() : "Shift";
+                sh.startMinute = minutes(d["start"].cast<std::string>());
+                sh.durationMinutes = static_cast<int>(std::lround(d["hours"].cast<double>() * 60));
+                if (sh.durationMinutes <= 0 || sh.durationMinutes > 1440) throw py::value_error("A shift lasts more than 0 and at most 24 hours");
+                if (d.contains("days")) {
+                    sh.weekdays = 0;
+                    for (const auto& dn : d["days"].cast<std::vector<std::string>>()) {
+                        std::string l = dn.substr(0, 3);
+                        std::transform(l.begin(), l.end(), l.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                        const auto it = std::find(std::begin(days), std::end(days), l);
+                        if (it == std::end(days)) throw py::value_error("Unknown weekday '" + dn + "'");
+                        sh.weekdays |= static_cast<std::uint8_t>(1u << (it - std::begin(days))); // bit 0 = Monday
+                    }
+                } else {
+                    sh.weekdays = 0x7F;
+                }
+                c.shifts.push_back(sh);
+            }
+            for (const auto& item : exceptions) {
+                const auto d = item.cast<py::dict>();
+                CalendarException e;
+                e.date = dateArg(d["date"].cast<std::string>());
+                e.reason = d.contains("reason") ? d["reason"].cast<std::string>() : "";
+                if (d.contains("periods"))
+                    for (const auto& per : d["periods"].cast<std::vector<std::pair<std::string, std::string>>>()) e.periods.push_back({minutes(per.first), minutes(per.second)});
+                c.exceptions.push_back(e);
+            }
+            c.standardHoursPerDay = hoursPerDay;
+            auto& p = s.get();
+            CommandStack::MacroScope macro(p.commands(), "Add calendar " + name);
+            ProjectEditor ed(p);
+            const Uuid id = ed.addCalendar(c);
+            if (makeDefault) {
+                ProjectInfo info = p.model().info;
+                info.defaultCalendarId = id;
+                ed.setProjectInfo(info, "Set the project calendar");
+            }
+            macro.commit();
+            return id.toString();
+        }, py::arg("name"), py::arg("kind") = "Shift", py::arg("shifts") = py::list(), py::arg("exceptions") = py::list(), py::arg("hours_per_day") = 24.0,
+             py::arg("make_default") = false)
+        .def("set_activity_calendar", [](PyProject& s, const std::string& activity, const std::optional<std::string>& calendar) {
+            auto* a = s.get().model().activities.find(uuidArg(activity));
+            if (!a) throw py::key_error("No activity '" + activity + "'");
+            ScheduleActivity u = *a;
+            u.calendarId = calendar ? uuidArg(*calendar) : Uuid{};
+            if (calendar && !s.get().model().calendars.find(u.calendarId)) throw py::key_error("No calendar '" + *calendar + "'");
+            ProjectEditor(s.get()).update(u, "Set activity calendar");
+        }, py::arg("activity"), py::arg("calendar") = py::none())
+        // development cycles
+        .def("add_cycle", [](PyProject& s, const std::string& name, const py::dict& f) {
+            DevelopmentCycle c;
+            c.name = name;
+            std::map<std::string, double*> reals{{"round_length", &c.roundLength}, {"advance_efficiency", &c.advanceEfficiency},
+                                                 {"drill_penetration_rate", &c.drillPenetrationRate}, {"drill_setup_minutes", &c.drillSetupMinutes},
+                                                 {"collar_minutes_per_hole", &c.collarMinutesPerHole}, {"charge_minutes_per_hole", &c.chargeMinutesPerHole},
+                                                 {"blast_and_reentry_minutes", &c.blastAndReentryMinutes}, {"swell_factor", &c.swellFactor},
+                                                 {"bucket_capacity", &c.bucketCapacity}, {"bucket_fill_factor", &c.bucketFillFactor},
+                                                 {"muck_cycle_minutes", &c.muckCycleMinutes}, {"minutes_per_bolt", &c.minutesPerBolt},
+                                                 {"mesh_minutes", &c.meshMinutes}, {"shotcrete_minutes", &c.shotcreteMinutes},
+                                                 {"scaling_minutes", &c.scalingMinutes}, {"survey_markup_minutes", &c.surveyMarkupMinutes},
+                                                 {"service_minutes", &c.serviceMinutes}, {"utilisation", &c.utilisation}, {"shift_hours", &c.shiftHours}};
+            std::map<std::string, int*> ints{{"holes_per_round", &c.holesPerRound}, {"drill_booms", &c.drillBooms}, {"bolts_per_round", &c.boltsPerRound},
+                                             {"shifts_per_day", &c.shiftsPerDay}};
+            for (const auto& kv : f) {
+                const auto k = kv.first.cast<std::string>();
+                if (auto r = reals.find(k); r != reals.end()) *r->second = kv.second.cast<double>();
+                else if (auto i = ints.find(k); i != ints.end()) *i->second = kv.second.cast<int>();
+                else if (k == "notes") c.notes = kv.second.cast<std::string>();
+                else throw py::value_error("Unknown cycle field '" + k + "'");
+            }
+            return ProjectEditor(s.get()).add(c, "Add development cycle " + name).toString();
+        }, py::arg("name"), py::arg("fields") = py::dict())
+        .def("evaluate_cycle", [](PyProject& s, const std::string& cycle, double width, double height, const std::optional<std::string>& support) {
+            const auto* c = s.get().model().cycles.find(uuidArg(cycle));
+            if (!c) throw py::key_error("No development cycle '" + cycle + "'");
+            const GroundSupportClass* gs = nullptr;
+            if (support) {
+                gs = s.get().model().supportClasses.find(uuidArg(*support));
+                if (!gs) throw py::key_error("No ground support class '" + *support + "'");
+            }
+            const auto b = scheduling::evaluateCycle(*c, width, height, gs);
+            py::dict d;
+            for (const auto& [k, v] : b.items()) d[py::str(k)] = v;
+            d["drilling_minutes"] = b.drillingMinutes;
+            d["charging_minutes"] = b.chargingMinutes;
+            d["blasting_minutes"] = b.blastingMinutes;
+            d["mucking_minutes"] = b.muckingMinutes;
+            d["support_minutes"] = b.supportMinutes;
+            d["other_minutes"] = b.otherMinutes;
+            d["total_minutes"] = b.totalMinutes;
+            d["advance_per_cycle"] = b.advancePerCycle;
+            d["muck_volume_loose"] = b.muckVolumeLoose;
+            d["bucket_loads"] = b.bucketLoads;
+            d["bolts"] = b.bolts;
+            d["cycles_per_shift"] = b.cyclesPerShift;
+            d["metres_per_shift"] = b.metresPerShift;
+            d["metres_per_day"] = b.metresPerDay;
+            d["metres_per_work_hour"] = b.metresPerWorkHour;
+            return d;
+        }, py::arg("cycle"), py::arg("width"), py::arg("height"), py::arg("support_class") = py::none())
+        .def("use_cycle", [](PyProject& s, const std::string& activity, const std::optional<std::string>& cycle) {
+            auto* a = s.get().model().activities.find(uuidArg(activity));
+            if (!a) throw py::key_error("No activity '" + activity + "'");
+            ScheduleActivity u = *a;
+            if (cycle) {
+                if (!s.get().model().cycles.find(uuidArg(*cycle))) throw py::key_error("No development cycle '" + *cycle + "'");
+                u.productionModelId = uuidArg(*cycle);
+                u.useCycleRate = true;
+                u.durationFromRate = true;
+            } else {
+                u.productionModelId = {};
+                u.useCycleRate = false;
+            }
+            ProjectEditor(s.get()).update(u, cycle ? "Use development cycle" : "Stop using the development cycle");
+        }, py::arg("activity"), py::arg("cycle") = py::none())
+        // targets and production by period
+        .def("add_target", [](PyProject& s, const std::string& name, const std::string& from, const std::string& to, double quantity, const std::string& unit,
+                              const std::string& zone, const std::string& level) {
+            ProductionTarget t;
+            t.name = name;
+            t.periodStart = dateArg(from);
+            t.periodEnd = dateArg(to);
+            t.quantity = quantity;
+            t.unit = unit;
+            t.scopeZone = zone;
+            t.scopeLevel = level;
+            return ProjectEditor(s.get()).add(t, "Add target " + name).toString();
+        }, py::arg("name"), py::arg("start"), py::arg("end"), py::arg("quantity"), py::arg("unit") = "m", py::arg("zone") = "", py::arg("level") = "")
+        .def("production_by_period", [](PyProject& s, const std::string& kind, const std::optional<std::string>& scenario, const std::string& unit,
+                                        const std::string& zone, const std::string& level) {
+            const auto k = kind == "day" ? scheduling::PeriodKind::Day : kind == "week" ? scheduling::PeriodKind::Week : kind == "month" ? scheduling::PeriodKind::Month
+                           : kind == "quarter" ? scheduling::PeriodKind::Quarter : kind == "year" ? scheduling::PeriodKind::Year
+                                                                                  : throw py::value_error("period must be day, week, month, quarter or year");
+            const auto calc = scheduling::calculateScenario(s.get(), scenarioArg(s.get(), scenario));
+            if (!calc.result.ok) throw py::value_error("The schedule cannot be calculated: " + (calc.result.errors.empty() ? std::string() : calc.result.errors.front()));
+            scheduling::QuantityFilter f;
+            f.unit = unit;
+            f.zone = zone;
+            f.level = level;
+            py::list out;
+            for (const auto& q : scheduling::quantitiesByPeriod(calc.input, calc.result, k, f)) {
+                py::dict d;
+                d["period"] = q.period.label;
+                d["start"] = q.period.start.toString();
+                d["end"] = q.period.end.toString();
+                d["scheduled"] = q.scheduled;
+                d["actual"] = q.actual;
+                d["target"] = q.target;
+                out.append(d);
+            }
+            return out;
+        }, py::arg("period") = "month", py::arg("scenario") = py::none(), py::arg("unit") = "m", py::arg("zone") = "", py::arg("level") = "")
+        .def("resource_profiles", [](PyProject& s, const std::optional<std::string>& scenario) {
+            const auto calc = scheduling::calculateScenario(s.get(), scenarioArg(s.get(), scenario));
+            if (!calc.result.ok) throw py::value_error("The schedule cannot be calculated");
+            py::list out;
+            for (const auto& r : scheduling::resourceProfiles(calc.input, calc.result)) {
+                py::dict d;
+                d["resource"] = r.resourceId.toString();
+                d["name"] = r.name;
+                d["capacity"] = r.capacity;
+                d["peak"] = r.peak;
+                d["overallocated"] = r.overallocated;
+                py::list steps;
+                for (const auto& st : r.steps)
+                    steps.append(py::make_tuple(scheduling::toDateTime(st.start).toString(), scheduling::toDateTime(st.end).toString(), st.units));
+                d["usage"] = steps;
+                py::list spans;
+                for (const auto& [a, b] : r.overallocatedSpans) spans.append(py::make_tuple(scheduling::toDateTime(a).toString(), scheduling::toDateTime(b).toString()));
+                d["overallocated_spans"] = spans;
+                out.append(d);
+            }
+            return out;
+        }, py::arg("scenario") = py::none())
         .def("export_gantt_pdf", [](PyProject& s, const fs::path& file, const std::optional<std::string>& scenario, const std::string& title,
                                     const std::optional<std::string>& baseline) {
-            const auto in = scheduling::buildScheduleInput(s.get(), scenarioArg(s.get(), scenario));
-            const auto r = scheduling::calculateSchedule(in);
+            const auto calc = scheduling::calculateScenario(s.get(), scenarioArg(s.get(), scenario));
+            const auto& in = calc.input;
+            const auto& r = calc.result;
             if (!r.ok) throw py::value_error("The schedule cannot be calculated");
             reporting::GanttOptions o;
             o.title = title;
             const ScheduleBaseline* b = baseline ? s.get().model().baselines.find(uuidArg(*baseline)) : nullptr;
             return reporting::writeGanttPdf(s.get(), in, r, b, file, o);
         }, py::arg("file"), py::arg("scenario") = py::none(), py::arg("title") = "", py::arg("baseline") = py::none())
-        .def("export_schedule_xlsx", [](PyProject& s, const fs::path& file) {
-            const auto in = scheduling::buildScheduleInput(s.get());
-            const auto r = scheduling::calculateSchedule(in);
-            reporting::writeScheduleXlsx(s.get(), scheduling::scheduleTable(s.get(), in, r), file);
-        })
+        .def("export_schedule_xlsx", [](PyProject& s, const fs::path& file, const std::optional<std::string>& scenario) {
+            const auto calc = scheduling::calculateScenario(s.get(), scenarioArg(s.get(), scenario));
+            reporting::writeScheduleXlsx(s.get(), scheduling::scheduleTable(s.get(), calc.input, calc.result), file);
+        }, py::arg("file"), py::arg("scenario") = py::none())
         .def("plan_snapshot", [](PyProject& s, const std::string& at, const std::optional<std::string>& baseline, const std::optional<std::string>& scenario) {
-            const auto in = scheduling::buildScheduleInput(s.get(), scenarioArg(s.get(), scenario));
-            const auto r = scheduling::calculateSchedule(in);
+            const auto calc = scheduling::calculateScenario(s.get(), scenarioArg(s.get(), scenario));
+            const auto& in = calc.input;
+            const auto& r = calc.result;
             const ScheduleBaseline* b = baseline ? s.get().model().baselines.find(uuidArg(*baseline)) : nullptr;
             const auto snap = planning::snapshot(s.get(), in, r, dateTimeArg(at).minutes(), planning::ColorMode::State, b);
             py::list l;
@@ -1016,139 +1728,370 @@ void defineBindings(py::module_& m) {
         .def("derive_point_cloud", [progressOr](PyProject& s, const std::string& id, const std::string& op, const py::dict& prm, const std::string& engine,
                                                 const std::string& name, jobs::Progress* progress) {
             const Uuid parent = uuidArg(id);
-            const auto* ds = s.get().model().pointClouds.find(parent);
-            if (!ds) throw py::key_error("No point cloud '" + id + "'");
+            if (!s.get().model().pointClouds.find(parent)) throw py::key_error("No point cloud '" + id + "'");
             const bool open3d = engine == "open3d" || engine == "Open3D";
             if (!open3d && engine != "openmine" && engine != "OpenMine") throw py::value_error("Unknown engine '" + engine + "' (use \"openmine\" or \"open3d\")");
 #ifndef OPENMINE_PY_HAVE_OPEN3D
             if (open3d) throw py::value_error("This build has no Open3D engine");
 #endif
+            static const std::set<std::string> known{"k", "std_ratio", "radius", "min_neighbours", "voxel", "spacing", "count", "seed", "orientation",
+                                                     "viewpoint", "box", "inside", "curvature", "tolerance", "min_size", "angle_deg", "drop_unclustered",
+                                                     "polygon", "view_normal", "reference", "max_distance", "signed", "cell", "slope", "window", "threshold"};
+            for (const auto& kv : prm)
+                if (!known.count(kv.first.cast<std::string>())) throw py::value_error("Unknown parameter '" + kv.first.cast<std::string>() + "'");
             auto num = [&](const char* key, double def) { return prm.contains(key) ? prm[key].cast<double>() : def; };
             auto integer = [&](const char* key, int def) { return prm.contains(key) ? prm[key].cast<int>() : def; };
-            for (const auto& kv : prm) {
-                static const std::set<std::string> known{"k", "std_ratio", "radius", "min_neighbours", "voxel", "spacing", "count", "seed", "orientation",
-                                                         "viewpoint", "box", "inside", "curvature"};
-                if (!known.count(kv.first.cast<std::string>())) throw py::value_error("Unknown parameter '" + kv.first.cast<std::string>() + "'");
-            }
-            std::string suffix; // the engine, recorded in the derivation
-#ifdef OPENMINE_PY_HAVE_OPEN3D
-            if (open3d) suffix = " (" + o3d::engineName() + ")";
-#endif
-            std::string derivation;
-            std::function<survey::PointBuffer(survey::PointBuffer&, jobs::Progress&)> process;
-            if (op == "statistical_outliers") {
-                const int k = integer("k", 16);
-                const double ratio = num("std_ratio", 2.0);
-                if (k < 1 || !(ratio > 0)) throw py::value_error("k must be at least 1 and std_ratio positive");
-                derivation = "statistical outlier removal k=" + std::to_string(k) + " n=" + std::to_string(ratio) + suffix;
-                process = [=](survey::PointBuffer& b, jobs::Progress& pr) {
-#ifdef OPENMINE_PY_HAVE_OPEN3D
-                    if (open3d) return b.filtered(o3d::statisticalInliers(b, k, ratio));
-#endif
-                    return b.filtered(survey::statisticalInliers(b, k, ratio, pr));
-                };
-            } else if (op == "radius_outliers") {
-                const double r = num("radius", 0.0);
-                const int minN = integer("min_neighbours", 4);
-                if (!(r > 0) || minN < 1) throw py::value_error("radius must be positive and min_neighbours at least 1");
-                derivation = "radius outlier removal r=" + std::to_string(r) + " min=" + std::to_string(minN) + suffix;
-                process = [=](survey::PointBuffer& b, jobs::Progress& pr) {
-#ifdef OPENMINE_PY_HAVE_OPEN3D
-                    if (open3d) return b.filtered(o3d::radiusInliers(b, r, minN));
-#endif
-                    return b.filtered(survey::radiusInliers(b, r, minN, pr));
-                };
-            } else if (op == "voxel" || op == "voxel_centroid") {
-                const double v = num("voxel", 0.0);
-                if (!(v > 0)) throw py::value_error("voxel must be positive");
-                if (open3d && op == "voxel") throw py::value_error("Open3D subsamples to voxel centroids only: use operation \"voxel_centroid\"");
-                derivation = (op == "voxel" ? "voxel nearest-to-centre " : "voxel centroid ") + std::to_string(v) + " m" + suffix;
-                process = [=](survey::PointBuffer& b, jobs::Progress&) {
-#ifdef OPENMINE_PY_HAVE_OPEN3D
-                    if (open3d) return o3d::voxelDownsample(b, v);
-#endif
-                    return survey::voxelDownsample(b, v, op == "voxel" ? survey::VoxelMode::NearestToCentre : survey::VoxelMode::Centroid);
-                };
-            } else if (op == "minimum_spacing" || op == "random") {
+            auto flag = [&](const char* key, bool def) { return prm.contains(key) ? prm[key].cast<bool>() : def; };
+            auto noEngine = [&] {
                 if (open3d) throw py::value_error("Operation '" + op + "' has no Open3D implementation");
-                const double sp = num("spacing", 0.0);
+            };
+            survey::Derivation d;
+            std::shared_ptr<survey::DistanceStatisticsJson> stats;
+            std::optional<std::pair<Uuid, bool>> distanceRef; // reference id, is a cloud
+            if (op == "statistical_outliers") {
+                survey::OutlierEngine e;
+#ifdef OPENMINE_PY_HAVE_OPEN3D
+                if (open3d) e = o3d::outlierEngine();
+#endif
+                d = survey::statisticalOutlierDerivation(integer("k", 16), num("std_ratio", 2.0), e);
+            } else if (op == "radius_outliers") {
+                survey::RadiusOutlierEngine e;
+#ifdef OPENMINE_PY_HAVE_OPEN3D
+                if (open3d) e = o3d::radiusOutlierEngine();
+#endif
+                d = survey::radiusOutlierDerivation(num("radius", 0.0), integer("min_neighbours", 4), e);
+            } else if (op == "voxel" || op == "voxel_centroid") {
+                survey::VoxelEngine e;
+#ifdef OPENMINE_PY_HAVE_OPEN3D
+                if (open3d) e = o3d::voxelEngine();
+#endif
+                d = survey::voxelDerivation(num("voxel", 0.0), op == "voxel" ? survey::VoxelMode::NearestToCentre : survey::VoxelMode::Centroid, e);
+            } else if (op == "minimum_spacing") {
+                noEngine();
+                d = survey::minimumSpacingDerivation(num("spacing", 0.0));
+            } else if (op == "random") {
+                noEngine();
                 const int count = integer("count", 0);
-                const auto seed = static_cast<unsigned>(integer("seed", 1));
-                if (op == "minimum_spacing" && !(sp > 0)) throw py::value_error("spacing must be positive");
-                if (op == "random" && count < 1) throw py::value_error("count must be at least 1");
-                derivation = op == "random" ? "random subsample n=" + std::to_string(count) : "minimum spacing " + std::to_string(sp) + " m";
-                process = [=](survey::PointBuffer& b, jobs::Progress&) {
-                    return op == "random" ? survey::randomSubsample(b, static_cast<std::size_t>(count), seed) : survey::minimumSpacing(b, sp);
-                };
+                if (count < 1) throw py::value_error("count must be at least 1");
+                d = survey::randomSubsampleDerivation(static_cast<std::size_t>(count), static_cast<unsigned>(integer("seed", 1)));
             } else if (op == "normals") {
                 survey::NormalOptions no;
                 no.k = integer("k", 16);
                 no.radius = num("radius", 0.0);
-                no.storeCurvature = prm.contains("curvature") ? prm["curvature"].cast<bool>() : true;
+                no.storeCurvature = flag("curvature", true);
                 const std::string orient = prm.contains("orientation") ? prm["orientation"].cast<std::string>() : "up";
-                std::optional<Vec3> vp;
-                if (prm.contains("viewpoint")) {
-                    const auto a = prm["viewpoint"].cast<std::array<double, 3>>();
-                    vp = Vec3{a[0], a[1], a[2]};
-                }
                 if (orient == "up") no.orientation = survey::NormalOptions::Orientation::Up;
                 else if (orient == "towards_viewpoint") no.orientation = survey::NormalOptions::Orientation::TowardsViewpoint;
                 else if (orient == "away_from_viewpoint") no.orientation = survey::NormalOptions::Orientation::AwayFromViewpoint;
                 else throw py::value_error("orientation must be \"up\", \"towards_viewpoint\" or \"away_from_viewpoint\"");
-                if (no.k < 3) throw py::value_error("k must be at least 3");
-                derivation = "PCA normals k=" + std::to_string(no.k) + suffix;
-                process = [=](survey::PointBuffer& b, jobs::Progress& pr) {
-                    auto o = no;
-                    if (o.orientation != survey::NormalOptions::Orientation::Up) o.viewpoint = vp ? *vp : survey::statistics(b, 0).centroid;
+                if (prm.contains("viewpoint")) no.viewpoint = vec(prm["viewpoint"].cast<std::array<double, 3>>());
+                survey::NormalsEngine e;
 #ifdef OPENMINE_PY_HAVE_OPEN3D
-                    if (open3d) {
-                        o3d::estimateNormals(b, o, pr);
-                        return b;
-                    }
+                if (open3d) e = o3d::normalsEngine();
 #endif
-                    survey::estimateNormals(b, o, pr);
-                    return b;
-                };
+                d = survey::normalsDerivation(no, e);
+            } else if (op == "clusters") {
+                noEngine();
+                d = survey::euclideanClusterDerivation(num("tolerance", 0.0), static_cast<std::size_t>(integer("min_size", 1)), flag("drop_unclustered", false));
+            } else if (op == "regions") {
+                noEngine();
+                d = survey::regionGrowingDerivation(num("angle_deg", 5.0), static_cast<std::size_t>(integer("min_size", 50)), flag("drop_unclustered", false));
             } else if (op == "crop_box") {
-                if (open3d) throw py::value_error("Operation 'crop_box' has no Open3D implementation");
+                noEngine();
                 if (!prm.contains("box")) throw py::value_error("crop_box needs box=(xmin, ymin, zmin, xmax, ymax, zmax)");
                 const auto a = prm["box"].cast<std::array<double, 6>>();
-                const BoundingBox box{{a[0], a[1], a[2]}, {a[3], a[4], a[5]}};
-                if (!(box.max.x > box.min.x && box.max.y > box.min.y && box.max.z > box.min.z)) throw py::value_error("The box must have positive extents");
-                const bool inside = prm.contains("inside") ? prm["inside"].cast<bool>() : true;
-                derivation = std::string(inside ? "crop to box" : "remove box");
-                process = [=](survey::PointBuffer& b, jobs::Progress&) {
-                    auto mask = survey::selectBox(b, box);
-                    return b.filtered(inside ? mask : survey::invert(std::move(mask)));
-                };
+                d = survey::cropBoxDerivation(BoundingBox{{a[0], a[1], a[2]}, {a[3], a[4], a[5]}}, flag("inside", true));
+            } else if (op == "crop_polygon") {
+                noEngine();
+                if (!prm.contains("polygon")) throw py::value_error("crop_polygon needs polygon=[(x, y, z), …]");
+                d = survey::cropPolygonDerivation(toPoints(prm["polygon"].cast<Points>()),
+                                                  prm.contains("view_normal") ? vec(prm["view_normal"].cast<std::array<double, 3>>()) : Vec3{0, 0, 1}, flag("inside", true));
+            } else if (op == "ground") {
+                noEngine();
+#ifdef OPENMINE_PY_HAVE_PDAL
+                pdalio::SmrfOptions so;
+                so.cell = num("cell", so.cell);
+                so.slope = num("slope", so.slope);
+                so.window = num("window", so.window);
+                so.threshold = num("threshold", so.threshold);
+                d = pdalio::groundDerivation(so);
+#else
+                throw py::value_error("Ground classification needs PDAL, which this build does not include");
+#endif
+            } else if (op == "distance") {
+                noEngine();
+                if (!prm.contains("reference")) throw py::value_error("distance needs reference= (a point cloud or a mesh/solid id)");
+                const Uuid ref = uuidArg(prm["reference"].cast<std::string>());
+                stats = std::make_shared<survey::DistanceStatisticsJson>();
+                const double maxD = num("max_distance", 0.0);
+                const bool sign = flag("signed", false);
+                if (const auto* rc = s.get().model().pointClouds.find(ref)) {
+                    d = survey::cloudDistanceDerivation(survey::datasetPoints(s.get(), ref, true), rc->name, maxD, sign, stats);
+                    distanceRef = {ref, true};
+                } else {
+                    const auto* g = s.get().model().geometry.find(ref);
+                    if (!g || !g->mesh) throw py::key_error("The reference is neither a point cloud nor a mesh");
+                    d = survey::meshDistanceDerivation(g->mesh, g->name, maxD, sign, stats);
+                    distanceRef = {ref, false};
+                }
             } else {
                 throw py::value_error("Unknown operation '" + op +
-                                      "' (statistical_outliers, radius_outliers, voxel, voxel_centroid, minimum_spacing, random, normals, crop_box)");
+                                      "' (statistical_outliers, radius_outliers, voxel, voxel_centroid, minimum_spacing, random, normals, clusters, regions, "
+                                      "crop_box, crop_polygon, ground, distance)");
             }
-            const std::string outName = name.empty() ? ds->name + " (" + op + ")" : name;
-            survey::PreparedDataset prep;
-            std::size_t before = 0, after = 0;
+            auto& p = s.get();
+            CommandStack::MacroScope macro(p.commands(), "Derive point cloud");
+            survey::DerivedDataset r;
+            {
+                py::gil_scoped_release rel;
+                r = survey::deriveDataset(p, parent, d, name, progressOr(progress));
+            }
+            py::dict out;
+            if (distanceRef && stats && !stats->json.empty()) {
+                // The distance analysis is recorded like the desktop's (inputs, parameters, statistics).
+                const nlohmann::json in{{"compared", parent.toString()}, {"reference", distanceRef->first.toString()}};
+                const double maxD = num("max_distance", 0.0);
+                const nlohmann::json pa{{"maxDistance", maxD > 0 ? nlohmann::json(maxD) : nlohmann::json(nullptr)}, {"signed", flag("signed", false)}};
+                out["analysis"] = ProjectEditor(p).addAnalysis(distanceRef->second ? AnalysisKind::DistanceCloudToCloud : AnalysisKind::DistanceCloudToMesh,
+                                                               "Distance to " + d.text.substr(12), in.dump(), pa.dump(), stats->json).toString();
+                out["statistics"] = py::module_::import("json").attr("loads")(stats->json);
+            }
+            macro.commit();
+            out["id"] = r.id.toString();
+            out["input_count"] = r.inputCount;
+            out["output_count"] = r.outputCount;
+            out["derivation"] = r.derivation;
+            out["message"] = r.message;
+            return out;
+        }, py::arg("id"), py::arg("operation"), py::arg("params") = py::dict(), py::arg("engine") = "openmine", py::arg("name") = "",
+             py::arg("progress") = nullptr)
+        .def("surface_tool", [progressOr](PyProject& s, const std::string& id, const std::string& op, const py::dict& a, const std::optional<std::string>& reference,
+                                          const std::string& name, jobs::Progress* progress) {
+            survey::SurfaceOperation so;
+            if (op == "decimate") so = survey::SurfaceOperation::Decimate;
+            else if (op == "smooth") so = survey::SurfaceOperation::Smooth;
+            else if (op == "repair") so = survey::SurfaceOperation::Repair;
+            else if (op == "compare") so = survey::SurfaceOperation::Compare;
+            else throw py::value_error("operation must be decimate, smooth, repair or compare");
+            survey::SurfaceToolOptions o;
+            static const std::set<std::string> known{"target_triangles", "max_error", "preserve_boundary", "iterations", "lambda", "mu", "fix_boundary",
+                                                     "merge_tolerance", "fill_holes_up_to", "orient_outward", "signed", "max_distance"};
+            for (const auto& kv : a)
+                if (!known.count(kv.first.cast<std::string>())) throw py::value_error("Unknown parameter '" + kv.first.cast<std::string>() + "'");
+            if (a.contains("target_triangles")) o.targetTriangles = a["target_triangles"].cast<std::size_t>();
+            if (a.contains("max_error")) o.maxError = a["max_error"].cast<double>();
+            if (a.contains("preserve_boundary")) o.preserveBoundary = a["preserve_boundary"].cast<bool>();
+            if (a.contains("iterations")) o.iterations = a["iterations"].cast<int>();
+            if (a.contains("lambda")) o.lambda = a["lambda"].cast<double>();
+            if (a.contains("mu")) o.mu = a["mu"].cast<double>();
+            if (a.contains("fix_boundary")) o.fixBoundary = a["fix_boundary"].cast<bool>();
+            if (a.contains("merge_tolerance")) o.mergeTolerance = a["merge_tolerance"].cast<double>();
+            if (a.contains("fill_holes_up_to")) o.fillHolesUpTo = a["fill_holes_up_to"].cast<std::size_t>();
+            if (a.contains("orient_outward")) o.orientOutward = a["orient_outward"].cast<bool>();
+            if (a.contains("signed")) o.signedDistance = a["signed"].cast<bool>();
+            if (a.contains("max_distance")) o.maxDistance = a["max_distance"].cast<double>();
+            const auto src = survey::surfaceOf(s.get(), uuidArg(id));
+            MeshPtr ref = reference ? survey::surfaceOf(s.get(), uuidArg(*reference)) : nullptr;
+            survey::SurfaceToolResult r;
+            {
+                py::gil_scoped_release rel;
+                r = survey::runSurfaceTool(*src, so, o, ref.get(), progressOr(progress));
+            }
+            py::dict d;
+            d["id"] = survey::addDerivedSurface(s.get(), uuidArg(id), r, name).toString();
+            d["method"] = r.method;
+            d["summary"] = r.summary;
+            d["triangles"] = r.mesh.triangles.size();
+            if (so == survey::SurfaceOperation::Repair) {
+                py::dict rep;
+                rep["merged_vertices"] = r.repair.mergedVertices;
+                rep["degenerate_removed"] = r.repair.degenerateRemoved;
+                rep["duplicates_removed"] = r.repair.duplicatesRemoved;
+                rep["flipped"] = r.repair.flipped;
+                rep["holes_filled"] = r.repair.holesFilled;
+                rep["non_manifold_edges"] = r.repair.nonManifoldEdges;
+                rep["boundary_loops"] = r.repair.boundaryLoops;
+                d["repair"] = rep;
+            }
+            if (so == survey::SurfaceOperation::Compare) {
+                py::dict st;
+                st["vertices"] = r.distances.vertices;
+                st["measured"] = r.distances.measured;
+                st["mean"] = r.distances.mean;
+                st["rms"] = r.distances.rms;
+                st["min"] = r.distances.min;
+                st["median"] = r.distances.median;
+                st["max"] = r.distances.max;
+                d["distances"] = st;
+            }
+            return d;
+        }, py::arg("id"), py::arg("operation"), py::arg("params") = py::dict(), py::arg("reference") = py::none(), py::arg("name") = "",
+             py::arg("progress") = nullptr)
+        .def("surface_from_cloud", [progressOr](PyProject& s, const std::string& dataset, const std::string& method, const py::dict& a, const std::string& engine,
+                                                const std::string& name, const std::string& layer, jobs::Progress* progress) {
+            survey::CloudSurfaceSpec spec;
+            if (method == "delaunay") spec.method = survey::CloudSurfaceSpec::Method::Delaunay;
+            else if (method == "poisson") spec.method = survey::CloudSurfaceSpec::Method::Poisson;
+            else throw py::value_error("method must be 'delaunay' or 'poisson'");
+            static const std::set<std::string> known{"voxel", "max_edge_length", "target_triangles", "depth", "orient_towards_centroid"};
+            for (const auto& kv : a)
+                if (!known.count(kv.first.cast<std::string>())) throw py::value_error("Unknown parameter '" + kv.first.cast<std::string>() + "'");
+            if (a.contains("voxel")) spec.voxel = a["voxel"].cast<double>();
+            if (a.contains("max_edge_length")) spec.maxEdgeLength = a["max_edge_length"].cast<double>();
+            if (a.contains("target_triangles")) spec.targetTriangles = a["target_triangles"].cast<std::size_t>();
+            if (a.contains("depth")) spec.depth = a["depth"].cast<int>();
+            if (a.contains("orient_towards_centroid")) spec.orientTowardsCentroid = a["orient_towards_centroid"].cast<bool>();
+            survey::PoissonEngine pe;
+            if (spec.method == survey::CloudSurfaceSpec::Method::Poisson) {
+                std::string eng = engine;
+#if defined(OPENMINE_PY_HAVE_PDAL)
+                if (eng.empty()) eng = "pdal";
+#elif defined(OPENMINE_PY_HAVE_OPEN3D)
+                if (eng.empty()) eng = "open3d";
+#endif
+                if (eng == "pdal") {
+#ifdef OPENMINE_PY_HAVE_PDAL
+                    pe = {[](const survey::PointBuffer& pts, int depth) {
+                              pdalio::PoissonOptions po;
+                              po.depth = depth;
+                              return pdalio::poissonSurface(pts, po);
+                          },
+                          "PDAL " + pdalio::pdalVersion()};
+#endif
+                } else if (eng == "open3d") {
+#ifdef OPENMINE_PY_HAVE_OPEN3D
+                    pe = {[](const survey::PointBuffer& pts, int depth) {
+                              o3d::PoissonOptions po;
+                              po.depth = depth;
+                              return o3d::poissonSurface(pts, po).mesh;
+                          },
+                          o3d::engineName()};
+#endif
+                } else if (!eng.empty()) {
+                    throw py::value_error("engine must be 'pdal' or 'open3d'");
+                }
+                if (!pe.function) throw py::value_error("This build has no Poisson engine '" + eng + "'");
+            }
+            const Uuid ds = uuidArg(dataset);
+            const auto* d = s.get().model().pointClouds.find(ds);
+            if (!d) throw py::key_error("No point cloud '" + dataset + "'");
+            survey::CloudSurface cs;
             {
                 py::gil_scoped_release rel;
                 auto& pr = progressOr(progress);
                 pr.subRange(0, 0.3);
-                auto pts = survey::datasetPoints(s.get(), parent, true, std::nullopt, pr);
-                before = pts.size();
-                pr.subRange(0.3, 0.8);
-                auto out = process(pts, pr);
-                after = out.size();
-                if (out.empty()) throw survey::PointCloudError("The operation left no points");
-                pr.subRange(0.8, 1.0);
-                prep = survey::prepareDerived(s.get(), parent, out, outName, derivation, pr);
+                auto pts = survey::datasetPoints(s.get(), ds, true, std::nullopt, pr);
+                pr.subRange(0.3, 1.0);
+                cs = survey::surfaceFromPoints(std::move(pts), spec, pe, pr);
             }
-            py::dict d;
-            d["id"] = survey::commitDataset(s.get(), std::move(prep), "Derive " + outName).toString();
-            d["input_count"] = before;
-            d["output_count"] = after;
-            d["derivation"] = derivation;
-            return d;
-        }, py::arg("id"), py::arg("operation"), py::arg("params") = py::dict(), py::arg("engine") = "openmine", py::arg("name") = "",
-             py::arg("progress") = nullptr)
+            const Uuid lay = ProjectEditor(s.get()).ensureLayer(layer, 0x9CCC65);
+            py::dict out;
+            out["triangles"] = cs.mesh.triangles.size();
+            out["method"] = cs.method;
+            out["id"] = survey::addSurfaceObject(s.get(), std::move(cs.mesh), name.empty() ? d->name + " surface" : name, lay, cs.method, ds).toString();
+            return out;
+        }, py::arg("dataset"), py::arg("method") = "delaunay", py::arg("params") = py::dict(), py::arg("engine") = "", py::arg("name") = "",
+             py::arg("layer") = "Surfaces", py::arg("progress") = nullptr)
+        .def("fit_planes", [](PyProject& s, const std::string& dataset, double threshold, int maxPlanes, std::size_t minInliers, bool store, unsigned seed) {
+            const Uuid ds = uuidArg(dataset);
+            const auto* d = s.get().model().pointClouds.find(ds);
+            if (!d) throw py::key_error("No point cloud '" + dataset + "'");
+            auto pts = survey::datasetPoints(s.get(), ds, true);
+            if (pts.size() > 2'000'000) pts = survey::randomSubsample(pts, 2'000'000, seed);
+            const auto planes = survey::ransacPlanes(pts, threshold, maxPlanes, minInliers, 1000, seed);
+            py::list out;
+            std::vector<StructuralMeasurement> ms;
+            for (const auto& pl : planes) {
+                const auto plane = geotechnical::planeOfPole(geotechnical::lineOf(pl.normal));
+                py::dict x;
+                x["normal"] = py::make_tuple(pl.normal.x, pl.normal.y, pl.normal.z);
+                x["d"] = pl.d;
+                x["centroid"] = py::make_tuple(pl.centroid.x, pl.centroid.y, pl.centroid.z);
+                x["inliers"] = pl.inliers.size();
+                x["rms"] = pl.rms;
+                x["dip"] = plane.dip;
+                x["dip_direction"] = plane.dipDirection;
+                out.append(x);
+                StructuralMeasurement m;
+                m.setName = "Scan planes";
+                m.type = StructureType::Joint;
+                m.dip = plane.dip;
+                m.dipDirection = plane.dipDirection;
+                m.location = pl.centroid;
+                m.developmentId = d->developmentId;
+                ms.push_back(m);
+            }
+            if (store && !ms.empty()) {
+                CommandStack::MacroScope macro(s.get().commands(), "Store scan planes as structures");
+                ProjectEditor ed(s.get());
+                for (auto& m : ms) ed.add(m);
+                macro.commit();
+            }
+            return out;
+        }, py::arg("dataset"), py::arg("threshold"), py::arg("max_planes") = 5, py::arg("min_inliers") = 100, py::arg("store") = false, py::arg("seed") = 1)
+        .def("add_control_point", [](PyProject& s, const std::string& name, std::array<double, 3> xyz, const std::string& code, double hSigma, double vSigma,
+                                     const std::string& role, const std::string& source) {
+            SurveyControlPoint c;
+            c.name = name;
+            c.code = code;
+            c.position = vec(xyz);
+            c.horizontalSigma = hSigma;
+            c.verticalSigma = vSigma;
+            const auto r = enumFromString<ControlPointRole>(role);
+            if (!r) throw py::value_error("role must be Control, Check, Temporary or ScanTarget");
+            c.role = *r;
+            c.source = source;
+            return ProjectEditor(s.get()).add(c, "Add control point " + name).toString();
+        }, py::arg("name"), py::arg("position"), py::arg("code") = "", py::arg("horizontal_sigma") = 0.005, py::arg("vertical_sigma") = 0.005,
+             py::arg("role") = "Control", py::arg("source") = "Python")
+        .def("pair_registration", [](PyProject& s, const std::string& dataset, const py::list& pairs, bool allowScale, bool apply) {
+            std::vector<RegistrationPair> ps;
+            bool control = false, plain = false;
+            for (const auto& item : pairs) {
+                const auto d = item.cast<py::dict>();
+                RegistrationPair rp;
+                rp.name = d.contains("name") ? d["name"].cast<std::string>() : "P" + std::to_string(ps.size() + 1);
+                rp.source = vec(d["source"].cast<std::array<double, 3>>());
+                if (d.contains("control")) {
+                    const auto key = d["control"].cast<std::string>();
+                    for (const auto& c : s.get().model().controlPoints.all())
+                        if (c.name == key || c.id.toString() == key) rp.targetControlId = c.id;
+                    if (rp.targetControlId.isNil()) throw py::key_error("No control point '" + key + "'");
+                    control = true;
+                } else {
+                    rp.target = vec(d["target"].cast<std::array<double, 3>>());
+                    plain = true;
+                }
+                if (d.contains("role")) {
+                    const auto role = d["role"].cast<std::string>();
+                    if (role == "check") rp.role = PairRole::Check;
+                    else if (role != "fit") throw py::value_error("role must be 'fit' or 'check'");
+                }
+                ps.push_back(rp);
+            }
+            if (control && plain) throw py::value_error("Use either control points or explicit targets for all pairs");
+            Registration r = control ? survey::computeControlRegistration(s.get(), uuidArg(dataset), ps, allowScale)
+                                     : survey::computePairRegistration(s.get(), uuidArg(dataset), ps, allowScale);
+            py::dict out;
+            out["transform"] = r.transform.toString();
+            out["fit_rms"] = r.fitRms;
+            out["fit_max"] = r.fitMax;
+            out["fit_count"] = r.fitCount;
+            out["check_rms"] = r.checkCount ? py::object(py::float_(r.checkRms)) : py::none();
+            out["check_max"] = r.checkCount ? py::object(py::float_(r.checkMax)) : py::none();
+            py::list res;
+            for (const auto& pr : r.pairs) {
+                py::dict x;
+                x["name"] = pr.name;
+                x["role"] = pr.role == PairRole::Check ? "check" : "fit";
+                x["residual"] = py::make_tuple(pr.residual.x, pr.residual.y, pr.residual.z);
+                res.append(x);
+            }
+            out["pairs"] = res;
+            out["registration"] = survey::commitRegistration(s.get(), r, apply).toString();
+            return out;
+        }, py::arg("dataset"), py::arg("pairs"), py::arg("allow_scale") = false, py::arg("apply") = false)
+        .def("revert_registration", [](PyProject& s, const std::string& id) { survey::revertRegistration(s.get(), uuidArg(id)); }, py::arg("registration"))
         .def("build_as_built", [progressOr](PyProject& s, const std::string& dataset, const std::string& development, double corridor, double voxel, int depth,
                                             const std::string& engine, const std::string& name, const std::string& layer, std::size_t fillHoles,
                                             jobs::Progress* progress) {
@@ -1206,10 +2149,7 @@ void defineBindings(py::module_& m) {
             Uuid id;
             {
                 CommandStack::MacroScope macro(s.get().commands(), "Add as-built " + outName);
-                ProjectEditor ed(s.get());
-                Uuid lay;
-                if (const auto* l = ed.findLayerByName(layer); l && !l->locked) lay = l->id;
-                else lay = ed.addLayer(layer, 0xFFB74D);
+                const Uuid lay = ProjectEditor(s.get()).ensureLayer(layer, 0xFFB74D);
                 id = survey::addAsBuiltModel(s.get(), ds, mesh, outName, lay, dev, method);
                 macro.commit();
             }
@@ -1278,6 +2218,18 @@ void defineBindings(py::module_& m) {
     }, py::arg("points"), py::arg("vertices"), py::arg("triangles"), py::arg("signed") = true);
 
     // ---- formats -----------------------------------------------------------------------------------------
+    P.def("import_mesh", [](PyProject& s, const fs::path& file, const std::string& layer) {
+         const auto mf = formats::readMesh(file);
+         py::dict d;
+         d["id"] = formats::addMeshObject(s.get(), mf, file.stem().string(), ProjectEditor(s.get()).ensureLayer(layer, 0xC8A165), file.filename().string()).toString();
+         d["triangles"] = mf.mesh.triangles.size();
+         d["warnings"] = mf.warnings;
+         return d;
+     }, py::arg("file"), py::arg("layer") = "Surfaces")
+        .def("export_mesh", [](PyProject& s, const std::string& id, const fs::path& file) {
+            const auto m = survey::surfaceOf(s.get(), uuidArg(id));
+            return formats::writeMesh(file, *m, geometryOf(s.get(), id).name); // warnings (e.g. binary STL precision)
+        }, py::arg("id"), py::arg("file"));
     P.def("import_dxf", [](PyProject& s, const fs::path& file, const std::string& layerPrefix, double chordTolerance) {
          formats::DxfImportOptions o;
          o.layerPrefix = layerPrefix;
@@ -1747,9 +2699,78 @@ void defineBindings(py::module_& m) {
          if (makeProjectCrs) crs::setProjectCrs(s.get(), id);
          return id.toString();
      }, py::arg("definition"), py::arg("set_as_project_crs") = false)
-        .def("transform_points", [](PyProject& s, const Points& pts, const std::string& src, const std::string& tgt) {
-            return fromPoints(crs::transformPoints(s.get(), toPoints(pts), uuidArg(src), uuidArg(tgt)));
-        });
+        .def("transform_points", [](PyProject& s, const Points& pts, const std::string& src, const std::string& tgt, int operation) {
+            crs::TransformerOptions o;
+            o.operationIndex = operation;
+            return fromPoints(crs::transformPoints(s.get(), toPoints(pts), uuidArg(src), uuidArg(tgt), o));
+        }, py::arg("points"), py::arg("source_crs"), py::arg("target_crs"), py::arg("operation") = 0)
+        .def("set_project_crs", [](PyProject& s, const std::string& id) { crs::setProjectCrs(s.get(), uuidArg(id)); }, py::arg("crs"))
+        .def("transform_objects", [](PyProject& s, const std::vector<std::string>& ids, const std::string& src, const std::string& tgt, const std::string& layer,
+                                     int operation) {
+            crs::TransformerOptions o;
+            o.operationIndex = operation;
+            std::vector<std::string> out;
+            for (const auto& id : crs::transformObjects(s.get(), uuids(ids), uuidArg(src), uuidArg(tgt), layerArg(s.get(), layer), o)) out.push_back(id.toString());
+            return out;
+        }, py::arg("ids"), py::arg("source_crs"), py::arg("target_crs"), py::arg("layer") = "0", py::arg("operation") = 0)
+        .def("define_local_grid", [](PyProject& s, const std::string& name, const std::string& base, const py::list& pairs, const std::string& method) {
+            const auto m = enumFromString<LocalGridMethod>(method);
+            if (!m) throw py::value_error("method must be Helmert2D, Helmert3D or Affine2D");
+            std::vector<geometry::GridControlPair> ps;
+            for (const auto& item : pairs) {
+                const auto d = item.cast<py::dict>();
+                geometry::GridControlPair gp;
+                gp.name = d.contains("name") ? d["name"].cast<std::string>() : "P" + std::to_string(ps.size() + 1);
+                gp.local = vec(d["local"].cast<std::array<double, 3>>());
+                gp.base = vec(d["base"].cast<std::array<double, 3>>());
+                gp.use = d.contains("use") ? d["use"].cast<bool>() : true;
+                ps.push_back(gp);
+            }
+            geometry::LocalGridFit fit;
+            try {
+                fit = geometry::fitLocalGrid(ps, *m);
+            } catch (const std::invalid_argument& e) {
+                throw py::value_error(e.what());
+            }
+            py::dict out;
+            out["crs"] = crs::defineLocalGrid(s.get(), name, uuidArg(base), fit).toString();
+            out["transform"] = fit.localToBase.toString();
+            out["parameters"] = fit.parameters;
+            out["rms"] = fit.rms;
+            out["max"] = fit.max;
+            out["vertical_rms"] = fit.verticalRms;
+            out["check_rms"] = fit.checkCount ? py::object(py::float_(fit.checkRms)) : py::none();
+            py::list res;
+            for (const auto& gp : fit.pairs) res.append(py::make_tuple(gp.name, gp.use, py::make_tuple(gp.residual.x, gp.residual.y, gp.residual.z)));
+            out["residuals"] = res;
+            return out;
+        }, py::arg("name"), py::arg("base_crs"), py::arg("pairs"), py::arg("method") = "Helmert2D");
+    m.def("search_crs", [](const std::string& fragment, std::size_t maxResults) {
+        py::list out;
+        for (const auto& c : crs::search(fragment, maxResults)) {
+            py::dict d;
+            d["name"] = c.name;
+            d["code"] = c.authorityCode;
+            d["area"] = c.areaName;
+            d["deprecated"] = c.deprecated;
+            out.append(d);
+        }
+        return out;
+    }, py::arg("fragment"), py::arg("max_results") = 50);
+    m.def("candidate_operations", [](const std::string& src, const std::string& tgt) {
+        py::list out;
+        for (const auto& o : crs::candidateOperations(src, tgt)) {
+            py::dict d;
+            d["name"] = o.name;
+            d["pipeline"] = o.projPipeline;
+            d["accuracy"] = o.accuracy >= 0 ? py::object(py::float_(o.accuracy)) : py::none();
+            d["ballpark"] = o.ballpark;
+            d["grids"] = o.grids;
+            d["grids_available"] = o.gridsAvailable;
+            out.append(d);
+        }
+        return out;
+    }, py::arg("source"), py::arg("target"));
 #endif
 #ifdef OPENMINE_PY_HAVE_GIS
     m.def("import_dem", [](const fs::path& file, int step) {
@@ -1757,11 +2778,214 @@ void defineBindings(py::module_& m) {
         o.step = step;
         return fromMesh(gis::importDem(file, o));
     }, py::arg("file"), py::arg("step") = 1);
+    auto projectCrsText = [](const Project& p) -> std::string {
+        const auto* c = p.model().projectCrs();
+        if (!c) return {};
+        return c->authorityCode.empty() ? c->definition : c->authorityCode;
+    };
+    P.def("import_vector", [](PyProject& s, const fs::path& file, const std::string& sourceLayer, double z, const std::string& layer) {
+         auto data = gis::importVector(file, sourceLayer, z);
+         const Uuid lay = ProjectEditor(s.get()).ensureLayer(layer.empty() ? file.stem().string() : layer, 0xE0C060);
+         std::vector<std::string> ids;
+         for (const auto& id : gis::addVectorFeatures(s.get(), data, lay)) ids.push_back(id.toString());
+         py::dict d;
+         d["ids"] = ids;
+         d["skipped"] = data.skipped;
+         d["crs"] = data.crsAuthority;
+         auto warnings = data.warnings;
+         const auto* pc = s.get().model().projectCrs();
+         if (!data.crsAuthority.empty()) {
+             if (!pc || pc->authorityCode.empty())
+                 warnings.push_back("The file declares " + data.crsAuthority + " but the project CRS is not declared; coordinates were imported as they are");
+             else if (pc->authorityCode != data.crsAuthority)
+                 warnings.push_back("The file's CRS (" + data.crsAuthority + ") differs from the project CRS (" + pc->authorityCode + "); coordinates were not transformed");
+         }
+         d["warnings"] = warnings;
+         return d;
+     }, py::arg("file"), py::arg("source_layer") = "", py::arg("default_z") = 0.0, py::arg("layer") = "")
+        .def("export_vector", [projectCrsText](PyProject& s, const std::vector<std::string>& ids, const fs::path& file, bool polygons) {
+            std::vector<const GeometryObject*> objs;
+            for (const auto& id : ids) objs.push_back(&geometryOf(s.get(), id));
+            gis::VectorExportOptions o;
+            o.layerName = file.stem().string();
+            o.crsWkt = projectCrsText(s.get());
+            gis::exportVector(objs, file, o, polygons);
+        }, py::arg("ids"), py::arg("file"), py::arg("closed_as_polygons") = true)
+        .def("import_dem_surface", [](PyProject& s, const fs::path& file, int step, double zScale, const std::string& name, const std::string& layer) {
+            gis::DemImportOptions o;
+            o.step = step;
+            o.zScale = zScale;
+            gis::RasterInfo info;
+            auto mesh = gis::importDem(file, o, &info);
+            const Uuid lay = ProjectEditor(s.get()).ensureLayer(layer, 0x9CCC65);
+            const std::string method = "DEM " + info.driver + " step=" + std::to_string(step);
+            py::dict d;
+            d["triangles"] = mesh.triangles.size();
+            d["crs"] = info.crsAuthority;
+            d["id"] = survey::addSurfaceObject(s.get(), std::move(mesh), name.empty() ? file.stem().string() : name, lay, method, Uuid{}).toString();
+            return d;
+        }, py::arg("file"), py::arg("step") = 1, py::arg("z_scale") = 1.0, py::arg("name") = "", py::arg("layer") = "Surfaces")
+        .def("export_dem", [projectCrsText](PyProject& s, const std::vector<std::string>& ids, const fs::path& file, double cell) {
+            MeshData merged;
+            for (const auto& id : ids) {
+                const auto m = survey::surfaceOf(s.get(), uuidArg(id));
+                const auto base = static_cast<std::uint32_t>(merged.vertices.size());
+                merged.vertices.insert(merged.vertices.end(), m->vertices.begin(), m->vertices.end());
+                for (auto t : m->triangles) merged.triangles.push_back({t[0] + base, t[1] + base, t[2] + base});
+            }
+            gis::DemExportOptions o;
+            o.cellSize = cell;
+            o.crsWkt = projectCrsText(s.get());
+            std::string ext = file.extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            o.driver = ext == ".asc" ? "AAIGrid" : "GTiff";
+            const auto info = gis::exportDem(merged, file, o);
+            py::dict d;
+            d["width"] = info.width;
+            d["height"] = info.height;
+            d["driver"] = info.driver;
+            return d;
+        }, py::arg("ids"), py::arg("file"), py::arg("cell") = 1.0);
 #endif
 #ifdef OPENMINE_PY_HAVE_OCCT
+    // ---- solids (exact B-rep through Open CASCADE) -----------------------------------------------------
+    auto infoDict = [](const occt::ShapeInfo& i) {
+        py::dict d;
+        d["valid"] = i.valid;
+        d["closed"] = i.closed;
+        d["volume"] = i.volume;
+        d["area"] = i.area;
+        d["bounds"] = py::make_tuple(i.bounds.min.x, i.bounds.min.y, i.bounds.min.z, i.bounds.max.x, i.bounds.max.y, i.bounds.max.z);
+        d["centre_of_mass"] = py::make_tuple(i.centreOfMass.x, i.centreOfMass.y, i.centreOfMass.z);
+        d["solids"] = i.solids;
+        d["shells"] = i.shells;
+        d["faces"] = i.faces;
+        d["edges"] = i.edges;
+        d["vertices"] = i.vertices;
+        d["problems"] = i.problems;
+        return d;
+    };
+    auto strIds = [](const std::vector<Uuid>& v) {
+        std::vector<std::string> o;
+        for (const auto& u : v) o.push_back(u.toString());
+        return o;
+    };
     P.def("solid_from_mesh", [](PyProject& s, const std::string& meshId, bool requireClosed) {
-        return occt::solidFromMeshObject(s.get(), uuidArg(meshId), requireClosed).toString();
-    }, py::arg("mesh"), py::arg("require_closed") = true);
+         return occt::solidFromMeshObject(s.get(), uuidArg(meshId), requireClosed).toString();
+     }, py::arg("mesh"), py::arg("require_closed") = true)
+        .def("solid_primitive", [](PyProject& s, const std::string& kind, const py::dict& a, const std::string& name, const std::string& layer) {
+            auto pt = [&](const char* k) {
+                if (!a.contains(k)) throw py::value_error(kind + " needs " + k);
+                return vec(a[k].cast<std::array<double, 3>>());
+            };
+            auto num = [&](const char* k) {
+                if (!a.contains(k)) throw py::value_error(kind + " needs " + k);
+                return a[k].cast<double>();
+            };
+            occt::Shape sh;
+            if (kind == "box") sh = occt::makeBox(pt("corner1"), pt("corner2"));
+            else if (kind == "cylinder") sh = occt::makeCylinder(pt("base"), pt("axis"), num("radius"), num("height"));
+            else if (kind == "cone") sh = occt::makeCone(pt("base"), pt("axis"), num("radius_base"), num("radius_top"), num("height"));
+            else if (kind == "sphere") sh = occt::makeSphere(pt("centre"), num("radius"));
+            else throw py::value_error("Unknown primitive '" + kind + "' (box, cylinder, cone, sphere)");
+            return occt::addSolidObject(s.get(), sh, name.empty() ? kind : name, layerArg(s.get(), layer), {}, "Add " + kind).toString();
+        }, py::arg("kind"), py::arg("parameters"), py::arg("name") = "", py::arg("layer") = "0")
+        .def("solid_extrude", [strIds](PyProject& s, const std::vector<std::string>& curves, const std::string& direction, double distance,
+                                       std::array<double, 3> vector, bool symmetric, bool holes, const std::string& name, const std::string& layer) {
+            occt::ExtrusionSpec spec;
+            if (direction == "vertical") spec.direction = occt::ExtrusionSpec::Direction::Vertical;
+            else if (direction == "normal") spec.direction = occt::ExtrusionSpec::Direction::Normal;
+            else if (direction == "vector") spec.direction = occt::ExtrusionSpec::Direction::Vector;
+            else throw py::value_error("direction must be 'vertical', 'normal' or 'vector'");
+            spec.distance = distance;
+            spec.vector = vec(vector);
+            spec.symmetric = symmetric;
+            spec.holes = holes;
+            return strIds(occt::extrudeCurves(s.get(), uuids(curves), spec, name, layerArg(s.get(), layer)));
+        }, py::arg("curves"), py::arg("direction") = "vertical", py::arg("distance") = 5.0, py::arg("vector") = std::array<double, 3>{0, 0, 5},
+             py::arg("symmetric") = false, py::arg("holes") = true, py::arg("name") = "", py::arg("layer") = "0")
+        .def("solid_revolve", [strIds](PyProject& s, const std::vector<std::string>& profiles, std::array<double, 3> axisPoint, std::array<double, 3> axisDir,
+                                       double angleDeg, const std::string& name, const std::string& layer) {
+            return strIds(occt::revolveCurves(s.get(), uuids(profiles), vec(axisPoint), vec(axisDir), angleDeg * std::numbers::pi / 180.0, name,
+                                              layerArg(s.get(), layer)));
+        }, py::arg("profiles"), py::arg("axis_point"), py::arg("axis_direction"), py::arg("angle_deg") = 360.0, py::arg("name") = "", py::arg("layer") = "0")
+        .def("solid_sweep", [strIds](PyProject& s, const std::vector<std::string>& paths, const std::optional<std::string>& profile, double width, double height,
+                                     const std::string& transition, const std::string& name, const std::string& layer) {
+            geometry::ProfileCurve pc;
+            if (profile) {
+                const auto* tp = s.get().model().profiles.find(uuidArg(*profile));
+                if (!tp) throw py::key_error("No tunnel profile '" + *profile + "'");
+                pc = geometry::profileCurve(*tp);
+            } else {
+                if (!(width > 0) || !(height > 0)) throw py::value_error("width and height must be positive");
+                pc.points = geometry::rectangleOutline(width, height);
+                pc.bulges.assign(pc.points.size(), 0.0);
+            }
+            occt::SweepTransition t = occt::SweepTransition::RightCorner;
+            if (transition == "transformed") t = occt::SweepTransition::Transformed;
+            else if (transition == "round") t = occt::SweepTransition::RoundCorner;
+            else if (transition != "right") throw py::value_error("transition must be 'right', 'round' or 'transformed'");
+            return strIds(occt::sweepCurves(s.get(), uuids(paths), pc, t, name, layerArg(s.get(), layer)));
+        }, py::arg("paths"), py::arg("profile") = py::none(), py::arg("width") = 5.0, py::arg("height") = 5.0, py::arg("transition") = "right",
+             py::arg("name") = "", py::arg("layer") = "0")
+        .def("solid_loft", [](PyProject& s, const std::vector<std::string>& sections, bool solid, bool ruled, const std::string& name, const std::string& layer) {
+            return occt::loftCurves(s.get(), uuids(sections), solid, ruled, name, layerArg(s.get(), layer)).toString();
+        }, py::arg("sections"), py::arg("solid") = true, py::arg("ruled") = false, py::arg("name") = "", py::arg("layer") = "0")
+        .def("solid_boolean", [](PyProject& s, const std::string& a, const std::string& b, const std::string& op, bool removeInputs, const std::string& name,
+                                 double fuzzy) {
+            occt::BooleanOp o;
+            if (op == "union") o = occt::BooleanOp::Union;
+            else if (op == "difference" || op == "subtract") o = occt::BooleanOp::Difference;
+            else if (op == "intersection" || op == "intersect") o = occt::BooleanOp::Intersection;
+            else throw py::value_error("op must be 'union', 'difference' or 'intersection'");
+            return occt::booleanObjects(s.get(), uuidArg(a), uuidArg(b), o, removeInputs, name, fuzzy).toString();
+        }, py::arg("a"), py::arg("b"), py::arg("op"), py::arg("remove_inputs") = false, py::arg("name") = "", py::arg("fuzzy") = 0.0)
+        .def("solid_fillet", [infoDict](PyProject& s, const std::string& id, double r) { return infoDict(occt::filletSolidEdges(s.get(), uuidArg(id), r)); },
+             py::arg("id"), py::arg("radius"))
+        .def("solid_offset", [infoDict](PyProject& s, const std::string& id, double d) { return infoDict(occt::offsetSolidObject(s.get(), uuidArg(id), d)); },
+             py::arg("id"), py::arg("distance"))
+        .def("solid_info", [infoDict](PyProject& s, const std::string& id) { return infoDict(occt::analyseSolidObject(s.get(), uuidArg(id))); }, py::arg("id"))
+        .def("solid_heal", [infoDict](PyProject& s, const std::string& id) {
+            const auto r = occt::healSolidObject(s.get(), uuidArg(id));
+            py::dict d;
+            d["before"] = infoDict(r.before);
+            d["after"] = infoDict(r.after);
+            d["fixes"] = r.fixes;
+            return d;
+        }, py::arg("id"))
+        .def("section_objects", [strIds](PyProject& s, const std::vector<std::string>& ids, std::array<double, 3> point, std::array<double, 3> normal,
+                                         const std::string& layer) {
+            return strIds(occt::sectionObjects(s.get(), uuids(ids), vec(point), vec(normal), layerArg(s.get(), layer)));
+        }, py::arg("ids"), py::arg("point"), py::arg("normal"), py::arg("layer") = "0")
+        .def("development_solid", [](PyProject& s, const std::string& dev, const std::string& layer, const std::string& transition) {
+            occt::SweepTransition t = transition == "round" ? occt::SweepTransition::RoundCorner
+                                      : transition == "transformed" ? occt::SweepTransition::Transformed : occt::SweepTransition::RightCorner;
+            return occt::developmentSolid(s.get(), uuidArg(dev), layerArg(s.get(), layer), t).toString();
+        }, py::arg("development"), py::arg("layer") = "0", py::arg("transition") = "right")
+        .def("solid_distance", [](PyProject& s, const std::string& a, const std::string& b) {
+            const auto& p = s.get();
+            const auto r = occt::minimumDistance(occt::shapeOfObject(p, geometryOf(p, a)), occt::shapeOfObject(p, geometryOf(p, b)));
+            py::dict d;
+            d["distance"] = r.distance;
+            d["on_first"] = py::make_tuple(r.onFirst.x, r.onFirst.y, r.onFirst.z);
+            d["on_second"] = py::make_tuple(r.onSecond.x, r.onSecond.y, r.onSecond.z);
+            return d;
+        }, py::arg("a"), py::arg("b"))
+        .def("solid_classify", [](PyProject& s, const std::string& id, const Points& pts, double tol) {
+            const auto& p = s.get();
+            const auto sh = occt::loadSolid(p, geometryOf(p, id));
+            std::vector<std::string> out;
+            for (const auto& q : toPoints(pts)) {
+                const auto st = occt::classify(sh, q, tol);
+                out.push_back(st == occt::PointState::Inside ? "inside" : st == occt::PointState::On ? "on" : "outside");
+            }
+            return out;
+        }, py::arg("id"), py::arg("points"), py::arg("tolerance") = 1e-7)
+        .def("import_solids", [strIds](PyProject& s, const fs::path& file, const std::string& layer) {
+            return strIds(occt::importSolids(s.get(), file, layerArg(s.get(), layer)));
+        }, py::arg("file"), py::arg("layer") = "0")
+        .def("export_solids", [](PyProject& s, const std::vector<std::string>& ids, const fs::path& file) { occt::exportSolids(s.get(), uuids(ids), file); },
+             py::arg("ids"), py::arg("file"));
 #endif
 
     // ---- reports ----------------------------------------------------------------------------------------

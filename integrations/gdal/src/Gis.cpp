@@ -384,18 +384,8 @@ VectorImport importVector(const fs::path& file, const std::string& layerName, do
 std::vector<Uuid> addVectorFeatures(Project& p, const VectorImport& data, const Uuid& layerId) {
     ProjectEditor ed(p);
     CommandStack::MacroScope macro(p.commands(), "Import GIS features");
-    for (const auto& [key, type] : data.fields) {
-        bool exists = false;
-        for (const auto& def : p.model().attributeDefinitions.all())
-            if (def.entityType == "GeometryObject" && def.key == key) exists = true;
-        if (exists) continue;
-        AttributeDefinition def;
-        def.entityType = "GeometryObject";
-        def.key = key;
-        def.displayName = key;
-        def.valueType = attributeValueTypeFromString(type).value_or(AttributeValueType::Text);
-        ed.addAttributeDefinition(def);
-    }
+    for (const auto& [key, type] : data.fields)
+        ed.ensureAttributeDefinition("GeometryObject", key, key, attributeValueTypeFromString(type).value_or(AttributeValueType::Text));
     std::vector<Uuid> ids;
     for (const auto& f : data.features) {
         GeometryObject g = f.geometry;

@@ -2,6 +2,7 @@
 #include "MainWindow.h"
 #include "SmokeTest.h"
 #include "app/AppContext.h"
+#include "console/CommandConsole.h"
 #include "theme/Theme.h"
 #include "vtk/QtVtkWidget.h"
 
@@ -16,6 +17,7 @@
 
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QFile>
 #include <QSettings>
 #include <QSurfaceFormat>
 #include <QTimer>
@@ -38,7 +40,9 @@ int main(int argc, char* argv[]) {
     QCommandLineOption smoke("smoke-test", "Run the end-to-end GUI smoke test, write the log and screenshots to <dir>, exit with the number of failures.", "dir");
     QCommandLineOption light("light", "Start with the light theme.");
     QCommandLineOption fresh("reset-layout", "Ignore the saved window layout.");
+    QCommandLineOption reference("command-reference", "Write the console command reference (Markdown) to <file> and exit.", "file");
     cli.addOption(smoke);
+    cli.addOption(reference);
     cli.addOption(light);
     cli.addOption(fresh);
     cli.addPositionalArgument("file", "Project (.openmine) to open, or data files to import", "[file…]");
@@ -64,6 +68,15 @@ int main(int argc, char* argv[]) {
     openmine::app::Theme::apply(app, useLight ? openmine::app::ThemeKind::Light : openmine::app::ThemeKind::Dark);
 
     openmine::app::MainWindow w;
+    if (cli.isSet(reference)) {
+        QFile f(cli.value(reference));
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+            std::fprintf(stderr, "cannot write %s\n", qPrintable(cli.value(reference)));
+            return 1;
+        }
+        f.write(w.console()->referenceMarkdown().toUtf8());
+        return 0;
+    }
     w.show();
 
     if (cli.isSet(smoke)) {

@@ -1,5 +1,5 @@
 # Open CASCADE Technology (LGPL-2.1 with OCCT exception) — linked dynamically.
-add_library(openmine_occt src/SweptSolid.cpp src/Solid.cpp src/SolidObjects.cpp)
+add_library(openmine_occt src/SweptSolid.cpp src/Solid.cpp src/SolidObjects.cpp src/Modelling.cpp)
 add_library(OpenMine::occt ALIAS openmine_occt)
 target_include_directories(openmine_occt PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>)
 target_include_directories(openmine_occt SYSTEM PRIVATE ${OpenCASCADE_INCLUDE_DIR})

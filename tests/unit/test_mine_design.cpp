@@ -6,6 +6,7 @@
 #include "openmine/geometry/Profile.h"
 #include "openmine/geometry/Sweep.h"
 #include "openmine/mine_design/Development.h"
+#include "openmine/mine_design/GeometryEdits.h"
 #include "openmine/mine_design/Layout.h"
 #include "openmine/mine_design/Revisions.h"
 #include "openmine/mine_design/Stopes.h"
@@ -471,4 +472,80 @@ TEST(Headings, ProjectCrosscutsAndLevels) {
     EXPECT_EQ(p.model().developments.find(od)->levelId, lid);
     EXPECT_EQ(p.model().developments.find(od)->level, "675");
     EXPECT_EQ(assignDevelopmentsToLevels(p, 5.0), 0); // idempotent
+}
+
+TEST(MineDesign, ProjectGeometryEditsAreUndoableAndFlagLinkedActivities) {
+    Fixture f;
+    auto& p = *f.p;
+    ProjectEditor ed(p);
+    const Uuid layer = p.model().layers.all()[1].id;
+    auto add = [&](GeometryObject g) {
+        g.layerId = layer;
+        return ed.addGeometry(std::move(g));
+    };
+    // A cross line at x = 60 trims the centreline's first leg: the 0–60 m part is removed.
+    const Uuid cutter = add(cad::makeLine({60, -10, 1000}, {60, 10, 1000}));
+    const std::size_t undoBefore = p.commands().index();
+    const auto t = mine_design::trimObject(p, f.geom, {cutter}, {10, 0, 1000});
+    EXPECT_EQ(p.commands().index(), undoBefore + 1); // one undo step
+    ASSERT_EQ(t.changed, std::vector<Uuid>{f.geom});     // the centreline keeps its identity
+    EXPECT_TRUE(t.created.empty());
+    EXPECT_EQ(t.flaggedActivities, 1);
+    EXPECT_NEAR(geometry::curveLength(*p.model().geometry.find(f.geom)), 90.0, 1e-9);
+    EXPECT_TRUE(p.model().activities.find(f.act)->designImpactFlag);
+    EXPECT_DOUBLE_EQ(p.model().activities.find(f.act)->quantity, 150.0); // flagged, not changed
+    p.commands().undo();
+    EXPECT_NEAR(geometry::curveLength(*p.model().geometry.find(f.geom)), 150.0, 1e-9);
+    EXPECT_FALSE(p.model().activities.find(f.act)->designImpactFlag);
+
+    // Split, then join the two pieces back.
+    const Uuid a = add(cad::makePolyline({{0, 50, 0}, {10, 50, 0}, {20, 50, 0}}));
+    const auto sp = mine_design::splitObject(p, a, {10, 50, 0});
+    ASSERT_EQ(sp.created.size(), 1u);
+    EXPECT_NEAR(geometry::curveLength(*p.model().geometry.find(a)) + geometry::curveLength(*p.model().geometry.find(sp.created[0])), 20.0, 1e-9);
+    const auto jn = mine_design::joinObjects(p, {a, sp.created[0], f.geom});
+    EXPECT_EQ(jn.removed.size(), 2u);
+    ASSERT_EQ(jn.created.size(), 1u);
+    ASSERT_EQ(jn.notes.size(), 1u); // the heading centreline is not joined
+    EXPECT_NE(jn.notes[0].find("centreline"), std::string::npos);
+    EXPECT_NEAR(geometry::curveLength(*p.model().geometry.find(jn.created[0])), 20.0, 1e-9);
+    EXPECT_THROW(mine_design::joinObjects(p, {jn.created[0], cutter}), ValidationError); // ends do not meet
+
+    // Explode keeps centrelines whole.
+    const auto ex = mine_design::explodeObjects(p, {jn.created[0], f.geom});
+    EXPECT_EQ(ex.removed.size(), 1u);
+    EXPECT_EQ(ex.created.size(), 2u);
+    EXPECT_EQ(ex.notes.size(), 1u);
+    EXPECT_TRUE(p.model().geometry.find(f.geom));
+
+    // Copy keeps attributes; a move of the centreline flags the activity again.
+    AttributeDefinition note;
+    note.entityType = "GeometryObject";
+    note.key = "note";
+    note.displayName = "Note";
+    ed.add(note);
+    GeometryObject tagged = cad::makeLine({0, 80, 0}, {5, 80, 0});
+    tagged.attributes["note"] = "kept";
+    const Uuid tg = add(tagged);
+    const auto cp = mine_design::transformObjects(p, {tg}, Transform3::translation({0, 5, 0}), true, "Copy");
+    ASSERT_EQ(cp.created.size(), 1u);
+    EXPECT_EQ(p.model().geometry.find(cp.created[0])->attributes.at("note"), "kept");
+    EXPECT_DOUBLE_EQ(p.model().geometry.find(cp.created[0])->vertices[0].y, 85.0);
+    const auto mv = mine_design::transformObjects(p, {f.geom}, Transform3::translation({0, 0, -1}), false, "Move");
+    EXPECT_EQ(mv.flaggedActivities, 0); // a pure translation keeps the length: nothing to review
+    const auto sc = mine_design::transformObjects(p, {f.geom}, Transform3::scaling(2.0), false, "Scale");
+    EXPECT_EQ(sc.flaggedActivities, 1);
+
+    // Offset, fillet, chamfer.
+    const Uuid l1 = add(cad::makeLine({0, 200, 0}, {10, 200, 0}));
+    const Uuid l2 = add(cad::makeLine({10, 200, 0}, {10, 210, 0}));
+    const Uuid off = mine_design::offsetObject(p, l1, 2.0, {5, 205, 0});
+    EXPECT_DOUBLE_EQ(p.model().geometry.find(off)->vertices[0].y, 202.0);
+    EXPECT_THROW(mine_design::offsetObject(p, l1, 0.0, {5, 205, 0}), ValidationError);
+    const auto fl = mine_design::filletObjects(p, l1, {8, 200, 0}, l2, {10, 202, 0}, 1.0);
+    ASSERT_EQ(fl.created.size(), 1u);
+    EXPECT_EQ(p.model().geometry.find(fl.created[0])->type, GeometryType::Arc);
+    EXPECT_NEAR(geometry::curveLength(*p.model().geometry.find(fl.created[0])), kPi / 2, 1e-9);
+    EXPECT_THROW(mine_design::chamferObjects(p, l1, {1, 200, 0}, l1, {2, 200, 0}, 1, 1), ValidationError);
+    EXPECT_THROW(mine_design::trimObject(p, Uuid::generate(), {}, {}), ValidationError);
 }

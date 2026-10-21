@@ -27,6 +27,7 @@
 #include "openmine/geometry/MeshOps.h"
 #include "openmine/geometry/Polyline.h"
 #include "openmine/mine_design/Development.h"
+#include "openmine/mine_design/GeometryEdits.h"
 #include "openmine/mine_design/Revisions.h"
 #include "openmine/omf/OmfProject.h"
 #include "openmine/project/ProjectEditor.h"
@@ -35,6 +36,7 @@
 #include "openmine/reporting/ReportDocument.h"
 
 #ifdef OPENMINE_APP_HAVE_OCCT
+#include "openmine/occt/Modelling.h"
 #include "openmine/occt/SolidObjects.h"
 #endif
 #ifdef OPENMINE_APP_HAVE_GIS
@@ -218,14 +220,8 @@ bool MainWindow::importFile(const QString& path) {
                 return [this, mf, base] {
                     ctx_.tryEdit(tr("Import mesh"), [&] {
                         CommandStack::MacroScope macro(ctx_.project().commands(), "Import " + sstr(base));
-                        GeometryObject g;
-                        g.type = GeometryType::Mesh;
-                        g.name = mf->name.empty() ? sstr(QFileInfo(base).completeBaseName()) : mf->name;
-                        g.layerId = workflowLayer(ctx_, "Surfaces", 0xC8A165);
-                        g.mesh = std::make_shared<MeshData>(mf->mesh);
-                        ensureAttribute(ctx_.project(), "GeometryObject", "source_file", "Source file");
-                        g.attributes["source_file"] = sstr(base);
-                        const Uuid id = ProjectEditor(ctx_.project()).addGeometry(std::move(g));
+                        const Uuid id = formats::addMeshObject(ctx_.project(), *mf, sstr(QFileInfo(base).completeBaseName()), workflowLayer(ctx_, "Surfaces", 0xC8A165),
+                                                               sstr(base));
                         macro.commit();
                         const auto topo = geometry::topology(mf->mesh);
                         ctx_.report(tr("%1: %2 triangles, area %3 m²%4").arg(base).arg(mf->mesh.triangles.size()).arg(formatNumber(geometry::meshArea(mf->mesh), 1))
@@ -290,10 +286,16 @@ bool MainWindow::importFile(const QString& path) {
                                         .arg(features->skipped)
                                         .arg(features->crsAuthority.empty() ? QString() : tr(", declared CRS %1").arg(qstr(features->crsAuthority))));
                         const auto* pc = ctx_.project().model().projectCrs();
-                        if (pc && !features->crsAuthority.empty() && pc->authorityCode != features->crsAuthority)
-                            ctx_.report(tr("The file's CRS (%1) differs from the project CRS (%2). Coordinates were not transformed: use Tools ▸ Transform.")
-                                            .arg(qstr(features->crsAuthority), qstr(pc->authorityCode)),
-                                        MessageLevel::Warning);
+                        if (!features->crsAuthority.empty()) {
+                            if (!pc || pc->authorityCode.empty())
+                                ctx_.report(tr("The file declares %1 but the project CRS is not declared; coordinates were imported as they are.")
+                                                .arg(qstr(features->crsAuthority)),
+                                            MessageLevel::Warning);
+                            else if (pc->authorityCode != features->crsAuthority)
+                                ctx_.report(tr("The file's CRS (%1) differs from the project CRS (%2). Coordinates were not transformed: use Tools ▸ Transform.")
+                                                .arg(qstr(features->crsAuthority), qstr(pc->authorityCode)),
+                                            MessageLevel::Warning);
+                        }
                         for (const auto& w : features->warnings) ctx_.report(qstr(w), MessageLevel::Warning);
                     });
                 };
@@ -857,6 +859,37 @@ void MainWindow::handleEntityAction(const QString& actionIn, const std::vector<S
         if (!n) ctx_.report(tr("Select the solids to heal"), MessageLevel::Warning);
         return;
     }
+    if (action == "solid-fillet" || action == "solid-offset") {
+        const bool fillet = action == "solid-fillet";
+        std::vector<Uuid> solids;
+        for (const auto& id : ctx_.selectedGeometry())
+            if (const auto* g = m.geometry.find(id); g && g->type == GeometryType::Solid) solids.push_back(id);
+        if (solids.empty()) {
+            ctx_.report(fillet ? tr("Select the solids whose edges to fillet") : tr("Select the solids to offset"), MessageLevel::Warning);
+            return;
+        }
+#ifdef OPENMINE_APP_HAVE_OCCT
+        double value = argument.isEmpty() ? (fillet ? 0.5 : 0.25) : argument.toDouble();
+        if (!nonInteractive_ && argument.isEmpty()) {
+            bool ok = false;
+            value = fillet ? QInputDialog::getDouble(this, tr("Fillet solid edges"), tr("Radius (m):"), value, 0.001, 1000, 3, &ok)
+                           : QInputDialog::getDouble(this, tr("Offset solid"), tr("Distance (m, negative inwards):"), value, -1000, 1000, 3, &ok);
+            if (!ok) return;
+        }
+        ctx_.tryEdit(fillet ? tr("Fillet solid edges") : tr("Offset solid"), [&] {
+            CommandStack::MacroScope macro(p.commands(), fillet ? "Fillet solid edges" : "Offset solids");
+            for (const auto& id : solids) {
+                const auto info = fillet ? occt::filletSolidEdges(p, id, value) : occt::offsetSolidObject(p, id, value);
+                ctx_.report(tr("%1: %2 m³, %3").arg(qstr(m.geometry.find(id)->name), formatNumber(info.volume, 3), info.valid ? tr("valid") : tr("NOT VALID")),
+                            info.valid ? MessageLevel::Info : MessageLevel::Warning);
+            }
+            macro.commit();
+        });
+#else
+        ctx_.report(tr("Solid modelling needs Open CASCADE, which this build does not include"), MessageLevel::Error);
+#endif
+        return;
+    }
     if (action == "section-objects") {
         std::vector<Uuid> ids;
         for (const auto& id : ctx_.selectedGeometry())
@@ -1204,65 +1237,29 @@ void MainWindow::handleEntityAction(const QString& actionIn, const std::vector<S
 
     // ---- CAD / solids
     if (action == "join") {
-        std::vector<GeometryObject> objs;
-        for (const auto& id : ctx_.selectedGeometry())
-            if (const auto* g = m.geometry.find(id)) {
-                if (m.developmentForGeometry(id)) {
-                    ctx_.report(tr("%1 is a heading centreline and is not joined").arg(qstr(g->name)), MessageLevel::Warning);
-                    continue;
-                }
-                objs.push_back(*g);
-            }
-        if (objs.size() < 2) {
-            ctx_.report(tr("Join: select two or more curves"), MessageLevel::Warning);
-            return;
-        }
+        const auto ids = ctx_.selectedGeometry();
         ctx_.tryEdit(tr("Join"), [&] {
-            const auto joined = cad::join(objs);
-            if (joined.size() == objs.size()) throw ValidationError("No end points meet within the tolerance: nothing to join");
-            CommandStack::MacroScope macro(p.commands(), "Join " + std::to_string(objs.size()) + " objects");
-            ProjectEditor ed(p);
-            for (const auto& o : objs) ed.removeGeometry(o.id);
+            const auto r = mine_design::joinObjects(p, ids);
+            for (const auto& n : r.notes) ctx_.report(qstr(n), MessageLevel::Warning);
             std::vector<SelectionItem> sel;
-            for (auto g : joined) {
-                g.id = Uuid{};
-                if (g.layerId.isNil()) g.layerId = objs.front().layerId;
-                sel.push_back({EntityKind::Geometry, ed.addGeometry(std::move(g))});
-            }
-            macro.commit();
-            ctx_.report(tr("%1 objects joined into %2").arg(objs.size()).arg(joined.size()));
+            for (const auto& id : r.created) sel.push_back({EntityKind::Geometry, id});
+            ctx_.report(tr("%1 objects joined into %2").arg(r.removed.size()).arg(r.created.size()));
             ctx_.selectMany(sel);
         });
         return;
     }
     if (action == "explode") {
-        const auto geoms = ctx_.selectedGeometry();
-        if (geoms.empty()) {
+        const auto ids = ctx_.selectedGeometry();
+        if (ids.empty()) {
             ctx_.report(tr("Explode: select objects"), MessageLevel::Warning);
             return;
         }
         ctx_.tryEdit(tr("Explode"), [&] {
-            CommandStack::MacroScope macro(p.commands(), "Explode");
-            ProjectEditor ed(p);
+            const auto r = mine_design::explodeObjects(p, ids);
+            for (const auto& n : r.notes) ctx_.report(qstr(n), MessageLevel::Warning);
             std::vector<SelectionItem> sel;
-            int exploded = 0;
-            for (const auto& id : geoms) {
-                const auto* g = m.geometry.find(id);
-                if (!g || m.developmentForGeometry(id)) continue;
-                auto parts = cad::explode(*g);
-                if (parts.size() <= 1) continue;
-                const GeometryObject original = *g;
-                ed.removeGeometry(id);
-                for (auto& part : parts) {
-                    part.id = Uuid{};
-                    part.layerId = original.layerId;
-                    sel.push_back({EntityKind::Geometry, ed.addGeometry(std::move(part))});
-                }
-                ++exploded;
-            }
-            if (!exploded) throw ValidationError("Nothing to explode (headings' centrelines are kept whole)");
-            macro.commit();
-            ctx_.report(tr("%1 object(s) exploded into %2").arg(exploded).arg(sel.size()));
+            for (const auto& id : r.created) sel.push_back({EntityKind::Geometry, id});
+            ctx_.report(tr("%1 object(s) exploded into %2").arg(r.removed.size()).arg(r.created.size()));
             ctx_.selectMany(sel);
         });
         return;

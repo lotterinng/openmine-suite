@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "openmine/formats/MeshFormats.h"
 
+#include "openmine/project/ProjectEditor.h"
+
 #include "openmine/geometry/MeshOps.h"
 #include "openmine/geometry/Sweep.h"
 
@@ -400,6 +402,22 @@ std::vector<std::string> writeMesh(const fs::path& file, const MeshData& m, cons
     else if (e == ".ply") writePly(file, m, true);
     else throw MeshFormatError("Unsupported mesh format " + e);
     return {};
+}
+
+Uuid addMeshObject(Project& p, const MeshFile& mf, const std::string& name, const Uuid& layerId, const std::string& sourceFile) {
+    if (mf.mesh.triangles.empty()) throw MeshFormatError("The mesh has no triangles");
+    CommandStack::MacroScope macro(p.commands(), "Import " + sourceFile);
+    ProjectEditor ed(p);
+    ed.ensureAttributeDefinition("GeometryObject", "source_file", "Source file");
+    GeometryObject g;
+    g.type = GeometryType::Mesh;
+    g.name = mf.name.empty() ? name : mf.name;
+    g.layerId = layerId;
+    g.mesh = std::make_shared<MeshData>(mf.mesh);
+    g.attributes["source_file"] = sourceFile;
+    const Uuid id = ed.addGeometry(std::move(g));
+    macro.commit();
+    return id;
 }
 
 } // namespace openmine::formats

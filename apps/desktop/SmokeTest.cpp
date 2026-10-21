@@ -919,6 +919,24 @@ void Smoke::modelling() {
     ctx_.select(EntityKind::Geometry, block);
     check(cmd("SOLIDCHECK") && w_.console()->lastOutput().contains("valid"), "solid check reports validity and volume");
     check(cmd("HEAL"), "heal (a valid solid stays valid)");
+    {
+        // Rounded edges and an offset change the solid in place, one undo step each.
+        cmd("RECTANGLE " + pt(x + 150, y, z) + " " + pt(x + 154, y + 4, z));
+        ctx_.select(EntityKind::Geometry, lastGeometry());
+        cmd("EXTRUDE 4");
+        const Uuid cube = lastGeometry();
+        ctx_.select(EntityKind::Geometry, cube);
+        auto vol = [&] { return std::abs(geometry::meshSignedVolume(*m().geometry.find(cube)->mesh)); };
+        const bool filleted = cmd("SOLIDFILLET 0.5");
+        const double vf = vol();
+        check(filleted && vf < 64.0 && vf > 60.0, QStringLiteral("SOLIDFILLET rounds every edge (%1 m³ < 64)").arg(vf, 0, 'f', 3));
+        check(cmd("UNDO") && std::abs(vol() - 64.0) < 1e-6, "the fillet is one undo step");
+        // Offset by 0.5 m with rounded edges: 64 + 96·0.5 + 48·π·0.25/4 + 4/3·π·0.125 (Steiner).
+        const double steiner = 64 + 48 + 48 * std::numbers::pi * 0.25 / 4 + 4.0 / 3.0 * std::numbers::pi * 0.125;
+        const bool offset = cmd("SOLIDOFFSET 0.5");
+        const double vo = vol();
+        check(offset && std::abs(vo - steiner) < 0.01 * steiner, QStringLiteral("SOLIDOFFSET 0.5: %1 m³ (Steiner %2)").arg(vo, 0, 'f', 2).arg(steiner, 0, 'f', 2));
+    }
     // Sweep a 5 × 5 m profile along a bent path: volume ≈ 25 m² × path length.
     cmd("POLYLINE " + pt(x, y + 30, z) + " " + pt(x + 30, y + 30, z - 1.5) + " " + pt(x + 30, y + 60, z - 3));
     const Uuid path = lastGeometry();
@@ -959,7 +977,8 @@ void Smoke::modelling() {
     w_.activeView()->setWorkPlaneZ(z + 3);
     ctx_.select(EntityKind::Geometry, block);
     const std::size_t n0 = m().geometry.size();
-    check(cmd("SECTIONOBJ") && m().geometry.size() >= n0 + 2, QStringLiteral("section by the work plane: %1 curve(s)").arg(m().geometry.size() - n0));
+    const bool sectioned = cmd("SECTIONOBJ");
+    check(sectioned && m().geometry.size() >= n0 + 2, QStringLiteral("section by the work plane: %1 curve(s)").arg(m().geometry.size() - n0));
     w_.activeView()->setWorkPlaneZ(kZ0);
 #else
     skip("3D modelling (built without Open CASCADE)");

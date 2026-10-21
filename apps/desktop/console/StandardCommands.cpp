@@ -21,6 +21,7 @@
 #include "openmine/geometry/MeshOps.h"
 #include "openmine/geometry/Polyline.h"
 #include "openmine/mine_design/Development.h"
+#include "openmine/mine_design/GeometryEdits.h"
 #include "openmine/objects/EnumNames.h"
 #include "openmine/project/ProjectEditor.h"
 #include "openmine/scheduling/Cpm.h"
@@ -139,8 +140,8 @@ void MainWindow::registerCommands() {
         ctx_.tryEdit(what, [&] {
             auto& p = ctx_.project();
             CommandStack::MacroScope macro(p.commands(), sstr(what));
-            ProjectEditor ed(p);
             std::vector<SelectionItem> created;
+            std::vector<Uuid> others;
             int flagged = 0;
             for (const auto& g : objs) {
                 if (g.type == GeometryType::Solid) {
@@ -152,13 +153,12 @@ void MainWindow::registerCommands() {
 #endif
                     continue;
                 }
-                GeometryObject n = cad::transformed(g, t);
-                if (copy) {
-                    n.id = {};
-                    created.push_back({EntityKind::Geometry, ed.addGeometry(std::move(n))});
-                } else {
-                    flagged += mine_design::updateGeometryWithImpact(p, n, sstr(what));
-                }
+                others.push_back(g.id);
+            }
+            if (!others.empty()) {
+                const auto r = mine_design::transformObjects(p, others, t, copy, sstr(what));
+                flagged = r.flaggedActivities;
+                for (const auto& id : r.created) created.push_back({EntityKind::Geometry, id});
             }
             macro.commit();
             if (copy) ctx_.selectMany(created);
@@ -981,6 +981,14 @@ void MainWindow::registerCommands() {
                         [this](const QStringList&) { handleEntityAction("solid-check", ctx_.selection()); }, {"CHECKSOLID"});
     con.registerCommand("HEAL", "HEAL", "Heal the selected solids (shape fixing, orientation, face merging)",
                         [this](const QStringList&) { handleEntityAction("solid-heal", ctx_.selection()); });
+    con.registerCommand("SOLIDFILLET", "SOLIDFILLET <radius>", "Round every edge of the selected solids", [this](const QStringList& a) {
+        if (a.isEmpty()) throw ValidationError("SOLIDFILLET needs a radius");
+        handleEntityAction("solid-fillet:" + QString::number(number(a[0], "Radius"), 'g', 17), ctx_.selection());
+    });
+    con.registerCommand("SOLIDOFFSET", "SOLIDOFFSET <distance>", "Offset the faces of the selected solids (negative: inwards)", [this](const QStringList& a) {
+        if (a.isEmpty()) throw ValidationError("SOLIDOFFSET needs a distance");
+        handleEntityAction("solid-offset:" + QString::number(number(a[0], "Distance"), 'g', 17), ctx_.selection());
+    });
     con.registerCommand("SECTIONOBJ", "SECTIONOBJ", "Section the selected solids and meshes by the section plane (or the work plane)",
                         [this](const QStringList&) { handleEntityAction("section-objects", ctx_.selection()); });
     con.registerCommand("CHAMFER", "CHAMFER [d1 [d2]]", "Chamfer two curves (pick them in the viewport)", [=, this](const QStringList& a) {

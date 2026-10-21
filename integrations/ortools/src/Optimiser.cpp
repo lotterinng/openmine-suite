@@ -29,8 +29,6 @@ using scheduling::ScheduleInput;
 using scheduling::ScheduleResult;
 
 namespace {
-std::string dt(double minutes) { return scheduling::toDateTime(minutes).toString(); }
-
 struct Act {
     const InputActivity* ia = nullptr;
     std::size_t index = 0;
@@ -62,7 +60,6 @@ OptimisationResult optimise(const ScheduleInput& in, const ScheduleResult& cpm, 
     }
     const auto H = static_cast<std::int64_t>(std::ceil(span / slotMin));
     auto slotTime = [&](std::int64_t s) { return origin + static_cast<double>(s) * slotMin; };
-    auto toSlotCeil = [&](double t) { return static_cast<std::int64_t>(std::ceil((t - origin) / slotMin - 1e-9)); };
     auto toSlotFloor = [&](double t) { return static_cast<std::int64_t>(std::floor((t - origin) / slotMin + 1e-9)); };
 
     // Activities to schedule.

@@ -35,6 +35,9 @@ public:
     void print(const QString& text, bool error = false);
     QString lastOutput() const { return lastOutput_; }
     QStringList commandNames() const;
+    /// Markdown reference of every registered command (name, usage, description, aliases) —
+    /// the source of docs/console-commands.md (`openmine-desktop --command-reference <file>`).
+    QString referenceMarkdown() const;
 
 private:
     struct Entry {

@@ -57,37 +57,14 @@ Date fromQDate(const QDate& d) { return Date::fromYmd(d.year(), static_cast<unsi
 
 Uuid storeAnalysis(Project& p, AnalysisKind kind, const std::string& name, const nlohmann::json& inputs, const nlohmann::json& parameters,
                    const nlohmann::json& summary, const nlohmann::json& payload) {
-    AnalysisResult r;
-    r.kind = kind;
-    r.name = name;
-    r.inputsJson = inputs.dump();
-    r.parametersJson = parameters.dump();
-    r.summaryJson = summary.dump();
-    if (!payload.is_null()) r.payloadJson = payload.dump();
-    r.createdAt = utcTimestampNow();
-    r.user = p.userName();
-    return ProjectEditor(p).add(r, "Store analysis: " + name);
+    return ProjectEditor(p).addAnalysis(kind, name, inputs.dump(), parameters.dump(), summary.dump(), payload.is_null() ? std::string() : payload.dump());
 }
 
-Uuid workflowLayer(AppContext& ctx, const std::string& fallback, std::uint32_t color) {
-    auto& p = ctx.project();
-    ProjectEditor ed(p);
-    (void)ctx;
-    if (const auto* l = ed.findLayerByName(fallback); l && !l->locked) return l->id;
-    return ed.addLayer(fallback, color);
-}
+Uuid workflowLayer(AppContext& ctx, const std::string& fallback, std::uint32_t color) { return ProjectEditor(ctx.project()).ensureLayer(fallback, color); }
 
 void ensureAttribute(Project& p, const std::string& entityType, const std::string& key, const std::string& displayName, AttributeValueType type,
                      const std::string& unit) {
-    for (const auto& d : p.model().attributeDefinitions.all())
-        if (d.entityType == entityType && d.key == key) return;
-    AttributeDefinition def;
-    def.entityType = entityType;
-    def.key = key;
-    def.displayName = displayName;
-    def.valueType = type;
-    def.unit = unit;
-    ProjectEditor(p).addAttributeDefinition(def);
+    ProjectEditor(p).ensureAttributeDefinition(entityType, key, displayName, type, unit);
 }
 
 } // namespace openmine::app

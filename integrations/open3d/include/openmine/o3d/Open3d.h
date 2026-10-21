@@ -14,6 +14,7 @@
 
 #include "openmine/jobs/Job.h"
 #include "openmine/objects/CadEntities.h"
+#include "openmine/survey/Derivations.h"
 #include "openmine/survey/PointBuffer.h"
 #include "openmine/survey/Processing.h"
 #include "openmine/survey/Registration.h"
@@ -88,6 +89,12 @@ struct PoissonResult {
 /// Screened Poisson reconstruction (Kazhdan & Hoppe 2013, Open3D implementation). The points need
 /// normals (estimate them first).
 PoissonResult poissonSurface(const survey::PointBuffer& points, const PoissonOptions& options = {});
+
+/// The Open3D implementations as engines of the shared derivations (survey/Derivations.h).
+survey::OutlierEngine outlierEngine();
+survey::RadiusOutlierEngine radiusOutlierEngine();
+survey::VoxelEngine voxelEngine();
+survey::NormalsEngine normalsEngine();
 
 /// Registers the Open3D ICP as engine "Open3D" with survey::registerIcpEngine.
 void registerEngines();

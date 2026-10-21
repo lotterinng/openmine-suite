@@ -8,10 +8,12 @@
 #include "openmine/geometry/MeshOps.h"
 #include "openmine/geometry/Polygon2D.h"
 #include "openmine/geometry/Profile.h"
+#include "openmine/mine_design/GeometryEdits.h"
 #include "openmine/project/ProjectEditor.h"
 
 #ifdef OPENMINE_APP_HAVE_OCCT
 #include "openmine/occt/Solid.h"
+#include "openmine/occt/Modelling.h"
 #include "openmine/occt/SolidObjects.h"
 #endif
 
@@ -35,29 +37,6 @@ bool isClosedCurve(const GeometryObject& g) {
     return g.type == GeometryType::Circle || ((g.type == GeometryType::Polyline || g.type == GeometryType::Spline) && g.closed);
 }
 bool isOpenCurve(const GeometryObject& g) { return geometry::isCurve(g.type) && !isClosedCurve(g) && g.type != GeometryType::Point; }
-
-/// Newell normal and in-plane basis of a closed polyline.
-struct PlaneBasis {
-    Vec3 origin, n, u, v;
-};
-PlaneBasis basisOf(const std::vector<Vec3>& ring) {
-    Vec3 n;
-    for (std::size_t i = 0; i < ring.size(); ++i) {
-        const Vec3 a = ring[i] - ring.front(), b = ring[(i + 1) % ring.size()] - ring.front();
-        n += Vec3{(a.y - b.y) * (a.z + b.z), (a.z - b.z) * (a.x + b.x), (a.x - b.x) * (a.y + b.y)};
-    }
-    PlaneBasis pb;
-    pb.origin = ring.front();
-    pb.n = n.length() > 0 ? n.normalized() : Vec3{0, 0, 1};
-    pb.u = std::abs(pb.n.z) < 0.9 ? cross(Vec3{0, 0, 1}, pb.n).normalized() : cross(pb.n, Vec3{1, 0, 0}).normalized();
-    pb.v = cross(pb.n, pb.u).normalized();
-    return pb;
-}
-geometry::Ring toRing(const std::vector<Vec3>& pts, const PlaneBasis& pb) {
-    geometry::Ring r;
-    for (const auto& p : pts) r.push_back({dot(p - pb.origin, pb.u), dot(p - pb.origin, pb.v)});
-    return r;
-}
 
 } // namespace
 
@@ -230,54 +209,20 @@ std::vector<Uuid> SolidModelDialog::create() {
     const std::string name = sstr(name_->text().trimmed());
     QString what = title(op_);
     ctx_.tryEdit(what, [&] {
-        CommandStack::MacroScope macro(p.commands(), sstr(what));
         switch (op_) {
         case Operation::Extrude: {
-            if (closed.empty()) throw ValidationError("Select closed curves to extrude (closed polylines, circles or closed splines)");
-            // Outer curves by decreasing area; a curve inside an outer one is its hole.
-            struct Loop {
-                const GeometryObject* g;
-                PlaneBasis pb;
-                geometry::Ring ring;
-                double area;
-            };
-            std::vector<Loop> loops;
-            for (const auto* g : closed) {
-                auto pts = geometry::curvePolyline(*g, 0.001);
-                if (pts.size() > 1 && distance(pts.front(), pts.back()) < 1e-9) pts.pop_back();
-                const auto pb = basisOf(pts);
-                auto ring = toRing(pts, pb);
-                loops.push_back({g, pb, ring, geometry::area(ring)});
-            }
-            std::sort(loops.begin(), loops.end(), [](const Loop& a, const Loop& b) { return a.area > b.area; });
-            std::vector<char> used(loops.size(), 0);
-            for (std::size_t i = 0; i < loops.size(); ++i) {
-                if (used[i]) continue;
-                used[i] = 1;
-                std::vector<const GeometryObject*> holes;
-                if (flag2_->isChecked())
-                    for (std::size_t j = i + 1; j < loops.size(); ++j) {
-                        if (used[j]) continue;
-                        const auto other = toRing(geometry::curvePolyline(*loops[j].g, 0.001), loops[i].pb);
-                        bool inside = std::abs(dot(loops[j].pb.n, loops[i].pb.n)) > 0.999;
-                        for (const auto& q : other) inside = inside && geometry::contains(loops[i].ring, q);
-                        if (inside) {
-                            holes.push_back(loops[j].g);
-                            used[j] = 1;
-                        }
-                    }
-                Vec3 v;
-                switch (mode_->currentIndex()) {
-                case 0: v = {0, 0, a_->value()}; break;
-                case 1: v = loops[i].pb.n * a_->value(); break;
-                default: v = {b_->value(), c_->value(), d_->value()}; break;
-                }
-                if (v.length() < 1e-9) throw ValidationError("The extrusion distance must not be zero");
-                auto face = occt::planarFace(*loops[i].g, holes);
-                if (flag1_->isChecked()) face = occt::transformed(face, Transform3::translation(v * -0.5));
-                const auto solid = occt::extrude(face, v);
-                out.push_back(occt::addSolidObject(p, solid, name.empty() ? loops[i].g->name + " extrusion" : name, layer, {}, "Extrude"));
-            }
+            occt::ExtrusionSpec spec;
+            spec.direction = mode_->currentIndex() == 0 ? occt::ExtrusionSpec::Direction::Vertical
+                             : mode_->currentIndex() == 1 ? occt::ExtrusionSpec::Direction::Normal
+                                                          : occt::ExtrusionSpec::Direction::Vector;
+            spec.distance = a_->value();
+            spec.vector = {b_->value(), c_->value(), d_->value()};
+            spec.symmetric = flag1_->isChecked();
+            spec.holes = flag2_->isChecked();
+            std::vector<Uuid> ids;
+            for (const auto* g : closed) ids.push_back(g->id);
+            if (ids.empty()) throw ValidationError("Select closed curves to extrude (closed polylines, circles or closed splines)");
+            out = occt::extrudeCurves(p, ids, spec, name, layer);
             break;
         }
         case Operation::Revolve: {
@@ -287,11 +232,9 @@ std::vector<Uuid> SolidModelDialog::create() {
                 axisP = lines.front()->vertices[0];
                 axisD = lines.front()->vertices[1] - lines.front()->vertices[0];
             }
-            if (axisD.length() < 1e-12) throw ValidationError("The axis direction must not be zero");
-            for (const auto* g : closed) {
-                const auto solid = occt::revolve(occt::planarFace(*g), axisP, axisD.normalized(), g_->value() * std::numbers::pi / 180.0);
-                out.push_back(occt::addSolidObject(p, solid, name.empty() ? g->name + " revolution" : name, layer, {}, "Revolve"));
-            }
+            std::vector<Uuid> ids;
+            for (const auto* g : closed) ids.push_back(g->id);
+            out = occt::revolveCurves(p, ids, axisP, axisD, g_->value() * std::numbers::pi / 180.0, name, layer);
             break;
         }
         case Operation::Sweep: {
@@ -304,27 +247,19 @@ std::vector<Uuid> SolidModelDialog::create() {
                 pc.points = geometry::rectangleOutline(a_->value(), b_->value());
                 pc.bulges.assign(pc.points.size(), 0.0);
             }
-            const auto transition = static_cast<occt::SweepTransition>(mode_->currentData().toInt());
-            for (const auto* path : paths) {
-                const auto solid = occt::sweepProfile(pc.points, pc.bulges, *path, transition);
-                out.push_back(occt::addSolidObject(p, solid, name.empty() ? path->name + " sweep" : name, layer, {}, "Sweep"));
-            }
+            std::vector<Uuid> ids;
+            for (const auto* g : paths) ids.push_back(g->id);
+            out = occt::sweepCurves(p, ids, pc, static_cast<occt::SweepTransition>(mode_->currentData().toInt()), name, layer);
             break;
         }
         case Operation::Loft: {
             if (closed.size() < 2) throw ValidationError("Select two or more closed sections, in order");
-            std::vector<std::vector<Vec3>> sections;
-            for (const auto* g : closed) {
-                auto pts = geometry::curvePolyline(*g, 0.001);
-                if (pts.size() > 1 && distance(pts.front(), pts.back()) < 1e-9) pts.pop_back();
-                sections.push_back(std::move(pts));
-            }
-            const auto solid = occt::loft(sections, flag1_->isChecked(), flag2_->isChecked());
-            out.push_back(occt::addSolidObject(p, solid, name.empty() ? std::string("Loft") : name, layer, {}, "Loft"));
+            std::vector<Uuid> ids;
+            for (const auto* g : closed) ids.push_back(g->id);
+            out = {occt::loftCurves(p, ids, flag1_->isChecked(), flag2_->isChecked(), name, layer)};
             break;
         }
         }
-        macro.commit();
     });
     if (!out.empty()) {
         double volume = 0;
@@ -370,19 +305,14 @@ QString solidReport(const Project& p, const Uuid& id) {
 
 bool healSolid(AppContext& ctx, const Uuid& id) {
 #ifdef OPENMINE_APP_HAVE_OCCT
-    std::vector<std::string> fixes;
     return ctx.tryEdit(QObject::tr("Heal solid"), [&] {
         auto& p = ctx.project();
-        const auto* g = p.model().geometry.find(id);
-        if (!g) throw ValidationError("The object no longer exists");
-        const auto before = occt::analyse(occt::loadSolid(p, *g));
-        const auto healed = occt::unify(occt::fix(occt::loadSolid(p, *g), &fixes));
-        const auto after = occt::replaceSolidShape(p, id, healed, "Heal solid " + g->name);
+        const auto r = occt::healSolidObject(p, id);
         ctx.report(QObject::tr("%1: %2 → %3; %4 fix(es)%5")
-                       .arg(qstr(p.model().geometry.find(id)->name), before.valid ? QObject::tr("valid") : QObject::tr("invalid"),
-                            after.valid ? QObject::tr("valid") : QObject::tr("still invalid"))
-                       .arg(fixes.size())
-                       .arg(fixes.empty() ? QString() : ": " + qstr(fixes.front())));
+                       .arg(qstr(p.model().geometry.find(id)->name), r.before.valid ? QObject::tr("valid") : QObject::tr("invalid"),
+                            r.after.valid ? QObject::tr("valid") : QObject::tr("still invalid"))
+                       .arg(r.fixes.size())
+                       .arg(r.fixes.empty() ? QString() : ": " + qstr(r.fixes.front())));
     });
 #else
     (void)id;
@@ -393,40 +323,19 @@ bool healSolid(AppContext& ctx, const Uuid& id) {
 
 std::vector<Uuid> sectionObjects(AppContext& ctx, const std::vector<Uuid>& ids, Vec3 point, Vec3 normal) {
     std::vector<Uuid> out;
-    if (normal.length() < 1e-12) {
-        ctx.report(QObject::tr("The section plane has no normal"), MessageLevel::Error);
-        return out;
-    }
     ctx.tryEdit(QObject::tr("Section"), [&] {
         auto& p = ctx.project();
         CommandStack::MacroScope macro(p.commands(), "Section objects");
         const Uuid layer = workflowLayer(ctx, "Sections", 0xFF7043);
-        ProjectEditor ed(p);
-        for (const auto& id : ids) {
-            const auto* g = p.model().geometry.find(id);
-            if (!g) continue;
 #ifdef OPENMINE_APP_HAVE_OCCT
-            if (g->type == GeometryType::Solid) {
-                for (const auto& s : occt::sectionObject(p, id, point, normal.normalized(), layer)) out.push_back(s);
-                continue;
-            }
-#endif
-            if (g->mesh && (g->type == GeometryType::Mesh || g->type == GeometryType::Solid)) {
-                const std::string base = g->name;
-                for (auto& loop : geometry::planeSection(*g->mesh, point, normal.normalized())) {
-                    if (loop.size() < 2) continue;
-                    GeometryObject c;
-                    c.type = GeometryType::Polyline;
-                    c.closed = loop.size() > 3 && distance(loop.front(), loop.back()) < 1e-9;
-                    if (c.closed) loop.pop_back();
-                    c.vertices = std::move(loop);
-                    c.name = base + " section";
-                    c.layerId = layer;
-                    out.push_back(ed.addGeometry(std::move(c)));
-                }
-            }
-        }
+        out = occt::sectionObjects(p, ids, point, normal, layer); // solids exactly, meshes by plane section
+#else
+        if (normal.length() < 1e-12) throw ValidationError("The section plane has no normal");
+        for (const auto& id : ids)
+            if (const auto* g = p.model().geometry.find(id); g && g->mesh)
+                for (const auto& c : mine_design::sectionMeshObject(p, id, point, normal, layer)) out.push_back(c);
         if (out.empty()) throw ValidationError("The plane does not cut the selected solids or meshes");
+#endif
         macro.commit();
     });
     if (!out.empty()) ctx.report(QObject::tr("%1 section curve(s) on layer 'Sections'").arg(out.size()));

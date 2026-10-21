@@ -14,6 +14,8 @@
 #include "openmine/reporting/ReportDocument.h"
 #include "openmine/reporting/SurveyReports.h"
 #include "openmine/survey/AsBuilt.h"
+#include "openmine/survey/Derivations.h"
+#include "openmine/survey/SurfaceTools.h"
 #include "openmine/survey/Conformance.h"
 #include "openmine/survey/KdTree.h"
 #include "openmine/survey/Meshing.h"
@@ -95,26 +97,36 @@ std::string engineLabel(const QString& engine) {
     return "OpenMine";
 }
 
-/// Derived dataset job: read the parent in project coordinates, process, write the derived octree.
-int derivedJob(AppContext& ctx, const QString& title, const Uuid& id, const std::string& name, const std::string& derivation,
-               std::function<survey::PointBuffer(survey::PointBuffer&, jobs::Progress&, QString&)> process) {
+/// Derived dataset job: read the parent in project coordinates, apply the shared derivation
+/// (survey/Derivations.h), write the derived octree; committed on the UI thread.
+int derivedJob(AppContext& ctx, const QString& title, const Uuid& id, const std::string& name, survey::Derivation derivation) {
     auto snap = ctx.writableSnapshot();
     AppContext* c = &ctx;
-    return ctx.jobs().start(title, QObject::tr("Point cloud"), [snap, id, name, derivation, process, c, title](jobs::Progress& pr) -> UiApply {
+    return ctx.jobs().start(title, QObject::tr("Point cloud"), [snap, id, name, derivation, c, title](jobs::Progress& pr) -> UiApply {
         pr.subRange(0.0, 0.3);
         auto pts = survey::datasetPoints(*snap, id, true, std::nullopt, pr);
         pr.subRange(0.3, 0.8);
-        QString message;
-        auto out = process(pts, pr, message);
+        std::string message;
+        auto out = derivation.process(pts, pr, message);
         if (out.empty()) throw ValidationError("The operation produced no points");
         pr.subRange(0.8, 1.0);
-        auto prepared = std::make_shared<survey::PreparedDataset>(survey::prepareDerived(*snap, id, out, name, derivation, pr));
+        auto prepared = std::make_shared<survey::PreparedDataset>(survey::prepareDerived(*snap, id, out, name, derivation.text, pr));
         return [c, prepared, message, title] {
             const Uuid nid = survey::commitDataset(c->project(), *prepared, sstr(title));
-            c->report(QObject::tr("%1: %L2 points in '%3'%4").arg(title).arg(prepared->dataset.pointCount).arg(qstr(prepared->dataset.name), message.isEmpty() ? QString() : " — " + message));
+            c->report(QObject::tr("%1: %L2 points in '%3'%4").arg(title).arg(prepared->dataset.pointCount).arg(qstr(prepared->dataset.name), message.empty() ? QString() : " — " + qstr(message)));
             c->select(EntityKind::PointCloud, nid);
         };
     }, true);
+}
+
+/// A derivation built from the dialog's settings, or the reason it cannot be.
+template <class F> int deriveOrReport(AppContext& ctx, const QString& title, const Uuid& id, const std::string& name, F&& make) {
+    try {
+        return derivedJob(ctx, title, id, name, make());
+    } catch (const std::exception& e) {
+        ctx.report(qstr(e.what()), MessageLevel::Error);
+        return 0;
+    }
 }
 
 } // namespace
@@ -467,24 +479,14 @@ int CloudProcessDialog::start() {
         const double size = a_->value();
         const auto count = static_cast<std::size_t>(k_->value());
         const QString engine = engine_->currentData().toString();
-        if (engine == "open3d" && mode != 1) {
-            ctx_.report(tr("Open3D subsamples to voxel centroids only"), MessageLevel::Error);
-            return 0;
-        }
-        std::string deriv = mode == 3 ? "random subsample n=" + std::to_string(count)
-                                      : (mode == 2 ? "minimum spacing " : (mode == 1 ? "voxel centroid " : "voxel nearest-to-centre ")) + std::to_string(size) + " m";
-        if (engine == "open3d") deriv += " (" + engineLabel(engine) + ")";
-        return derivedJob(ctx, t, id, name, deriv, [mode, size, count, engine](survey::PointBuffer& b, jobs::Progress&, QString& msg) {
-            survey::PointBuffer out;
+        return deriveOrReport(ctx, t, id, name, [&] {
+            if (mode == 3) return survey::randomSubsampleDerivation(count);
+            if (mode == 2) return survey::minimumSpacingDerivation(size);
+            survey::VoxelEngine ve;
 #ifdef OPENMINE_APP_HAVE_OPEN3D
-            if (engine == "open3d") out = o3d::voxelDownsample(b, size);
-            else
+            if (engine == "open3d") ve = o3d::voxelEngine();
 #endif
-            if (mode == 0 || mode == 1) out = survey::voxelDownsample(b, size, mode == 0 ? survey::VoxelMode::NearestToCentre : survey::VoxelMode::Centroid);
-            else if (mode == 2) out = survey::minimumSpacing(b, size);
-            else out = survey::randomSubsample(b, count);
-            msg = QObject::tr("%L1 of %L2 points kept").arg(static_cast<qulonglong>(out.size())).arg(static_cast<qulonglong>(b.size()));
-            return out;
+            return survey::voxelDerivation(size, mode == 0 ? survey::VoxelMode::NearestToCentre : survey::VoxelMode::Centroid, ve);
         });
     }
     case Operation::Outliers: {
@@ -492,43 +494,30 @@ int CloudProcessDialog::start() {
         const int k = k_->value();
         const double ratio = a_->value(), r = b_->value();
         const QString engine = engine_->currentData().toString();
-        std::string deriv = mode == 0 ? "statistical outlier removal k=" + std::to_string(k) + " n=" + std::to_string(ratio)
-                                      : "radius outlier removal r=" + std::to_string(r) + " min=" + std::to_string(k);
-        if (engine == "open3d") deriv += " (" + engineLabel(engine) + ")";
-        return derivedJob(ctx, t, id, name, deriv, [mode, k, ratio, r, engine](survey::PointBuffer& b, jobs::Progress& pr, QString& msg) {
-            std::vector<char> keep;
+        return deriveOrReport(ctx, t, id, name, [&] {
+            survey::OutlierEngine se;
+            survey::RadiusOutlierEngine re;
 #ifdef OPENMINE_APP_HAVE_OPEN3D
-            if (engine == "open3d") keep = mode == 0 ? o3d::statisticalInliers(b, k, ratio) : o3d::radiusInliers(b, r, k);
-            else
+            if (engine == "open3d") {
+                se = o3d::outlierEngine();
+                re = o3d::radiusOutlierEngine();
+            }
 #endif
-                keep = mode == 0 ? survey::statisticalInliers(b, k, ratio, pr) : survey::radiusInliers(b, r, k, pr);
-            auto out = b.filtered(keep);
-            msg = QObject::tr("%L1 outliers removed").arg(static_cast<qulonglong>(b.size() - out.size()));
-            return out;
+            return mode == 0 ? survey::statisticalOutlierDerivation(k, ratio, se) : survey::radiusOutlierDerivation(r, k, re);
         });
     }
     case Operation::Normals: {
         const int mode = mode_->currentData().toInt();
-        const int k = k_->value();
         const QString engine = engine_->currentData().toString();
-        std::string deriv = "PCA normals k=" + std::to_string(k);
-        if (engine == "open3d") deriv += " (" + engineLabel(engine) + ")";
-        return derivedJob(ctx, t, id, name, deriv, [mode, k, engine](survey::PointBuffer& b, jobs::Progress& pr, QString&) {
-            survey::NormalOptions o;
-            o.k = k;
-            if (mode != 0) {
-                o.orientation = mode == 1 ? survey::NormalOptions::Orientation::TowardsViewpoint : survey::NormalOptions::Orientation::AwayFromViewpoint;
-                o.viewpoint = survey::statistics(b, 0).centroid;
-            }
+        survey::NormalOptions o;
+        o.k = k_->value();
+        if (mode != 0) o.orientation = mode == 1 ? survey::NormalOptions::Orientation::TowardsViewpoint : survey::NormalOptions::Orientation::AwayFromViewpoint;
+        return deriveOrReport(ctx, t, id, name, [&] {
+            survey::NormalsEngine ne;
 #ifdef OPENMINE_APP_HAVE_OPEN3D
-            if (engine == "open3d") {
-                o3d::estimateNormals(b, o, pr);
-                return b;
-            }
+            if (engine == "open3d") ne = o3d::normalsEngine();
 #endif
-            (void)engine;
-            survey::estimateNormals(b, o, pr);
-            return b;
+            return survey::normalsDerivation(o, ne);
         });
     }
     case Operation::Ground: {
@@ -538,19 +527,7 @@ int CloudProcessDialog::start() {
         o.slope = b_->value();
         o.window = c_->value();
         o.threshold = d_->value();
-        return derivedJob(ctx, t, id, name, "SMRF ground classification", [o](survey::PointBuffer& b, jobs::Progress&, QString& msg) {
-            const auto cls = pdalio::smrfGround(b, o);
-            auto schema = b.schema();
-            schema.classification = true;
-            b.setSchema(schema);
-            std::size_t ground = 0;
-            for (std::size_t i = 0; i < b.size() && i < cls.size(); ++i) {
-                b.classification[i] = cls[i];
-                ground += cls[i] == 2;
-            }
-            msg = QObject::tr("%L1 ground points").arg(static_cast<qulonglong>(ground));
-            return b;
-        });
+        return deriveOrReport(ctx, t, id, name, [&] { return pdalio::groundDerivation(o); });
 #else
         ctx_.report(tr("Ground classification needs PDAL, which this build does not include"), MessageLevel::Error);
         return 0;
@@ -566,71 +543,56 @@ int CloudProcessDialog::start() {
         const QString engine = engine_ ? engine_->currentData().toString() : QString();
         const double densityQuantile = poisson ? d_->value() : 0.0;
         auto snap = ctx_.snapshot();
-        return ctx_.jobs().start(t, tr("Point cloud"), [snap, id, voxel, maxEdge, k, poisson, orient, name, c, engine, densityQuantile](jobs::Progress& pr) -> UiApply {
+        survey::CloudSurfaceSpec spec;
+        spec.method = poisson ? survey::CloudSurfaceSpec::Method::Poisson : survey::CloudSurfaceSpec::Method::Delaunay;
+        spec.voxel = voxel;
+        spec.maxEdgeLength = maxEdge;
+        spec.targetTriangles = poisson ? 0 : static_cast<std::size_t>(std::max(0, k));
+        spec.depth = k;
+        spec.orientTowardsCentroid = orient == 1;
+        survey::PoissonEngine pe;
+        std::string trim;
+        if (poisson) {
+            if (engine == "open3d") {
+#ifdef OPENMINE_APP_HAVE_OPEN3D
+                pe = {[densityQuantile](const survey::PointBuffer& pts, int depth) {
+                          o3d::PoissonOptions po;
+                          po.depth = depth;
+                          po.densityQuantile = densityQuantile;
+                          return o3d::poissonSurface(pts, po).mesh;
+                      },
+                      engineLabel(engine)};
+                if (densityQuantile > 0) trim = ", density trim q=" + std::to_string(densityQuantile);
+#endif
+            } else {
+#ifdef OPENMINE_APP_HAVE_PDAL
+                pe = {[](const survey::PointBuffer& pts, int depth) {
+                          pdalio::PoissonOptions po;
+                          po.depth = depth;
+                          return pdalio::poissonSurface(pts, po);
+                      },
+                      engineLabel(engine)};
+#endif
+            }
+            if (!pe.function) {
+                ctx_.report(tr("Poisson reconstruction needs PDAL or Open3D"), MessageLevel::Error);
+                return 0;
+            }
+        }
+        return ctx_.jobs().start(t, tr("Point cloud"), [snap, id, spec, pe, trim, name, c](jobs::Progress& pr) -> UiApply {
             pr.subRange(0, 0.3);
             auto pts = survey::datasetPoints(*snap, id, true, std::nullopt, pr);
-            if (voxel > 0) pts = survey::voxelDownsample(pts, voxel);
             pr.subRange(0.3, 1.0);
-            auto mesh = std::make_shared<MeshData>();
-            std::string method;
-            if (!poisson) {
-                survey::DelaunayOptions o;
-                o.maxEdgeLength = maxEdge;
-                survey::DelaunayReport rep;
-                *mesh = survey::delaunay25D(pts.xyz, o, &rep, pr);
-                if (k > 0 && mesh->triangles.size() > static_cast<std::size_t>(k)) {
-                    survey::DecimateOptions d;
-                    d.targetTriangles = static_cast<std::size_t>(k);
-                    *mesh = survey::decimate(*mesh, d, pr);
-                }
-                method = "Delaunay 2.5D";
-            } else {
-                if (!pts.schema().normals) {
-                    survey::NormalOptions no;
-                    if (orient == 1) {
-                        no.orientation = survey::NormalOptions::Orientation::TowardsViewpoint;
-                        no.viewpoint = survey::statistics(pts, 0).centroid;
-                    }
-                    survey::estimateNormals(pts, no, pr);
-                }
-                method = "Poisson depth=" + std::to_string(k) + " (" + engineLabel(engine) + ")";
-                if (engine == "open3d") {
-#ifdef OPENMINE_APP_HAVE_OPEN3D
-                    o3d::PoissonOptions po;
-                    po.depth = k;
-                    po.densityQuantile = densityQuantile;
-                    auto res = o3d::poissonSurface(pts, po);
-                    *mesh = std::move(res.mesh);
-                    if (densityQuantile > 0) method += ", density trim q=" + std::to_string(densityQuantile);
-#endif
-                } else {
-#ifdef OPENMINE_APP_HAVE_PDAL
-                    pdalio::PoissonOptions po;
-                    po.depth = k;
-                    *mesh = pdalio::poissonSurface(pts, po);
-#else
-                    throw ValidationError("Poisson reconstruction needs PDAL or Open3D");
-#endif
-                }
-                (void)densityQuantile;
-            }
-            return [c, mesh, name, method] {
+            auto surface = std::make_shared<survey::CloudSurface>(survey::surfaceFromPoints(std::move(pts), spec, pe, pr));
+            surface->method += trim;
+            return [c, surface, name, id] {
                 Uuid gid;
+                const auto triangles = surface->mesh.triangles.size();
                 c->tryEdit(QObject::tr("Add surface"), [&] {
-                    auto& p = c->project();
-                    CommandStack::MacroScope macro(p.commands(), "Add surface " + name);
-                    GeometryObject g;
-                    g.type = GeometryType::Mesh;
-                    g.name = name;
-                    g.layerId = workflowLayer(*c, "Surfaces", 0x9CCC65);
-                    g.mesh = mesh;
-                    ensureAttribute(p, "GeometryObject", "method", "Method");
-                    g.attributes["method"] = method;
-                    gid = ProjectEditor(p).addGeometry(std::move(g));
-                    macro.commit();
+                    gid = survey::addSurfaceObject(c->project(), surface->mesh, name, workflowLayer(*c, "Surfaces", 0x9CCC65), surface->method, id);
                 });
                 if (!gid.isNil()) {
-                    c->report(QObject::tr("Surface '%1': %L2 triangles (%3)").arg(qstr(name)).arg(static_cast<qulonglong>(mesh->triangles.size())).arg(qstr(method)));
+                    c->report(QObject::tr("Surface '%1': %L2 triangles (%3)").arg(qstr(name)).arg(static_cast<qulonglong>(triangles)).arg(qstr(surface->method)));
                     c->select(EntityKind::Geometry, gid);
                 }
             };
@@ -644,48 +606,36 @@ int CloudProcessDialog::start() {
         }
         const bool isCloud = ref.startsWith("c:");
         const Uuid refId = uuidFrom(ref.mid(2));
-        const double maxD = a_->value() > 0 ? a_->value() : 1e300;
+        const double maxD = a_->value();
         const bool sign = flag_->isChecked();
-        auto snap = ctx_.snapshot();
-        MeshPtr mesh;
-        if (!isCloud)
-            if (const auto* g = snap->model().geometry.find(refId)) mesh = g->mesh;
         const std::string refName = sstr(reference_->currentText());
-        auto stats = std::make_shared<json>();
-        const int jid = derivedJob(ctx, t, id, name, "distance to " + refName,
-                                   [snap, isCloud, refId, mesh, maxD, sign, stats](survey::PointBuffer& b, jobs::Progress& pr, QString& msg) {
-                                       std::vector<float> d;
-                                       if (isCloud) {
-                                           auto refPts = survey::datasetPoints(*snap, refId, true);
-                                           if (sign && !refPts.schema().normals) survey::estimateNormals(refPts);
-                                           d = survey::cloudToCloud(b, refPts, maxD, sign, pr);
-                                       } else {
-                                           if (!mesh) throw ValidationError("The reference mesh has no triangles");
-                                           d = survey::cloudToMesh(b, *mesh, sign, maxD, pr);
-                                       }
-                                       const int si = b.scalarIndex("distance", true);
-                                       b.scalars[static_cast<std::size_t>(si)] = d;
-                                       std::vector<double> v;
-                                       for (float x : d)
-                                           if (std::isfinite(x)) v.push_back(x);
-                                       if (!v.empty()) {
-                                           std::sort(v.begin(), v.end());
-                                           double mean = 0, sq = 0;
-                                           for (double x : v) mean += x;
-                                           mean /= v.size();
-                                           for (double x : v) sq += (x - mean) * (x - mean);
-                                           (*stats) = {{"count", v.size()}, {"mean", mean}, {"std", std::sqrt(sq / v.size())}, {"min", v.front()}, {"max", v.back()},
-                                                       {"p05", v[v.size() / 20]}, {"median", v[v.size() / 2]}, {"p95", v[v.size() * 19 / 20]}};
-                                           msg = QObject::tr("mean %1 m, σ %2 m, 95 %% within %3 m").arg((*stats)["mean"].get<double>(), 0, 'f', 4).arg((*stats)["std"].get<double>(), 0, 'f', 4).arg((*stats)["p95"].get<double>(), 0, 'f', 4);
-                                       }
-                                       return b;
-                                   });
+        auto stats = std::make_shared<survey::DistanceStatisticsJson>();
+        int jid = 0;
+        try {
+            if (isCloud) {
+                // The reference is read inside the job's derivation (it may be large).
+                auto snap = ctx_.snapshot();
+                survey::Derivation d;
+                d.text = "distance to " + refName;
+                d.process = [snap, refId, refName, maxD, sign, stats](survey::PointBuffer& b, jobs::Progress& pr, std::string& msg) {
+                    return survey::cloudDistanceDerivation(survey::datasetPoints(*snap, refId, true), refName, maxD, sign, stats).process(b, pr, msg);
+                };
+                jid = derivedJob(ctx, t, id, name, d);
+            } else {
+                const auto* g = ctx_.project().model().geometry.find(refId);
+                jid = derivedJob(ctx, t, id, name, survey::meshDistanceDerivation(g ? g->mesh : nullptr, refName, maxD, sign, stats));
+            }
+        } catch (const std::exception& e) {
+            ctx_.report(qstr(e.what()), MessageLevel::Error);
+            return 0;
+        }
         // Record the analysis once the derived dataset exists.
         connect(&ctx_.jobs(), &JobManager::jobFinished, c, [c, jid, stats, id, refId, isCloud, maxD, sign, refName](int finished, bool ok, const QString&) {
-            if (finished != jid || !ok || stats->is_null()) return;
+            if (finished != jid || !ok || stats->json.empty()) return;
             c->tryEdit(QObject::tr("Store distance analysis"), [&] {
                 storeAnalysis(c->project(), isCloud ? AnalysisKind::DistanceCloudToCloud : AnalysisKind::DistanceCloudToMesh, "Distance to " + refName,
-                              {{"compared", id.toString()}, {"reference", refId.toString()}}, {{"maxDistance", maxD < 1e300 ? json(maxD) : json(nullptr)}, {"signed", sign}}, *stats);
+                              {{"compared", id.toString()}, {"reference", refId.toString()}}, {{"maxDistance", maxD > 0 ? json(maxD) : json(nullptr)}, {"signed", sign}},
+                              json::parse(stats->json));
             });
         }, Qt::SingleShotConnection);
         return jid;
@@ -717,53 +667,14 @@ int CloudProcessDialog::start() {
         const double tol = a_->value(), angle = b_->value();
         const auto minSize = static_cast<std::size_t>(k_->value());
         const bool drop = flag_->isChecked();
-        const std::string deriv = mode == 0 ? "connected components tol=" + std::to_string(tol) + " min=" + std::to_string(minSize)
-                                            : "region growing angle=" + std::to_string(angle) + " min=" + std::to_string(minSize);
-        return derivedJob(ctx, t, id, name, deriv, [mode, tol, angle, minSize, drop](survey::PointBuffer& b, jobs::Progress& pr, QString& msg) {
-            std::vector<int> labels;
-            if (mode == 0) labels = survey::euclideanClusters(b, tol, minSize, SIZE_MAX, pr);
-            else {
-                if (!b.schema().normals) {
-                    survey::NormalOptions no;
-                    no.storeCurvature = true;
-                    survey::estimateNormals(b, no, pr);
-                }
-                labels = survey::regionGrowing(b, 16, angle, minSize, pr);
-            }
-            const int ci = b.scalarIndex("cluster", true);
-            int clusters = 0;
-            std::size_t unclustered = 0;
-            for (std::size_t i = 0; i < b.size(); ++i) {
-                b.scalars[static_cast<std::size_t>(ci)][i] = static_cast<float>(labels[i]);
-                clusters = std::max(clusters, labels[i] + 1);
-                unclustered += labels[i] < 0 ? 1 : 0;
-            }
-            msg = QObject::tr("%1 clusters; %L2 points in no cluster%3").arg(clusters).arg(static_cast<qulonglong>(unclustered))
-                      .arg(drop && unclustered ? QObject::tr(" (dropped)") : QString());
-            if (!drop) return b;
-            std::vector<char> keep(b.size());
-            for (std::size_t i = 0; i < b.size(); ++i) keep[i] = labels[i] >= 0 ? 1 : 0;
-            return b.filtered(keep);
+        return deriveOrReport(ctx, t, id, name, [&] {
+            return mode == 0 ? survey::euclideanClusterDerivation(tol, minSize, drop) : survey::regionGrowingDerivation(angle, minSize, drop);
         });
     }
     case Operation::CropBox: {
-        BoundingBox box{{a_->value(), b_->value(), c_->value()}, {d_->value(), e_->value(), f_->value()}};
-        if (!(box.max.x > box.min.x && box.max.y > box.min.y && box.max.z > box.min.z)) {
-            ctx_.report(tr("Each maximum must exceed its minimum"), MessageLevel::Error);
-            return 0;
-        }
+        const BoundingBox box{{a_->value(), b_->value(), c_->value()}, {d_->value(), e_->value(), f_->value()}};
         const bool inside = flag_->isChecked();
-        const std::string deriv = std::string(inside ? "box crop (inside) " : "box crop (outside) ") + reporting::fmtNumber(box.min.x, 3) + "," +
-                                  reporting::fmtNumber(box.min.y, 3) + "," + reporting::fmtNumber(box.min.z, 3) + " – " + reporting::fmtNumber(box.max.x, 3) + "," +
-                                  reporting::fmtNumber(box.max.y, 3) + "," + reporting::fmtNumber(box.max.z, 3);
-        return derivedJob(ctx, t, id, name, deriv, [box, inside](survey::PointBuffer& b, jobs::Progress&, QString& msg) {
-            auto keep = survey::selectBox(b, box);
-            if (!inside) keep = survey::invert(std::move(keep));
-            auto out = b.filtered(keep);
-            if (out.empty()) throw ValidationError("No points remain after the crop");
-            msg = QObject::tr("%L1 of %L2 points kept").arg(static_cast<qulonglong>(out.size())).arg(static_cast<qulonglong>(b.size()));
-            return out;
-        });
+        return deriveOrReport(ctx, t, id, name, [&] { return survey::cropBoxDerivation(box, inside); });
     }
     case Operation::Planes: {
         const double thr = a_->value();
@@ -814,25 +725,8 @@ int CloudProcessDialog::start() {
 int startCropJob(AppContext& ctx, const Uuid& datasetId, const std::vector<Vec3>& polygon, Vec3 viewNormal, bool keepInside) {
     const auto* d = ctx.project().model().pointClouds.find(datasetId);
     if (!d || polygon.size() < 3) return 0;
-    // Polygon in a 2D frame of the view plane: u, v ⟂ viewNormal (plan views: x, y).
-    Vec3 n = viewNormal.normalized();
-    if (n.length() < 1e-9) n = {0, 0, 1};
-    const Vec3 u = std::abs(n.z) > 0.9 ? Vec3{1, 0, 0} : Vec3{-n.y, n.x, 0}.normalized();
-    const Vec3 v = cross(n, u);
-    geometry::Ring ring;
-    for (const auto& p : polygon) ring.push_back({dot(p, u), dot(p, v)});
     const std::string name = d->name + (keepInside ? " (cropped)" : " (polygon removed)");
-    return derivedJob(ctx, QObject::tr("Crop point cloud"), datasetId, name, keepInside ? "crop by polygon" : "remove polygon",
-                      [ring, u, v, keepInside](survey::PointBuffer& b, jobs::Progress&, QString& msg) {
-                          std::vector<char> keep(b.size(), 0);
-                          for (std::size_t i = 0; i < b.size(); ++i) {
-                              const bool in = geometry::contains(ring, Vec2{dot(b.xyz[i], u), dot(b.xyz[i], v)});
-                              keep[i] = in == keepInside ? 1 : 0;
-                          }
-                          auto out = b.filtered(keep);
-                          msg = QObject::tr("%L1 of %L2 points kept").arg(static_cast<qulonglong>(out.size())).arg(static_cast<qulonglong>(b.size()));
-                          return out;
-                      });
+    return deriveOrReport(ctx, QObject::tr("Crop point cloud"), datasetId, name, [&] { return survey::cropPolygonDerivation(polygon, viewNormal, keepInside); });
 }
 
 // ---- registration by pairs -------------------------------------------------------------------------------

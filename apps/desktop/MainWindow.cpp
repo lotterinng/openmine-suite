@@ -713,6 +713,10 @@ void MainWindow::createActions() {
     addAction("solid.check", tr("Check solids"), "info", [this] { handleEntityAction("solid-check", ctx_.selection()); }, {},
               tr("Validity, closure, volume, area and topology"));
     addAction("solid.heal", tr("Heal solids"), "repair", [this] { handleEntityAction("solid-heal", ctx_.selection()); });
+    addAction("solid.fillet", tr("Fillet solid edges…"), "fillet", [this] { handleEntityAction("solid-fillet", ctx_.selection()); }, {},
+              tr("Rounds every edge of the selected solids (exact, in place)"));
+    addAction("solid.offset", tr("Offset solid…"), "offset", [this] { handleEntityAction("solid-offset", ctx_.selection()); }, {},
+              tr("Offsets the faces of the selected solids outwards (or inwards with a negative distance)"));
     addAction("solid.section", tr("Section by plane"), "section", [this] { handleEntityAction("section-objects", ctx_.selection()); }, {},
               tr("Sections the selected solids and meshes by the active view's section plane, or horizontally at the work-plane elevation"));
     // ---- surfaces
@@ -793,7 +797,7 @@ void MainWindow::createActions() {
     action("tools.runScript")->setEnabled(PythonConsolePanel::available());
 #ifndef OPENMINE_APP_HAVE_OCCT
     for (const char* id : {"modify.union", "modify.subtract", "modify.intersect", "modify.meshToSolid", "design.solid", "solid.extrude", "solid.revolve",
-                           "solid.sweep", "solid.loft", "solid.heal"}) {
+                           "solid.sweep", "solid.loft", "solid.heal", "solid.fillet", "solid.offset"}) {
         action(id)->setEnabled(false);
         action(id)->setToolTip(tr("Not available: built without Open CASCADE"));
     }
@@ -839,7 +843,7 @@ void MainWindow::createMenus() {
                  "modify.fillet", "modify.chamfer", "modify.split", "modify.join", "modify.explode", "-", "modify.newLayer"});
     auto* solids = modify->addMenu(toolIcon("solid"), tr("Solids"));
     add(solids, {"solid.extrude", "solid.revolve", "solid.sweep", "solid.loft", "-", "modify.union", "modify.subtract", "modify.intersect", "-",
-                 "modify.meshToSolid", "solid.check", "solid.heal", "solid.section"});
+                 "modify.meshToSolid", "solid.check", "solid.heal", "solid.fillet", "solid.offset", "solid.section"});
     auto* survey = mb->addMenu(tr("&Survey"));
     add(survey, {"survey.importCloud", "survey.importControl", "-", "survey.subsample", "survey.outliers", "survey.normals", "survey.ground", "survey.crop",
                  "survey.cropBox", "survey.segment", "survey.planes", "survey.stats", "-", "survey.register", "survey.icp", "-", "survey.delaunay",
@@ -933,7 +937,7 @@ void MainWindow::createRibbon() {
     small(cad->addGroup(tr("Modify")), {"modify.move", "modify.copy", "modify.rotate", "modify.mirror", "modify.scale", "modify.offset", "modify.trim", "modify.extend",
                                         "modify.fillet", "modify.chamfer", "modify.split", "modify.join", "modify.explode"});
     small(cad->addGroup(tr("3D")), {"solid.extrude", "solid.revolve", "solid.sweep", "solid.loft", "modify.union", "modify.subtract", "modify.intersect",
-                                    "modify.meshToSolid", "solid.heal"});
+                                    "modify.meshToSolid", "solid.heal", "solid.fillet", "solid.offset"});
     small(cad->addGroup(tr("Snaps")), {"draw.snap", "draw.surfaceSnap", "draw.ortho", "draw.gridSnap", "draw.gridSpacing", "view.workplane"});
     big(cad->addGroup(tr("Layers")), {"modify.newLayer"});
     cad->finish();

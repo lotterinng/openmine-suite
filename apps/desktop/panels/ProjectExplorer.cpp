@@ -692,6 +692,8 @@ void ProjectExplorer::contextMenu(const QPoint& pos) {
         act(tr("Section by plane"), "section-objects", "section");
 #ifdef OPENMINE_APP_HAVE_OCCT
         act(tr("Heal solid"), "solid-heal", "repair");
+        act(tr("Fillet solid edges…"), "solid-fillet", "fillet");
+        act(tr("Offset solid…"), "solid-offset", "offset");
 #endif
         break;
     case EntityKind::Calendar:

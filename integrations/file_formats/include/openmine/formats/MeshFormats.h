@@ -5,6 +5,7 @@
 // ear clipping in their best-fit plane (concave). Coordinates are written with full precision.
 
 #include "openmine/objects/CadEntities.h"
+#include "openmine/project/Project.h"
 
 #include <filesystem>
 #include <string>
@@ -35,5 +36,9 @@ std::vector<std::string> writeStl(const std::filesystem::path& file, const MeshD
 void writePly(const std::filesystem::path& file, const MeshData& mesh, bool binary = true);
 /// Writes by extension (.obj, .stl binary, .ply binary).
 std::vector<std::string> writeMesh(const std::filesystem::path& file, const MeshData& mesh, const std::string& name = {});
+
+/// Adds a read mesh as a mesh object on `layerId`, named after the file's object name (else `name`),
+/// with a "source_file" attribute (one undo step).
+Uuid addMeshObject(Project& project, const MeshFile& file, const std::string& name, const Uuid& layerId, const std::string& sourceFile);
 
 } // namespace openmine::formats

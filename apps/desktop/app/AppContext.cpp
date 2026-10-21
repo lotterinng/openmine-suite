@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "AppContext.h"
 
+#include "openmine/scheduling/ScenarioSchedule.h"
+
 #include "openmine/diagnostics/Log.h"
 #include "openmine/persistence/ProjectFile.h"
 #include "openmine/project/ProjectEditor.h"
@@ -306,15 +308,11 @@ void AppContext::recalculateSchedule() {
     const Scenario* scenario = activeScenario();
     ScheduleState s;
     s.scenarioId = scenario ? scenario->id : Uuid{};
-    s.input = scheduling::buildScheduleInput(*project_, scenario);
-    s.cpm = scheduling::calculateSchedule(s.input);
-    if (scenario && scenario->levelling == LevellingMode::Heuristic && s.cpm.ok) {
-        scheduling::LevellingReport rep;
-        s.result = scheduling::levelResources(s.input, s.cpm, &rep);
-        s.levelling = rep;
-    } else {
-        s.result = s.cpm;
-    }
+    auto calc = scheduling::calculateScenario(*project_, scenario);
+    s.input = std::move(calc.input);
+    s.cpm = std::move(calc.cpm);
+    s.result = std::move(calc.result);
+    s.levelling = calc.levelling;
     s.milliseconds = static_cast<double>(t.nsecsElapsed()) / 1e6;
     schedule_ = std::move(s);
     updateSnapshot();

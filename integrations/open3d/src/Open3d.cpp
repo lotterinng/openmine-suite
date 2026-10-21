@@ -342,6 +342,13 @@ PoissonResult poissonSurface(const PointBuffer& b, const PoissonOptions& o) {
     return r;
 }
 
+survey::OutlierEngine outlierEngine() { return {[](const survey::PointBuffer& b, int k, double r) { return o3d::statisticalInliers(b, k, r); }, engineName()}; }
+survey::RadiusOutlierEngine radiusOutlierEngine() { return {[](const survey::PointBuffer& b, double r, int n) { return o3d::radiusInliers(b, r, n); }, engineName()}; }
+survey::VoxelEngine voxelEngine() { return {[](const survey::PointBuffer& b, double v) { return o3d::voxelDownsample(b, v); }, engineName()}; }
+survey::NormalsEngine normalsEngine() {
+    return {[](survey::PointBuffer& b, const survey::NormalOptions& o, jobs::Progress& pr) { o3d::estimateNormals(b, o, pr); }, engineName()};
+}
+
 void registerEngines() {
     survey::registerIcpEngine(
         "Open3D",

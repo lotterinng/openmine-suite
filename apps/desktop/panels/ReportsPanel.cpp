@@ -11,6 +11,7 @@
 #include "openmine/reporting/ScheduleExport.h"
 #include "openmine/reporting/SurveyReports.h"
 #include "openmine/scheduling/Levelling.h"
+#include "openmine/scheduling/ScenarioSchedule.h"
 #include "openmine/scheduling/Periods.h"
 #include "openmine/survey/Conformance.h"
 
@@ -68,10 +69,9 @@ struct SnapshotSchedule {
 };
 SnapshotSchedule scheduleOf(const Project& p, const Uuid& scenarioId) {
     SnapshotSchedule s;
-    const Scenario* sc = p.model().scenarios.find(scenarioId);
-    s.input = scheduling::buildScheduleInput(p, sc);
-    s.result = scheduling::calculateSchedule(s.input);
-    if (sc && sc->levelling == LevellingMode::Heuristic && s.result.ok) s.result = scheduling::levelResources(s.input, s.result);
+    auto calc = scheduling::calculateScenario(p, p.model().scenarios.find(scenarioId));
+    s.input = std::move(calc.input);
+    s.result = std::move(calc.result);
     return s;
 }
 
@@ -378,10 +378,8 @@ Uuid ReportsPanel::generate(const QString& kind, const QString& format) {
             std::size_t k = 0;
             for (const auto* sc : list) {
                 pr.update(static_cast<double>(k) / list.size(), "Calculating scenarios");
-                auto in = scheduling::buildScheduleInput(p, sc);
-                auto res = scheduling::calculateSchedule(in);
-                if (sc && sc->levelling == LevellingMode::Heuristic && res.ok) res = scheduling::levelResources(in, res);
-                const auto sum = scheduling::summarise(sc ? sc->name : std::string("Base schedule"), in, res, scheduling::PeriodKind::Month);
+                const auto calc = scheduling::calculateScenario(p, sc);
+                const auto sum = scheduling::summarise(sc ? sc->name : std::string("Base schedule"), calc.input, calc.result, scheduling::PeriodKind::Month);
                 t.rows.push_back({sum.name, sum.ok ? sum.finish.toString() : "—", sum.ok ? reporting::fmtNumber(sum.makespanDays, 1) : sum.error,
                                   std::to_string(sum.criticalCount), reporting::fmtNumber(sum.scheduledQuantity, 1, true), sum.levellingSummary});
                 reporting::ChartSeries ser{sum.name, {}, static_cast<std::uint32_t>(categoricalColor(k)), false};

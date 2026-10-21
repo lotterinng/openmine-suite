@@ -100,4 +100,12 @@ if(OPENMINE_BUILD_TESTS)
              COMMAND ${_smoke_launcher} $<TARGET_FILE:openmine-desktop> --smoke-test ${CMAKE_BINARY_DIR}/gui-smoke)
     set_tests_properties(gui_smoke_test PROPERTIES TIMEOUT 1800 LABELS "gui"
                          ENVIRONMENT "QT_QPA_PLATFORM=xcb;LIBGL_ALWAYS_SOFTWARE=1;OPENMINE_PLUGIN_PATH=${CMAKE_BINARY_DIR}/plugins")
+    # docs/console-commands.md lists every console command of a build with PROJ (CRS is the only
+    # conditional command).
+    if(TARGET openmine_crs)
+        add_test(NAME console_reference_up_to_date
+                 COMMAND ${CMAKE_COMMAND} -DEXE=$<TARGET_FILE:openmine-desktop> -DDOC=${CMAKE_SOURCE_DIR}/docs/console-commands.md
+                         -DOUT=${CMAKE_BINARY_DIR}/console-commands.generated.md -P ${CMAKE_SOURCE_DIR}/tests/tools/check_command_reference.cmake)
+        set_tests_properties(console_reference_up_to_date PROPERTIES LABELS "docs" ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    endif()
 endif()

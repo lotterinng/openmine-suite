@@ -38,6 +38,8 @@ public:
     Uuid addLayer(const std::string& name, std::uint32_t colorRgb);
     void updateLayer(const CadLayer& layer) { update(layer); }
     const CadLayer* findLayerByName(const std::string& name) const;
+    /// The unlocked layer called `name`, created (one undo step) when there is none.
+    Uuid ensureLayer(const std::string& name, std::uint32_t colorRgb);
 
     // ---- Convenience wrappers (kept for readability at call sites) ---------------------------
     Uuid addGeometry(GeometryObject g, const std::string& text = {}) { return add(std::move(g), text); }
@@ -55,6 +57,14 @@ public:
     void removeDependency(const Uuid& id) { remove<ActivityDependency>(id); }
     void addBaseline(ScheduleBaseline b) { add(std::move(b)); }
     Uuid addAttributeDefinition(AttributeDefinition def) { return add(std::move(def)); }
+    /// Stores the record of an analysis (inputs, parameters and summary as JSON text; optional
+    /// detailed payload), stamped with the time and user. One undo step.
+    Uuid addAnalysis(AnalysisKind kind, const std::string& name, const std::string& inputsJson, const std::string& parametersJson,
+                     const std::string& summaryJson, const std::string& payloadJson = {});
+    /// Defines the attribute `key` for `entityType` unless it already exists (then nothing
+    /// changes). Returns true when a definition was added (one undo step).
+    bool ensureAttributeDefinition(const std::string& entityType, const std::string& key, const std::string& displayName,
+                                   AttributeValueType type = AttributeValueType::Text, const std::string& unit = {});
 
     // ---- Design links ------------------------------------------------------------------------
     /// Links an activity to a MineDevelopment, Stope or MiningBlock.

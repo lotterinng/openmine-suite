@@ -152,6 +152,39 @@ OPENMINE_ENTITY_TYPES(OPENMINE_INSTANTIATE_EDITOR)
 #undef OPENMINE_INSTANTIATE_EDITOR
 
 // ---- Project ----------------------------------------------------------------------------------
+Uuid ProjectEditor::ensureLayer(const std::string& name, std::uint32_t color) {
+    if (const auto* l = findLayerByName(name); l && !l->locked) return l->id;
+    return addLayer(name, color);
+}
+
+Uuid ProjectEditor::addAnalysis(AnalysisKind kind, const std::string& name, const std::string& inputsJson, const std::string& parametersJson,
+                                const std::string& summaryJson, const std::string& payloadJson) {
+    AnalysisResult r;
+    r.kind = kind;
+    r.name = name;
+    r.inputsJson = inputsJson;
+    r.parametersJson = parametersJson;
+    r.summaryJson = summaryJson;
+    r.payloadJson = payloadJson;
+    r.createdAt = utcTimestampNow();
+    r.user = p_.userName();
+    return add(r, "Store analysis: " + name);
+}
+
+bool ProjectEditor::ensureAttributeDefinition(const std::string& entityType, const std::string& key, const std::string& displayName, AttributeValueType type,
+                                              const std::string& unit) {
+    for (const auto& d : p_.model().attributeDefinitions.all())
+        if (d.entityType == entityType && d.key == key) return false;
+    AttributeDefinition def;
+    def.entityType = entityType;
+    def.key = key;
+    def.displayName = displayName.empty() ? key : displayName;
+    def.valueType = type;
+    def.unit = unit;
+    addAttributeDefinition(def);
+    return true;
+}
+
 void ProjectEditor::setProjectInfo(const ProjectInfo& info, const std::string& text) {
     const auto& m = p_.model();
     if (info.name.empty()) throw ValidationError("Project name must not be empty");

@@ -79,6 +79,18 @@ QStringList CommandConsole::commandNames() const {
     return out;
 }
 
+QString CommandConsole::referenceMarkdown() const {
+    std::map<QString, QStringList> aliasesOf;
+    for (const auto& [alias, name] : aliases_) aliasesOf[name] << alias;
+    auto cell = [](QString t) { return t.replace('|', "\\|").replace('\n', ' '); };
+    QString md;
+    md += "| Command | Usage | Description | Aliases |\n|---|---|---|---|\n";
+    for (const auto& [name, e] : commands_)
+        md += QStringLiteral("| `%1` | `%2` | %3 | %4 |\n")
+                  .arg(name, cell(e.usage), cell(e.help), aliasesOf.count(name) ? "`" + aliasesOf[name].join("`, `") + "`" : QString());
+    return md;
+}
+
 void CommandConsole::print(const QString& text, bool error) {
     lastOutput_ = text;
     if (error) lastFailed_ = true;

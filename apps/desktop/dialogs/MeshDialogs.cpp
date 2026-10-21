@@ -6,6 +6,7 @@
 #include "openmine/geometry/MeshOps.h"
 #include "openmine/project/ProjectEditor.h"
 #include "openmine/survey/Meshing.h"
+#include "openmine/survey/SurfaceTools.h"
 #include "openmine/survey/Processing.h"
 
 #include <QCheckBox>
@@ -157,7 +158,7 @@ int MeshToolDialog::start() {
         return 0;
     }
     const auto mesh = g->mesh;
-    const Uuid sourceId = g->id, layer = g->layerId;
+    const Uuid sourceId = g->id;
     const std::string name = sstr(name_->text().trimmed());
     MeshPtr reference;
     if (op_ == Operation::Compare) {
@@ -168,100 +169,43 @@ int MeshToolDialog::start() {
         }
         reference = r->mesh;
     }
-    const Operation op = op_;
+    survey::SurfaceToolOptions o;
     const int count = count_ ? count_->value() : 0;
     const double v1 = value_ ? value_->value() : 0, v2 = value2_ ? value2_->value() : 0;
     const bool flag = flag_ && flag_->isChecked();
+    survey::SurfaceOperation sop = survey::SurfaceOperation::Decimate;
+    switch (op_) {
+    case Operation::Decimate:
+        o.targetTriangles = static_cast<std::size_t>(count);
+        o.maxError = v1;
+        o.preserveBoundary = flag;
+        break;
+    case Operation::Smooth:
+        sop = survey::SurfaceOperation::Smooth;
+        o.iterations = count;
+        o.lambda = v1;
+        o.mu = v2;
+        o.fixBoundary = flag;
+        break;
+    case Operation::Repair:
+        sop = survey::SurfaceOperation::Repair;
+        o.mergeTolerance = v1;
+        o.fillHolesUpTo = static_cast<std::size_t>(count);
+        o.orientOutward = flag;
+        break;
+    case Operation::Compare:
+        sop = survey::SurfaceOperation::Compare;
+        o.signedDistance = flag;
+        o.maxDistance = v1;
+        break;
+    }
     AppContext* c = &ctx_;
-    return ctx_.jobs().start(title(op), tr("Surface"), [=](jobs::Progress& pr) -> UiApply {
-        auto out = std::make_shared<MeshData>();
-        QString summary;
-        std::string method;
-        switch (op) {
-        case Operation::Decimate: {
-            survey::DecimateOptions o;
-            o.targetTriangles = static_cast<std::size_t>(count);
-            o.maxError = v1 > 0 ? v1 : 1e300;
-            o.preserveBoundary = flag;
-            if (o.targetTriangles == 0 && v1 <= 0) throw ValidationError("Give a target triangle count or a maximum error");
-            *out = survey::decimate(*mesh, o, pr);
-            summary = QObject::tr("%L1 → %L2 triangles").arg(static_cast<qulonglong>(mesh->triangles.size())).arg(static_cast<qulonglong>(out->triangles.size()));
-            method = "Quadric decimation target=" + std::to_string(count) + " maxError=" + std::to_string(v1);
-            break;
-        }
-        case Operation::Smooth:
-            *out = survey::smoothTaubin(*mesh, count, v1, v2, flag);
-            summary = QObject::tr("%1 Taubin iterations (λ %2, μ %3)").arg(count).arg(v1).arg(v2);
-            method = "Taubin smoothing n=" + std::to_string(count);
-            break;
-        case Operation::Repair: {
-            survey::RepairOptions o;
-            o.mergeTolerance = v1;
-            o.fillHolesUpTo = static_cast<std::size_t>(count);
-            o.orientOutward = flag;
-            survey::RepairReport rep;
-            *out = survey::repairMesh(*mesh, o, &rep);
-            summary = QObject::tr("%1 vertices merged, %2 degenerate and %3 duplicate triangles removed, %4 flipped, %5 holes filled; "
-                                  "%6 non-manifold edges and %7 boundary loops remain")
-                          .arg(rep.mergedVertices)
-                          .arg(rep.degenerateRemoved)
-                          .arg(rep.duplicatesRemoved)
-                          .arg(rep.flipped)
-                          .arg(rep.holesFilled)
-                          .arg(rep.nonManifoldEdges)
-                          .arg(rep.boundaryLoops);
-            method = "Mesh repair";
-            break;
-        }
-        case Operation::Compare: {
-            survey::PointBuffer pts;
-            pts.xyz = mesh->vertices;
-            const auto d = survey::cloudToMesh(pts, *reference, flag, v1 > 0 ? v1 : 1e300, pr);
-            *out = *mesh;
-            out->vertexScalars = d;
-            out->scalarName = "distance";
-            std::vector<float> valid;
-            for (float x : d)
-                if (std::isfinite(x)) valid.push_back(x);
-            if (valid.empty()) throw ValidationError("No vertex lies within the maximum distance of the reference");
-            std::sort(valid.begin(), valid.end());
-            double sum = 0, sq = 0;
-            for (float x : valid) {
-                sum += x;
-                sq += static_cast<double>(x) * x;
-            }
-            const double mean = sum / static_cast<double>(valid.size());
-            summary = QObject::tr("distance to reference: mean %1 m, RMS %2 m, min %3 m, median %4 m, max %5 m (%L6 of %L7 vertices)")
-                          .arg(mean, 0, 'f', 4)
-                          .arg(std::sqrt(sq / static_cast<double>(valid.size())), 0, 'f', 4)
-                          .arg(valid.front(), 0, 'f', 4)
-                          .arg(valid[valid.size() / 2], 0, 'f', 4)
-                          .arg(valid.back(), 0, 'f', 4)
-                          .arg(static_cast<qulonglong>(valid.size()))
-                          .arg(static_cast<qulonglong>(d.size()));
-            method = "Distance to reference surface";
-            break;
-        }
-        }
-        if (out->triangles.empty()) throw ValidationError("The operation produced an empty surface");
-        return [c, out, summary, method, name, layer, sourceId] {
+    return ctx_.jobs().start(title(op_), tr("Surface"), [=](jobs::Progress& pr) -> UiApply {
+        auto result = std::make_shared<survey::SurfaceToolResult>(survey::runSurfaceTool(*mesh, sop, o, reference.get(), pr));
+        return [c, result, name, sourceId] {
             Uuid id;
-            if (c->tryEdit(QObject::tr("Add surface"), [&] {
-                    auto& p = c->project();
-                    CommandStack::MacroScope macro(p.commands(), "Add surface " + name);
-                    GeometryObject obj;
-                    obj.type = GeometryType::Mesh;
-                    obj.name = name;
-                    obj.layerId = layer;
-                    obj.mesh = out;
-                    ensureAttribute(p, "GeometryObject", "method", "Method");
-                    ensureAttribute(p, "GeometryObject", "source_object", "Source object");
-                    obj.attributes["method"] = method;
-                    obj.attributes["source_object"] = sourceId.toString();
-                    id = ProjectEditor(p).addGeometry(std::move(obj));
-                    macro.commit();
-                })) {
-                c->report(QObject::tr("'%1': %2").arg(qstr(name), summary));
+            if (c->tryEdit(QObject::tr("Add surface"), [&] { id = survey::addDerivedSurface(c->project(), sourceId, *result, name); })) {
+                c->report(QObject::tr("'%1': %2").arg(qstr(c->project().model().geometry.find(id)->name), qstr(result->summary)));
                 c->select(EntityKind::Geometry, id);
             }
         };

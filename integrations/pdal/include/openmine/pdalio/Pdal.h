@@ -5,6 +5,7 @@
 // type appears in this header.
 
 #include "openmine/objects/CadEntities.h"
+#include "openmine/survey/Derivations.h"
 #include "openmine/survey/PointBuffer.h"
 
 #include <filesystem>
@@ -46,6 +47,8 @@ struct SmrfOptions {
 /// Simple Morphological Filter (Pingel et al. 2013) ground classification via PDAL.
 /// Returns ASPRS classes per point: 2 = ground, 1 = unclassified (non-ground).
 std::vector<std::uint8_t> smrfGround(const survey::PointBuffer& points, const SmrfOptions& options = {});
+/// Derived dataset with SMRF classes (2 ground, 1 other) in the classification attribute.
+survey::Derivation groundDerivation(const SmrfOptions& options = {});
 
 struct PoissonOptions {
     int depth = 8;           ///< octree depth of the reconstruction

@@ -393,6 +393,23 @@ pdal::PointViewPtr fillView(pdal::PointTable& table, const PointBuffer& b, bool 
 
 std::string pdalVersion() { return pdal::Config::fullVersionString(); }
 
+survey::Derivation groundDerivation(const SmrfOptions& o) {
+    if (!(o.cell > 0) || !(o.window > 0) || !(o.threshold > 0)) throw ValidationError("SMRF needs a positive cell, window and threshold");
+    return {"SMRF ground classification", [o](survey::PointBuffer& b, jobs::Progress&, std::string& msg) {
+                const auto cls = smrfGround(b, o);
+                auto schema = b.schema();
+                schema.classification = true;
+                b.setSchema(schema);
+                std::size_t ground = 0;
+                for (std::size_t i = 0; i < b.size() && i < cls.size(); ++i) {
+                    b.classification[i] = cls[i];
+                    ground += cls[i] == 2;
+                }
+                msg = std::to_string(ground) + " ground points";
+                return b;
+            }};
+}
+
 void registerFormats() {
     for (const char* e : {".las", ".laz", ".e57", ".ply"}) {
         survey::registerReader(e, [](const std::filesystem::path& f) { return openPdalSource(f); });
