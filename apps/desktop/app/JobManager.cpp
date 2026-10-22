@@ -106,28 +106,44 @@ void JobManager::setResultText(int id, const QString& text) {
 }
 
 void JobManager::poll() {
+    // Re-entrant: an apply function or a slot of jobFinished may start jobs (jobs_ grows),
+    // clear finished ones (jobs_ is replaced) or process events (poll runs again). Jobs are
+    // therefore addressed by id, never by a reference held across such a call.
+    auto byId = [this](int id) -> JobInfo* {
+        for (auto& j : jobs_)
+            if (j.id == id) return &j;
+        return nullptr;
+    };
     bool anyRunning = false;
-    for (std::size_t i = 0; i < jobs_.size(); ++i) {
-        auto& j = jobs_[i];
-        if (!j.done()) {
+    std::vector<int> ids;
+    ids.reserve(jobs_.size());
+    for (const auto& j : jobs_) ids.push_back(j.id);
+    for (const int id : ids) {
+        JobInfo* j = byId(id);
+        if (!j) continue;
+        if (!j->done()) {
             anyRunning = true;
-            emit jobProgress(j.id);
+            emit jobProgress(id);
             continue;
         }
-        if (j.finished.isValid()) continue; // already handled
+        if (j->finished.isValid()) continue; // already handled
         if (applyBlocked_ && applyBlocked_()) {
             anyRunning = true; // retry on the next tick
             continue;
         }
-        j.finished = QDateTime::currentDateTime();
+        j->finished = QDateTime::currentDateTime();
+        const std::string name = j->name.toStdString();
         std::shared_ptr<Pending> pending;
         for (auto it = pending_.begin(); it != pending_.end(); ++it)
-            if ((*it)->id == j.id) {
+            if ((*it)->id == id) {
                 pending = *it;
                 pending_.erase(it);
                 break;
             }
-        const auto st = j.state();
+        const auto st = j->state();
+        const std::string error = j->handle ? j->handle->error : std::string();
+        bool ok = false;
+        QString text;
         if (st == jobs::JobState::Succeeded) {
             UiApply apply;
             if (pending) {
@@ -135,27 +151,34 @@ void JobManager::poll() {
                 apply = std::move(pending->apply);
             }
             try {
-                if (apply) apply();
-                j.applied = true;
-                if (j.resultText.isEmpty()) j.resultText = tr("Completed");
-                diag::info("app.jobs", "Job '" + j.name.toStdString() + "' completed");
-                emit jobFinished(j.id, true, j.resultText);
+                if (apply) apply(); // may change jobs_
+                ok = true;
+                diag::info("app.jobs", "Job '" + name + "' completed");
             } catch (const std::exception& e) {
-                j.resultText = tr("Result rejected: %1").arg(QString::fromStdString(e.what()));
-                diag::error("app.jobs", "Job '" + j.name.toStdString() + "' result rejected: " + e.what());
-                if (pending && pending->onError) pending->onError(j.resultText);
-                emit jobFinished(j.id, false, j.resultText);
+                text = tr("Result rejected: %1").arg(QString::fromStdString(e.what()));
+                diag::error("app.jobs", "Job '" + name + "' result rejected: " + e.what());
             }
+            if ((j = byId(id))) {
+                if (ok) {
+                    j->applied = true;
+                    if (j->resultText.isEmpty()) j->resultText = tr("Completed");
+                    text = j->resultText;
+                } else {
+                    j->resultText = text;
+                }
+            }
+            if (!ok && pending && pending->onError) pending->onError(text);
         } else if (st == jobs::JobState::Cancelled) {
-            j.resultText = tr("Cancelled — nothing was changed");
-            diag::info("app.jobs", "Job '" + j.name.toStdString() + "' cancelled");
-            emit jobFinished(j.id, false, j.resultText);
+            text = tr("Cancelled — nothing was changed");
+            j->resultText = text;
+            diag::info("app.jobs", "Job '" + name + "' cancelled");
         } else {
-            j.resultText = QString::fromStdString(j.handle->error);
-            diag::error("app.jobs", "Job '" + j.name.toStdString() + "' failed: " + j.handle->error);
-            if (pending && pending->onError) pending->onError(j.resultText);
-            emit jobFinished(j.id, false, j.resultText);
+            text = QString::fromStdString(error);
+            j->resultText = text;
+            diag::error("app.jobs", "Job '" + name + "' failed: " + error);
+            if (pending && pending->onError) pending->onError(text);
         }
+        emit jobFinished(id, ok, text);
         emit jobsChanged();
     }
     if (!anyRunning) {
