@@ -152,7 +152,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends ninja-build cmake libsqlite3-dev libeigen3-dev nlohmann-json3-dev \
             libnanoflann-dev zlib1g-dev libxlsxwriter-dev libgtest-dev git \
-            libocct-foundation-dev libocct-modeling-data-dev libocct-modeling-algorithms-dev libocct-data-exchange-dev
+            libocct-foundation-dev libocct-modeling-data-dev libocct-modeling-algorithms-dev libocct-data-exchange-dev \
+            libtbb-dev   # Ubuntu's OCCT CMake package links TBB
           git clone --depth 1 --branch Clipper2_1.4.0 https://github.com/AngusJohnson/Clipper2 /tmp/clipper2
           cmake -S /tmp/clipper2/CPP -B /tmp/clipper2-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/tmp/clipper2-install \
             -DCLIPPER2_TESTS=OFF -DCLIPPER2_EXAMPLES=OFF -DCLIPPER2_UTILS=OFF
