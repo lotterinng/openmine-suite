@@ -26,6 +26,7 @@
 #include <QScrollBar>
 #include <QTextBlock>
 #include <QVBoxLayout>
+#include <system_error>
 
 namespace openmine::app {
 

@@ -4,6 +4,8 @@
 #include "openmine/diagnostics/Log.h"
 
 #include <algorithm>
+#include <utility>
+#include <chrono>
 
 namespace openmine::jobs {
 

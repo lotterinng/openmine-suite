@@ -15,6 +15,8 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <iterator>
+#include <cstdio>
 
 namespace openmine::geology {
 

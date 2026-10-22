@@ -89,6 +89,9 @@
 #include <fstream>
 #include <numbers>
 #include <sstream>
+#include <tuple>
+#include <iterator>
+#include <cctype>
 
 namespace py = pybind11;
 using nlohmann::json;

@@ -8,6 +8,8 @@
 #include <cstring>
 #include <fstream>
 #include <unordered_map>
+#include <iterator>
+#include <system_error>
 
 namespace openmine::survey {
 

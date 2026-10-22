@@ -15,6 +15,7 @@
 #include <limits>
 #include <map>
 #include <sstream>
+#include <type_traits>
 
 namespace openmine::omf {
 

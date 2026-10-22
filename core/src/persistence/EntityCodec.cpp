@@ -11,6 +11,7 @@
 
 #include <functional>
 #include <map>
+#include <exception>
 
 namespace openmine::persistence {
 

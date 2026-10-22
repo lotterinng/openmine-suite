@@ -14,6 +14,9 @@
 #include <set>
 #include <sstream>
 #include <unordered_map>
+#include <tuple>
+#include <limits>
+#include <cctype>
 
 namespace openmine::formats {
 

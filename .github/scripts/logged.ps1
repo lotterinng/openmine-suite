@@ -38,7 +38,7 @@ $lines = @(Get-Content -LiteralPath $log -ErrorAction SilentlyContinue)
 Write-Annotation "$Name failed (exit $LASTEXITCODE): last $Tail lines" ($lines | Select-Object -Last $Tail)
 
 if ($Grep) {
-    $hits = @($lines | Select-String -Pattern $Grep | Select-Object -First 60 | ForEach-Object { $_.Line })
+    $hits = @($lines | Select-String -Pattern $Grep | Select-Object -First 150 | ForEach-Object { $_.Line })
     if ($hits.Count -gt 0) { Write-Annotation "$Name failed: lines matching '$Grep'" $hits }
 }
 

@@ -43,6 +43,7 @@
 #include <cmath>
 #include <fstream>
 #include <sstream>
+#include <system_error>
 
 namespace openmine::app {
 

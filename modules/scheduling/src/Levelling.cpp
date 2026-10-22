@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <set>
+#include <tuple>
 
 namespace openmine::scheduling {
 

@@ -25,6 +25,7 @@
 #include <cmath>
 #include <queue>
 #include <numbers>
+#include <iterator>
 
 namespace openmine::app {
 

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <system_error>
 
 namespace openmine::survey {
 

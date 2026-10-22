@@ -17,6 +17,7 @@
 #include <map>
 #include <mutex>
 #include <set>
+#include <cstdio>
 
 namespace openmine::gis {
 

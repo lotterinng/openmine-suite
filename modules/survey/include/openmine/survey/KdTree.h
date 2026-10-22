@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <vector>
+#include <utility>
 
 namespace openmine::survey {
 

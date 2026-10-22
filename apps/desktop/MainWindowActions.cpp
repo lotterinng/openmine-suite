@@ -59,6 +59,7 @@
 #include <QUrl>
 
 #include <fstream>
+#include <iterator>
 
 namespace openmine::app {
 

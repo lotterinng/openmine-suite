@@ -10,6 +10,8 @@
 #include <map>
 #include <numbers>
 #include <set>
+#include <exception>
+#include <system_error>
 
 namespace openmine::formats {
 

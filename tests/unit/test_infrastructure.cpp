@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <thread>
+#include <chrono>
 
 using namespace openmine;
 namespace fs = std::filesystem;

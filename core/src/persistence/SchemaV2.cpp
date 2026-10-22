@@ -9,6 +9,7 @@
 #include <cmath>
 #include <limits>
 #include <set>
+#include <type_traits>
 
 namespace openmine::persistence::detail {
 

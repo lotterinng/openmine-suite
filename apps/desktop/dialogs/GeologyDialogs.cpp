@@ -41,6 +41,7 @@
 
 #include <cmath>
 #include <set>
+#include <cctype>
 
 namespace openmine::app {
 

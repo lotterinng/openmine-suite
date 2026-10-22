@@ -16,6 +16,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <exception>
 
 using namespace openmine;
 using json = nlohmann::json;

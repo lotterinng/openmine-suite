@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <numbers>
+#include <exception>
 
 namespace openmine::cad {
 

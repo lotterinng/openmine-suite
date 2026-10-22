@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <fstream>
 #include <sstream>
+#include <system_error>
+#include <cctype>
 
 namespace fs = std::filesystem;
 

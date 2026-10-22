@@ -8,6 +8,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <utility>
 
 namespace openmine::diag {
 

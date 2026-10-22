@@ -11,6 +11,7 @@
 #include <numbers>
 #include <random>
 #include <sstream>
+#include <stdexcept>
 
 namespace openmine::geotechnical {
 

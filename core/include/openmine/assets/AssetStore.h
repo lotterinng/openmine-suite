@@ -16,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <stdexcept>
 
 namespace openmine {
 

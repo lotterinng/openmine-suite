@@ -58,6 +58,7 @@
 #include <QTimer>
 
 #include <set>
+#include <iterator>
 
 namespace openmine::app {
 

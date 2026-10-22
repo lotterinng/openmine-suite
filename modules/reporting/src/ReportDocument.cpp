@@ -10,6 +10,8 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <cctype>
+#include <cstdio>
 
 namespace openmine::reporting {
 

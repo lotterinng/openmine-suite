@@ -127,8 +127,9 @@ jobs:
       - name: Build
         shell: pwsh
         run: |
-          ./.github/scripts/logged.ps1 -Name build -Grep 'error C|error LNK|fatal error|: error|FAILED:' -Script {
-            cmake --build --preset windows-msvc
+          # -k 0: keep going after a failing translation unit, so one run reports every error.
+          ./.github/scripts/logged.ps1 -Name build -Grep 'error C\d|error LNK|fatal error' -Script {
+            cmake --build --preset windows-msvc -- -k 0
           }
 
       - name: Python tools for the validation tests

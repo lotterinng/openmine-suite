@@ -15,6 +15,7 @@
 #include <limits>
 #include <set>
 #include <fstream>
+#include <iterator>
 
 using namespace openmine;
 namespace fs = std::filesystem;

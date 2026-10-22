@@ -13,6 +13,8 @@
 #include <cmath>
 #include <functional>
 #include <numbers>
+#include <utility>
+#include <initializer_list>
 
 namespace openmine::app {
 

@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <system_error>
 
 namespace openmine::formats {
 

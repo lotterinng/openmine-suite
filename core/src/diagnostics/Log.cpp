@@ -8,6 +8,8 @@
 #include <iostream>
 #include <memory>
 #include <thread>
+#include <utility>
+#include <system_error>
 
 namespace openmine::diag {
 

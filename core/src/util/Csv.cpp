@@ -7,6 +7,8 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <utility>
+#include <system_error>
 
 namespace openmine::util {
 

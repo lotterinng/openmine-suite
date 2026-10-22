@@ -11,6 +11,7 @@
 #include <cmath>
 #include <numeric>
 #include <unordered_map>
+#include <limits>
 
 namespace openmine::survey {
 

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <set>
+#include <system_error>
 
 namespace openmine::persistence {
 

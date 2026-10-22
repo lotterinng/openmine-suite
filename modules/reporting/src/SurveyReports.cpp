@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <limits>
 
 namespace openmine::reporting {
 

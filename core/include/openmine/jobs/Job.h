@@ -19,6 +19,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <utility>
 
 namespace openmine::jobs {
 

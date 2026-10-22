@@ -13,6 +13,7 @@
 #include <map>
 #include <mutex>
 #include <regex>
+#include <cstdio>
 
 namespace openmine::crs {
 

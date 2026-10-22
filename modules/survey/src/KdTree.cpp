@@ -4,6 +4,7 @@
 #include <nanoflann.hpp>
 
 #include <cmath>
+#include <utility>
 
 namespace openmine::survey {
 

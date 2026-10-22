@@ -6,6 +6,8 @@
 #include "openmine/diagnostics/Log.h"
 
 #include <bit>
+#include <exception>
+#include <system_error>
 
 namespace openmine::persistence {
 
