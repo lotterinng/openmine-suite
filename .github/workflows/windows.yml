@@ -180,6 +180,9 @@ jobs:
               $global:LASTEXITCODE = $code
             }
           }
+          $summary = (Get-Content build\windows-msvc\gui-smoke\smoke.log | Select-String -Pattern '^\d+ passed, ' | Select-Object -Last 1).Line
+          $skips = @(Get-Content build\windows-msvc\gui-smoke\smoke.log | Select-String -Pattern '^SKIP ' | ForEach-Object { $_.Line }) -join '%0A'
+          "::notice title=GUI smoke test (build tree)::$summary%0A$skips"
 
       - name: Upload smoke-test log and screenshots
         if: always()
@@ -225,6 +228,48 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
           }
           Get-ChildItem dist
+
+      - name: Install, run the installed application's smoke test, uninstall
+        shell: pwsh
+        run: |
+          ./.github/scripts/logged.ps1 -Name installed -Tail 40 -Script {
+            $setup = (Get-ChildItem dist\*.exe | Select-Object -First 1).FullName
+            $dir = "$env:RUNNER_TEMP\OpenMine Suite"
+            $p = Start-Process $setup -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/DIR=`"$dir`"", '/TASKS=associate', "/LOG=`"$env:RUNNER_TEMP\setup.log`""
+            if (-not $p.WaitForExit(600000)) { throw "setup did not finish within 10 minutes" }
+            if ($p.ExitCode -ne 0) { Get-Content "$env:RUNNER_TEMP\setup.log" -Tail 40; throw "setup failed (exit $($p.ExitCode))" }
+            "installed $((Get-ChildItem -Recurse $dir | Measure-Object).Count) files in $dir"
+            # Test only: OpenGL 3.2 in software, since the runner has no GPU driver. Removed below.
+            $mesa = Get-ChildItem mesa\x\x64\*.dll
+            $mesa | Copy-Item -Destination $dir
+            # The installed copy, with nothing from the build or vcpkg trees on PATH or in Qt's paths.
+            $out = "$env:RUNNER_TEMP\installed-smoke"
+            $env:QT_PLUGIN_PATH = ''; $env:PROJ_DATA = ''; $env:GDAL_DATA = ''; $env:PDAL_DRIVER_PATH = ''; $env:OPENMINE_PLUGIN_PATH = ''
+            $env:QT_FORCE_STDERR_LOGGING = '1'
+            $app = Start-Process "$dir\openmine-desktop.exe" -PassThru -ArgumentList '--smoke-test', "`"$out`"" `
+                     -RedirectStandardOutput "$env:RUNNER_TEMP\installed-out.txt" -RedirectStandardError "$env:RUNNER_TEMP\installed-err.txt"
+            if (-not $app.WaitForExit(1800000)) { Stop-Process -Id $app.Id -Force; throw "the installed application's smoke test did not finish within 30 minutes" }
+            $log = Join-Path $out 'smoke.log'
+            $summary = if (Test-Path $log) { (Get-Content $log | Select-String -Pattern '^\d+ passed, ' | Select-Object -Last 1).Line } else { 'no smoke.log' }
+            $skips = if (Test-Path $log) { @(Get-Content $log | Select-String -Pattern '^SKIP ' | ForEach-Object { $_.Line }) -join '%0A' } else { '' }
+            "::notice title=GUI smoke test (installed application)::$summary%0A$skips"
+            if ($app.ExitCode -ne 0) {
+              if (Test-Path $log) { Get-Content $log | Select-String -Pattern '^FAIL ' | ForEach-Object { $_.Line } }
+              Get-Content "$env:RUNNER_TEMP\installed-err.txt" -Tail 20 -ErrorAction SilentlyContinue
+              throw "the installed application's smoke test failed (exit $($app.ExitCode)): $summary"
+            }
+            $mesa | ForEach-Object { Remove-Item (Join-Path $dir $_.Name) }
+            # Uninstall: the uninstaller runs a copy of itself and returns at once; wait for the folder.
+            $u = Start-Process "$dir\unins000.exe" -PassThru -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+            $u.WaitForExit(300000) | Out-Null
+            $deadline = (Get-Date).AddMinutes(3)
+            while ((Test-Path "$dir\openmine-desktop.exe") -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+            if (Test-Path "$dir\openmine-desktop.exe") { throw "uninstall left the application in place" }
+            $left = @(Get-ChildItem -Recurse $dir -ErrorAction SilentlyContinue)
+            if ($left.Count) { "left after uninstall (files the application created): $($left.FullName -join ', ')" }
+            if (Test-Path 'HKCU:\Software\Classes\OpenMineSuite.Project') { throw "uninstall left the .openmine file association" }
+            "installed, smoke-tested and uninstalled"
+          }
 
       - name: Upload installer
         uses: actions/upload-artifact@v4
