@@ -18,9 +18,19 @@ own Qt adapter), Open CASCADE 7.6.3, PDAL 2.8.4 (with E57), Open3D 0.18.0, PROJ 
 OR-Tools 9.12, SQLite 3.45, Python 3.13 / pybind11 3.1.
 
 ## Platform note
-Development and validation ran on **Linux**. The Windows 10/11 build (MSVC 2022 + vcpkg preset,
-CI job) is written but **has not been executed**; treat Windows as unverified until the `windows`
-CI job passes. macOS is not a target.
+Development and the full validation above ran on **Linux** (also in CI: `ci.yml`, including an
+AddressSanitizer/UBSan job with entity stores that move on every insertion).
+
+**Windows 10/11 x64** is built and tested in CI (`windows.yml`, GitHub `windows-2022` runner):
+MSVC 2022 with vcpkg 2024.11.16 (Qt 6.7.3, VTK 9.3, Open CASCADE 7.8.1, PDAL 2.8.1 with E57,
+PROJ 9.5, GDAL 3.10, libpq 16). Evidence of run 7f3ca2a: the build, 192 of 198 tests passed (the 6
+PostgreSQL repository tests are skipped: no database on the runner), and the GUI smoke test passed
+224 checks with 0 failures in the build tree **and** from a silent install of the produced
+installer (nothing from the build or vcpkg trees on PATH), followed by a silent uninstall that
+removed the application and the `.openmine` association. The Windows build does **not** yet
+include the Python API and console, Open3D engines or the OR-Tools optimiser: the application
+reports them unavailable (the 2 skipped smoke checks are Open3D and Python; the optimiser is
+shown as "not available: this build has no OR-Tools"). macOS is not a target.
 
 ## Foundation and application shell
 
@@ -155,4 +165,5 @@ CI job passes. macOS is not a target.
   not estimated.
 * The optimiser works at a slot resolution (default 1 h); the stored scenario is recalculated
   exactly by CPM.
-* Windows (see above); the Python package is built from source (no published wheel yet).
+* Windows: no Python API, Open3D or OR-Tools optimiser yet (see above); the Python package is built
+  from source (no published wheel yet).

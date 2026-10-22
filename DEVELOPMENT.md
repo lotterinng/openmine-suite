@@ -113,6 +113,18 @@ adds the PDAL plugins, the sample plugins, licence texts, a desktop entry, an ic
 
 ## Windows 10/11 x64 (primary target)
 
+The installer is built with Inno Setup from a staged folder (`packaging/windows/stage.ps1`:
+the executable, every vcpkg DLL, Qt through `windeployqt` plus the offscreen platform, PDAL
+plugins, PROJ/GDAL data, the MSVC runtime, sample plugins, docs and licences):
+
+```powershell
+pwsh packaging/windows/stage.ps1 -Build build/windows-msvc -Out stage
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=0.4.0 "/DStage=$PWD\stage" "/DOutputDir=$PWD\dist" packaging\windows\openmine-suite.iss
+```
+
+Qt and the other LGPL libraries are separate DLLs in the installation folder, so they can be
+replaced. Building from source:
+
 ```powershell
 git clone https://github.com/microsoft/vcpkg C:\vcpkg; C:\vcpkg\bootstrap-vcpkg.bat
 $env:VCPKG_ROOT = "C:\vcpkg"
@@ -131,8 +143,9 @@ binary cache). The Python API needs pybind11 and vcpkg's Python: configure with
 (used to fetch `pkgconf`) from a newer release, since MSYS2 removes superseded packages from its
 mirrors. Open3D and OR-Tools are not in vcpkg's manifest here: install their official
 Windows binaries and pass `-DOpen3D_DIR=…` and `-Dortools_DIR=…`, or leave them out (the features
-are then reported unavailable). **Status:** the Windows path is written but has not been executed
-(see `IMPLEMENTATION_STATUS.md`).
+are then reported unavailable). **Status:** built and tested in CI on every push (`windows.yml`):
+MSVC build, tests, GUI smoke test, staged application, Inno Setup installer, and a silent
+install → smoke test of the installed copy → uninstall; see `IMPLEMENTATION_STATUS.md`.
 
 ## Sanitizer build
 

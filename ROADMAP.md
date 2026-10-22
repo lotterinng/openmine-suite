@@ -44,8 +44,11 @@ desktop, console and Python; as-built conformance; scheduling libraries; generat
 ## Next (v0.5 and beyond)
 
 Verification and delivery
-- [ ] Execute the Windows CI job (MSVC + vcpkg), fix what it finds, publish an installer that keeps
-      LGPL libraries replaceable
+- [x] Execute the Windows CI job (MSVC + vcpkg), fix what it finds, publish an installer that keeps
+      LGPL libraries replaceable (v0.4.0 release; installed-copy smoke test in CI)
+- [ ] Windows: Python API and console, Open3D engines and the OR-Tools optimiser in the installer
+      (official Open3D/OR-Tools Windows binaries; Python via vcpkg or the python.org embeddable build)
+- [ ] Windows: PostgreSQL repository tests in CI (a PostGIS service on the runner)
 - [ ] Publish the Python package as wheels (Linux, Windows)
 - [ ] Validate against production datasets (scans of real headings, a full mine schedule) with
       published comparisons against established tools' outputs

@@ -42,6 +42,15 @@ pretends to work.
   embedded Python console, native (C ABI) and Python plugins, a PostgreSQL/PostGIS shared
   repository.
 
+## Install (Windows 10/11, 64-bit)
+
+Download `OpenMine-Suite-<version>-Setup.exe` from the
+[Releases](https://github.com/lotterinng/openmine-suite/releases) page and run it. It installs for
+the current user or, if you choose, for all users; it adds a Start-menu entry, optionally a desktop
+icon and the `.openmine` file association. Uninstall from *Settings → Apps*. The Windows build does
+not yet include the Python API and console, Open3D engines or the OR-Tools optimiser (the
+application says so where they would be used); the Ubuntu package has them.
+
 ## Install (Ubuntu 24.04)
 
 Download `openmine-suite_<version>_amd64.deb` and install it — double-click it in the Files app, or:
