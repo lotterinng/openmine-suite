@@ -1289,7 +1289,7 @@ int Smoke::run() {
     QTimer modalGuard;
     QObject::connect(&modalGuard, &QTimer::timeout, [] {
         if (auto* mw = QApplication::activeModalWidget())
-            if (auto* d = qobject_cast<QDialog*>(mw)) d->reject();
+            if (auto* d = qobject_cast<QDialog*>(mw); d && !qobject_cast<QProgressDialog*>(d)) d->reject(); // progress is checked by its step
     });
     modalGuard.start(500);
     generateData();

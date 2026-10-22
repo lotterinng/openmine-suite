@@ -144,7 +144,7 @@ jobs:
           $env:PROJ_DATA = "$vi\share\proj"
           $env:GDAL_DATA = "$vi\share\gdal"
           $env:PDAL_DRIVER_PATH = "$vi\bin"      # PDAL's format plugins (E57, pgpointcloud)
-          ./.github/scripts/logged.ps1 -Name tests -Tail 120 -Grep '\*\*\*Failed|\*\*\*Exception|Timeout|\[  FAILED|Failure|Error|error' -Script {
+          ./.github/scripts/logged.ps1 -Name tests -Tail 40 -Grep '\*\*\*Failed|\*\*\*Exception|Timeout|\[  FAILED|Failure|Error|error' -Script {
             ctest --preset windows-msvc -LE gui --timeout 1800
           }
 
@@ -165,12 +165,12 @@ jobs:
           $env:PROJ_DATA = "$vi\share\proj"
           $env:GDAL_DATA = "$vi\share\gdal"
           $env:PDAL_DRIVER_PATH = "$vi\bin"      # PDAL's format plugins (E57, pgpointcloud)
-          ./.github/scripts/logged.ps1 -Name smoke -Tail 120 -Grep 'FAIL|Failed|Error|error' -Script {
+          ./.github/scripts/logged.ps1 -Name smoke -Tail 40 -Grep 'FAIL|Failed|Error|error' -Script {
             ctest --preset windows-msvc -L gui --timeout 1800
             if ($LASTEXITCODE -and (Test-Path build\windows-msvc\gui-smoke\smoke.log)) {
               $code = $LASTEXITCODE
               "---- end of smoke.log"
-              Get-Content build\windows-msvc\gui-smoke\smoke.log -Tail 80
+              Get-Content build\windows-msvc\gui-smoke\smoke.log -Tail 30
               $global:LASTEXITCODE = $code
             }
           }

@@ -123,6 +123,9 @@ void PythonConsolePanel::ensureConsole() {
             progress_->setWindowModality(Qt::ApplicationModal);
             progress_->setMinimumDuration(0);
             connect(progress_, &QProgressDialog::canceled, this, [] { python::PythonConsole::interrupt(); });
+            // Closing the dialog any other way (Esc, the window manager) also stops the code: the
+            // dialog is not shown again for this run, so it must not leave the code unstoppable.
+            connect(progress_, &QDialog::rejected, this, [] { python::PythonConsole::interrupt(); });
             progress_->show();
         }
         QApplication::processEvents(QEventLoop::AllEvents, 25);

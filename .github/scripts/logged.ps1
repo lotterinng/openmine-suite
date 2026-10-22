@@ -8,12 +8,14 @@
 param(
     [Parameter(Mandatory)][string]$Name,
     [Parameter(Mandatory)][scriptblock]$Script,
-    [int]$Tail = 80,
+    [int]$Tail = 40,     # annotations hold about 4 KB
     [string]$Grep = ''     # also report the first lines matching this pattern (compiler errors, failed tests)
 )
 
-function Write-Annotation([string]$Title, [string[]]$Lines) {
-    $text = ($Lines | ForEach-Object { if ($_.Length -gt 400) { $_.Substring(0, 400) + ' …' } else { $_ } }) -join "`n"
+function Write-Annotation([string]$Title, [string[]]$Lines, [switch]$KeepEnd) {
+    # GitHub keeps 4096 bytes of an annotation message.
+    $text = ($Lines | ForEach-Object { if ($_.Length -gt 200) { $_.Substring(0, 200) + ' …' } else { $_ } }) -join "`n"
+    if ($text.Length -gt 3600) { $text = if ($KeepEnd) { $text.Substring($text.Length - 3600) } else { $text.Substring(0, 3600) } }
     $text = $text.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
     $Title = $Title.Replace('%', '%25').Replace(',', '%2C').Replace(':', '%3A').Replace("`n", ' ')
     Write-Output "::error title=$Title::$text"
@@ -35,10 +37,10 @@ try {
 if (-not $failed) { exit 0 }
 
 $lines = @(Get-Content -LiteralPath $log -ErrorAction SilentlyContinue)
-Write-Annotation "$Name failed (exit $LASTEXITCODE): last $Tail lines" ($lines | Select-Object -Last $Tail)
+Write-Annotation "$Name failed (exit $LASTEXITCODE): last $Tail lines" ($lines | Select-Object -Last $Tail) -KeepEnd
 
 if ($Grep) {
-    $hits = @($lines | Select-String -Pattern $Grep | Select-Object -First 150 | ForEach-Object { $_.Line })
+    $hits = @($lines | Select-String -Pattern $Grep | Select-Object -First 40 | ForEach-Object { $_.Line })
     if ($hits.Count -gt 0) { Write-Annotation "$Name failed: lines matching '$Grep'" $hits }
 }
 
@@ -48,8 +50,8 @@ $named = $lines | Select-String -Pattern '([A-Za-z]:[\\/][^\s"''<>|]+\.(log|txt)
     Where-Object { Test-Path -LiteralPath $_ } | Select-Object -Unique -First 6
 foreach ($file in $named) {
     $content = @(Get-Content -LiteralPath $file)
-    $errors = @($content | Select-String -Pattern 'error|fatal|failed' | Select-Object -First 40 | ForEach-Object { $_.Line })
+    $errors = @($content | Select-String -Pattern 'error|fatal|failed' | Select-Object -First 25 | ForEach-Object { $_.Line })
     Write-Annotation "$(Split-Path -Leaf $file): error lines" $errors
-    Write-Annotation "$(Split-Path -Leaf $file): last 60 lines" ($content | Select-Object -Last 60)
+    Write-Annotation "$(Split-Path -Leaf $file): last 30 lines" ($content | Select-Object -Last 30) -KeepEnd
 }
 throw "$Name failed"
