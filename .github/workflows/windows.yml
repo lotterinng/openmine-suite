@@ -18,7 +18,7 @@ on:
 
 # A newer push waits for the running build (its vcpkg binary cache is saved when it ends).
 concurrency:
-  group: windows-${{ github.ref }}
+  group: windows-v2-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -200,8 +200,21 @@ jobs:
       - name: Check the staged application starts
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath stage\openmine-desktop.exe -ArgumentList "--command-reference", "$env:RUNNER_TEMP\commands.md" -PassThru -Wait -Environment @{ QT_QPA_PLATFORM = "offscreen" }
+          # Runs the staged copy with nothing from the build or vcpkg trees on PATH. A missing DLL or
+          # Qt plugin would otherwise open a message box and wait forever, so the run has a time
+          # limit and Qt reports to stderr.
+          $out = "$env:RUNNER_TEMP\staged-out.txt"; $err = "$env:RUNNER_TEMP\staged-err.txt"
+          $p = Start-Process -FilePath stage\openmine-desktop.exe -ArgumentList "--command-reference", "$env:RUNNER_TEMP\commands.md" `
+                 -PassThru -RedirectStandardOutput $out -RedirectStandardError $err `
+                 -Environment @{ QT_QPA_PLATFORM = "offscreen"; QT_FORCE_STDERR_LOGGING = "1"; QT_PLUGIN_PATH = "" }
+          if (-not $p.WaitForExit(180000)) {
+            Stop-Process -Id $p.Id -Force
+            Get-Content $out, $err -ErrorAction SilentlyContinue
+            throw "the staged application did not finish within 3 minutes (a dialog may have opened: missing DLL or Qt plugin)"
+          }
+          Get-Content $out, $err -ErrorAction SilentlyContinue
           if ($p.ExitCode -ne 0 -or -not (Test-Path "$env:RUNNER_TEMP\commands.md")) { throw "the staged application did not run (exit $($p.ExitCode))" }
+          "staged application ran: $((Get-Content "$env:RUNNER_TEMP\commands.md").Count) lines of command reference"
 
       - name: Build the installer
         shell: pwsh

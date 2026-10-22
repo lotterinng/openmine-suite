@@ -38,6 +38,10 @@ $Windeployqt = Get-ChildItem -Recurse -Path "$Vcpkg/tools" -Filter windeployqt.e
 if (-not $Windeployqt) { throw "windeployqt.exe not found under $Vcpkg/tools" }
 & $Windeployqt.FullName --release --no-translations --no-system-d3d-compiler --no-opengl-sw (Join-Path $Out "openmine-desktop.exe")
 if ($LASTEXITCODE -ne 0) { throw "windeployqt failed" }
+# windeployqt deploys the "windows" platform only; "offscreen" is what headless runs use
+# (--smoke-test, --command-reference with QT_QPA_PLATFORM=offscreen).
+$offscreen = Get-ChildItem -Recurse -Path "$Vcpkg/Qt6/plugins/platforms", "$Vcpkg/plugins/platforms" -Filter "qoffscreen.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($offscreen) { Copy-Item $offscreen.FullName "$Out/platforms/" } else { Write-Warning "qoffscreen.dll not found: headless runs of the installed application need a display" }
 
 # MSVC runtime, app-local (no separate redistributable needed).
 $Crt = Get-ChildItem "$env:VCToolsRedistDir/x64" -Directory -Filter "Microsoft.VC*.CRT" -ErrorAction SilentlyContinue | Select-Object -First 1
