@@ -17,6 +17,10 @@ annotate() { # title, then the text on stdin
     echo "::error title=$1::$text"
 }
 tail -n 120 "$log" | annotate "$name failed (exit $rc) - last 120 lines"
+# Further log files the command writes (space-separated, e.g. the GUI smoke test's smoke.log).
+for extra in ${LOGGED_EXTRA:-}; do
+    [ -f "$extra" ] && tail -n 80 "$extra" | annotate "$name failed - end of $(basename "$extra")"
+done
 if [ -n "$pattern" ]; then
     grep -E -- "$pattern" "$log" | head -n 80 | annotate "$name failed - lines matching $pattern"
 fi

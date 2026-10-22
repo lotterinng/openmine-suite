@@ -166,8 +166,11 @@ jobs:
           $env:PDAL_DRIVER_PATH = "$vi\bin"      # PDAL's format plugins (E57, pgpointcloud)
           ./.github/scripts/logged.ps1 -Name smoke -Tail 120 -Grep 'FAIL|Failed|Error|error' -Script {
             ctest --preset windows-msvc -L gui --timeout 1800
-            if ($LASTEXITCODE -and (Test-Path build\windows-msvc\gui-smoke)) {
-              Get-ChildItem build\windows-msvc\gui-smoke -Filter *.log | ForEach-Object { Get-Content $_.FullName -Tail 60 }
+            if ($LASTEXITCODE -and (Test-Path build\windows-msvc\gui-smoke\smoke.log)) {
+              $code = $LASTEXITCODE
+              "---- end of smoke.log"
+              Get-Content build\windows-msvc\gui-smoke\smoke.log -Tail 80
+              $global:LASTEXITCODE = $code
             }
           }
 

@@ -98,7 +98,7 @@ jobs:
       - name: GUI smoke test
         run: |
           export LD_LIBRARY_PATH=$DEPS/pdal/lib:$DEPS/clipper2/lib:$DEPS/ortools/lib:$DEPS/open3d/lib
-          .github/scripts/logged.sh smoke 'FAIL|Failed|Error|error' -- \
+          LOGGED_EXTRA=build/linux-debug/gui-smoke/smoke.log .github/scripts/logged.sh smoke 'FAIL|Failed|Error|error' -- \
             xvfb-run -a -s "-screen 0 1920x1080x24" ctest --preset linux-debug -L gui --timeout 1800 --output-on-failure
 
       - name: Upload smoke-test log and screenshots
