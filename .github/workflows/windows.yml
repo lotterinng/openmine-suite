@@ -143,7 +143,10 @@ jobs:
           $env:QT_PLUGIN_PATH = "$vi\Qt6\plugins"
           $env:PROJ_DATA = "$vi\share\proj"
           $env:GDAL_DATA = "$vi\share\gdal"
-          $env:PDAL_DRIVER_PATH = "$vi\bin"      # PDAL's format plugins (E57, pgpointcloud)
+          $env:PDAL_DRIVER_PATH = "$vi\bin"      # PDAL's format plugins (E57)
+          # The plugins' own dependencies (E57 needs Xerces-C) are found on PATH; the installed
+          # application has every vcpkg DLL next to the executable instead.
+          $env:PATH = "$vi\bin;$env:PATH"
           ./.github/scripts/logged.ps1 -Name tests -Tail 40 -Grep '\*\*\*Failed|\*\*\*Exception|Timeout|\[  FAILED|Failure|Error|error' -Script {
             ctest --preset windows-msvc -LE gui --timeout 1800
           }
@@ -164,7 +167,10 @@ jobs:
           $env:QT_PLUGIN_PATH = "$vi\Qt6\plugins"
           $env:PROJ_DATA = "$vi\share\proj"
           $env:GDAL_DATA = "$vi\share\gdal"
-          $env:PDAL_DRIVER_PATH = "$vi\bin"      # PDAL's format plugins (E57, pgpointcloud)
+          $env:PDAL_DRIVER_PATH = "$vi\bin"      # PDAL's format plugins (E57)
+          # The plugins' own dependencies (E57 needs Xerces-C) are found on PATH; the installed
+          # application has every vcpkg DLL next to the executable instead.
+          $env:PATH = "$vi\bin;$env:PATH"
           ./.github/scripts/logged.ps1 -Name smoke -Tail 40 -Grep 'FAIL|Failed|Error|error' -Script {
             ctest --preset windows-msvc -L gui --timeout 1800
             if ($LASTEXITCODE -and (Test-Path build\windows-msvc\gui-smoke\smoke.log)) {

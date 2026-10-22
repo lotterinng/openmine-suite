@@ -2,6 +2,7 @@
 // Open3D engines, cross-validated against the built-in OpenMine implementations (and PDAL's
 // Poisson reconstruction when that integration is built) on data at mine coordinates.
 #include "openmine/geometry/MeshOps.h"
+#include "TempDir.h"
 #include "openmine/o3d/Open3d.h"
 #include "openmine/project/ProjectEditor.h"
 #include "openmine/survey/PointCloudProject.h"
@@ -144,8 +145,7 @@ TEST(Open3d, IcpEngineRegistryAndProjectRecord) {
     EXPECT_THROW(runIcp(fromPoints(terrain(100, 1)), fromPoints(terrain(100, 2)), {}, bad), PointCloudError);
 
     // Through the project: the registration records which engine computed it.
-    const auto dir = fs::temp_directory_path() / ("openmine_o3d_" + Uuid::generate().toString());
-    fs::create_directories(dir);
+    const test::TempDir dir("openmine_o3d_");
     auto pp = Project::createNew("O3D", Date::fromYmd(2026, 10, 1));
     auto write = [&](const std::string& name, const std::vector<Vec3>& pts) {
         std::ofstream f(dir / name);
@@ -167,7 +167,6 @@ TEST(Open3d, IcpEngineRegistryAndProjectRecord) {
     EXPECT_LT(distance(reg.transform.apply(kMine + Vec3{30, 30, 0}), misalignment().apply(kMine + Vec3{30, 30, 0})), 0.01);
     const Uuid id = commitRegistration(*pp, reg, true);
     EXPECT_EQ(pp->model().registrations.find(id)->notes, reg.notes);
-    fs::remove_all(dir);
 }
 
 TEST(Open3d, NormalsAndCurvatureAgreeWithTheBuiltInEngine) {

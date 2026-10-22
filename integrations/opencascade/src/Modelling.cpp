@@ -52,12 +52,14 @@ geometry::Ring toRing(const std::vector<Vec3>& pts, const PlaneBasis& pb) {
     return r;
 }
 
-std::vector<const GeometryObject*> closedCurves(const Project& p, const std::vector<Uuid>& ids, const char* what) {
-    std::vector<const GeometryObject*> out;
+// Copies, not pointers into the project: the callers add solids to the same store while they
+// still use the curves, which may move every geometry object (EntityStore).
+std::vector<GeometryObject> closedCurves(const Project& p, const std::vector<Uuid>& ids, const char* what) {
+    std::vector<GeometryObject> out;
     for (const auto& id : ids) {
         const auto& g = object(p, id);
         if (!isClosedCurve(g)) throw ValidationError("'" + g.name + "' is not a closed curve (" + what + " needs closed polylines, circles or closed splines)");
-        out.push_back(&g);
+        out.push_back(g);
     }
     if (out.empty()) throw ValidationError(std::string("Nothing to ") + what);
     return out;
@@ -75,12 +77,12 @@ std::vector<Uuid> extrudeCurves(Project& p, const std::vector<Uuid>& ids, const 
         double area;
     };
     std::vector<Loop> loops;
-    for (const auto* g : closed) {
-        const auto pts = ringPoints(*g);
+    for (const auto& g : closed) {
+        const auto pts = ringPoints(g);
         const auto pb = basisOf(pts);
         auto ring = toRing(pts, pb);
         const double a = std::abs(geometry::area(ring));
-        loops.push_back({g, pb, std::move(ring), a});
+        loops.push_back({&g, pb, std::move(ring), a}); // points into `closed`, which is not changed
     }
     // Outer curves by decreasing area; a curve inside an outer one (same plane) is its hole.
     std::stable_sort(loops.begin(), loops.end(), [](const Loop& a, const Loop& b) { return a.area > b.area; });
@@ -124,8 +126,8 @@ std::vector<Uuid> revolveCurves(Project& p, const std::vector<Uuid>& ids, Vec3 a
     const auto closed = closedCurves(p, ids, "revolve");
     std::vector<Uuid> out;
     CommandStack::MacroScope macro(p.commands(), "Revolve");
-    for (const auto* g : closed)
-        out.push_back(addSolidObject(p, revolve(planarFace(*g), axisPoint, axisDirection.normalized(), angleRad), nameOr(name, *g, "revolution"), layerId, {},
+    for (const auto& g : closed)
+        out.push_back(addSolidObject(p, revolve(planarFace(g), axisPoint, axisDirection.normalized(), angleRad), nameOr(name, g, "revolution"), layerId, {},
                                      "Revolve"));
     macro.commit();
     return out;
@@ -152,7 +154,7 @@ Uuid loftCurves(Project& p, const std::vector<Uuid>& ids, bool solid, bool ruled
     const auto closed = closedCurves(p, ids, "loft");
     if (closed.size() < 2) throw ValidationError("A loft needs two or more closed sections, in order");
     std::vector<std::vector<Vec3>> sections;
-    for (const auto* g : closed) sections.push_back(ringPoints(*g));
+    for (const auto& g : closed) sections.push_back(ringPoints(g));
     return addSolidObject(p, loft(sections, solid, ruled), name.empty() ? std::string("Loft") : name, layerId, {}, "Loft");
 }
 

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "openmine/cad/Edit.h"
+#include "TempDir.h"
 #include "openmine/geometry/MeshOps.h"
 #include "openmine/gis/Gis.h"
 #include "openmine/project/ProjectEditor.h"
@@ -16,11 +17,7 @@ using namespace openmine::gis;
 namespace fs = std::filesystem;
 
 namespace {
-fs::path tempDir() {
-    auto d = fs::temp_directory_path() / ("openmine_gis_" + Uuid::generate().toString());
-    fs::create_directories(d);
-    return d;
-}
+test::TempDir tempDir() { return test::TempDir("openmine_gis_"); }
 const char* kLo25 = "EPSG:2051";
 } // namespace
 
@@ -69,7 +66,6 @@ TEST(Gis, DemExportImportRoundTrip) {
         EXPECT_NEAR(am.vertices[i].y, m.vertices[i].y, 1e-9);
         EXPECT_NEAR(am.vertices[i].z, m.vertices[i].z, 1e-6); // decimal text
     }
-    fs::remove_all(dir);
 }
 
 TEST(Gis, NoDataLeavesHoles) {
@@ -87,7 +83,6 @@ TEST(Gis, NoDataLeavesHoles) {
     const double area = geometry::meshArea(m);
     EXPECT_GT(area, 150.0);
     EXPECT_LT(area, 200.0);
-    fs::remove_all(dir);
 }
 
 TEST(Gis, VectorRoundTripWithAttributesAndCrs) {
@@ -185,5 +180,4 @@ TEST(Gis, VectorRoundTripWithAttributesAndCrs) {
     EXPECT_EQ(pp->model().geometry.find(ids[0])->attributes.at("width_m"), "12.5");
     pp->commands().undo();
     EXPECT_FALSE(pp->model().geometry.find(ids[0]));
-    fs::remove_all(dir);
 }

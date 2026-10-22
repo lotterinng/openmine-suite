@@ -11,6 +11,12 @@
 namespace openmine {
 
 /// Insertion-ordered collection of entities keyed by Uuid.
+///
+/// Pointers and references returned by find() and all() stay valid only until the store is next
+/// changed by inserting or removing an entity (replacing one in place keeps them): code that adds
+/// entities of a kind while it still needs others of that kind keeps copies or ids, not pointers.
+/// Builds with OPENMINE_ENTITYSTORE_ALWAYS_REALLOCATE move every entity on every insertion, so
+/// that a sanitizer reports any stale pointer (see DEVELOPMENT.md).
 template <class T>
 class EntityStore {
 public:
@@ -39,6 +45,12 @@ public:
             index_[value.id] = items_.size();
             items_.push_back(value);
         }
+#ifdef OPENMINE_ENTITYSTORE_ALWAYS_REALLOCATE
+        std::vector<T> moved;
+        moved.reserve(items_.size() + 1);
+        moved.assign(items_.begin(), items_.end());
+        items_.swap(moved); // the old storage is freed: any pointer into it is now detectably stale
+#endif
     }
 
     std::optional<std::size_t> positionOf(const Uuid& id) const {

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "openmine/geometry/MeshOps.h"
+#include "TempDir.h"
 #include "openmine/pdalio/Pdal.h"
 #include "openmine/project/ProjectEditor.h"
 #include "openmine/survey/PointCloudProject.h"
@@ -15,11 +16,7 @@ using namespace openmine::survey;
 namespace fs = std::filesystem;
 
 namespace {
-fs::path tempDir() {
-    auto d = fs::temp_directory_path() / ("openmine_pdal_" + Uuid::generate().toString());
-    fs::create_directories(d);
-    return d;
-}
+test::TempDir tempDir() { return test::TempDir("openmine_pdal_"); }
 
 PointBuffer cloud(std::size_t n) {
     PointSchema s;
@@ -75,7 +72,6 @@ TEST(Pdal, LasAndLazRoundTripPreserveAttributes) {
         EXPECT_EQ(total, 5000u);
     }
     EXPECT_LT(fs::file_size(dir / "c.laz"), fs::file_size(dir / "c.las") / 2);
-    fs::remove_all(dir);
 }
 
 TEST(Pdal, PlyAndE57RoundTrip) {
@@ -93,7 +89,6 @@ TEST(Pdal, PlyAndE57RoundTrip) {
             EXPECT_NEAR(b.xyz[i].y, c.xyz[i].y, 1e-6);
         }
     }
-    fs::remove_all(dir);
 }
 
 TEST(Pdal, ProjectImportThroughRegistryAndSmrf) {
@@ -131,7 +126,6 @@ TEST(Pdal, ProjectImportThroughRegistryAndSmrf) {
     // Export a dataset to LAZ through the registry.
     exportDataset(*pp, id, dir / "again.laz");
     EXPECT_EQ(readAll(*pdalio::openPdalSource(dir / "again.laz")).size(), 40000u);
-    fs::remove_all(dir);
 }
 
 TEST(Pdal, PoissonSurfaceOfASphere) {

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "openmine/project/ProjectEditor.h"
+#include "TempDir.h"
 #include "openmine/survey/Octree.h"
 #include "openmine/survey/PointCloudProject.h"
 #include "openmine/survey/TextFormats.h"
@@ -17,11 +18,7 @@ using namespace openmine::survey;
 namespace fs = std::filesystem;
 
 namespace {
-fs::path tempDir() {
-    auto d = fs::temp_directory_path() / ("openmine_survey_" + Uuid::generate().toString());
-    fs::create_directories(d);
-    return d;
-}
+test::TempDir tempDir() { return test::TempDir("openmine_survey_"); }
 
 PointBuffer randomCloud(std::size_t n, unsigned seed, bool attributes = true) {
     PointSchema s;
@@ -85,7 +82,6 @@ TEST(SurveyText, CsvRoundTripWithAllAttributes) {
     // Rewind gives the same points again.
     src->rewind();
     EXPECT_EQ(readAll(*src).size(), cloud.size());
-    fs::remove_all(dir);
 }
 
 TEST(SurveyText, HeaderlessXyzPtsAndErrors) {
@@ -127,7 +123,6 @@ TEST(SurveyText, HeaderlessXyzPtsAndErrors) {
     EXPECT_EQ(again.intensity[0], 0);
     EXPECT_EQ(again.intensity[1], 65535);
     EXPECT_EQ(again.rgb[0], pb.rgb[0]);
-    fs::remove_all(dir);
 }
 
 TEST(SurveyText, PtxScansAreTransformedAndNoReturnsSkipped) {
@@ -155,7 +150,6 @@ TEST(SurveyText, PtxScansAreTransformedAndNoReturnsSkipped) {
     const auto sc = ptxScannerPositions(dir / "s.ptx");
     ASSERT_EQ(sc.size(), 2u);
     EXPECT_EQ(sc[0], (Vec3{100, 200, 300}));
-    fs::remove_all(dir);
 }
 
 TEST(SurveyOctree, ChunkedBuildStoresEveryPointOnceBitExact) {
@@ -215,7 +209,6 @@ TEST(SurveyOctree, ChunkedBuildStoresEveryPointOnceBitExact) {
     // A non-empty target folder is refused.
     BufferSource again(cloud);
     EXPECT_THROW(buildOctree(again, dir / "oct", o), PointCloudError);
-    fs::remove_all(dir);
 }
 
 TEST(SurveyProject, ImportTransformDeriveExport) {
@@ -264,7 +257,6 @@ TEST(SurveyProject, ImportTransformDeriveExport) {
     EXPECT_EQ(exported.size(), 2000u);
     EXPECT_NEAR(exported.bounds().min.x, 1000, 1e-9);
     EXPECT_THROW(exportDataset(p, id, dir / "out.unknown"), PointCloudError);
-    fs::remove_all(dir);
 }
 
 TEST(SurveyProject, DeclaredCrsIsComparedNeverApplied) {

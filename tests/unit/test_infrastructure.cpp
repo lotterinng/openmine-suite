@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "openmine/assets/AssetStore.h"
+#include "TempDir.h"
 #include "openmine/diagnostics/Log.h"
 #include "openmine/jobs/Job.h"
 #include "openmine/util/Sha256.h"
@@ -27,7 +28,7 @@ TEST(Sha256, Fips180Vectors) {
 }
 
 TEST(Assets, FileAndFolderAssetsVerifyAndRelocate) {
-    const auto root = fs::temp_directory_path() / ("om-assets-" + Uuid::generate().toString());
+    const test::TempDir root("om-assets-");
     AssetStore store(root / "a");
     const Asset f = store.writeBytes("hello mine", AssetKind::Other, "txt");
     EXPECT_EQ(f.sha256, util::sha256Hex("hello mine"));
@@ -54,7 +55,6 @@ TEST(Assets, FileAndFolderAssetsVerifyAndRelocate) {
     EXPECT_FALSE(store.verify(folder, true).ok);
     fs::remove(store.pathOf(f));
     EXPECT_FALSE(store.verify(f, false).ok);
-    fs::remove_all(root);
 }
 
 TEST(Jobs, ProgressCancellationAndErrors) {

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "openmine/formats/MeshFormats.h"
+#include "TempDir.h"
 #include "openmine/geometry/MeshOps.h"
 #include "openmine/geometry/Sweep.h"
 #include "openmine/objects/Uuid.h"
@@ -14,11 +15,7 @@ using namespace openmine::formats;
 namespace fs = std::filesystem;
 
 namespace {
-fs::path tempDir() {
-    auto d = fs::temp_directory_path() / ("openmine_mesh_" + Uuid::generate().toString());
-    fs::create_directories(d);
-    return d;
-}
+test::TempDir tempDir() { return test::TempDir("openmine_mesh_"); }
 MeshData sample() {
     // A closed prism at mine-grid coordinates.
     auto m = geometry::extrudeOutline(std::vector<Vec2>{{-25000.125, 2900000.5}, {-24990.0, 2900000.5}, {-24990.0, 2900010.25}, {-25000.125, 2900007.0}}, -812.3, -805.1);
@@ -49,7 +46,6 @@ TEST(MeshFormats, ExactRoundTripsObjPlyAsciiStl) {
     EXPECT_EQ(b.mesh.vertices.size(), m.vertices.size());
     EXPECT_FALSE(b.warnings.empty());
     EXPECT_EQ(b.name, "OpenMine prism");
-    fs::remove_all(dir);
 }
 
 TEST(MeshFormats, ObjPolygonsNegativeIndicesAndErrors) {
@@ -72,5 +68,4 @@ TEST(MeshFormats, ObjPolygonsNegativeIndicesAndErrors) {
     EXPECT_THROW(readMesh(dir / "bad.obj"), MeshFormatError);
     EXPECT_THROW(readMesh(dir / "missing.stl"), MeshFormatError);
     EXPECT_THROW(readMesh(dir / "p.unknown"), MeshFormatError);
-    fs::remove_all(dir);
 }

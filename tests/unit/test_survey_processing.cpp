@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "openmine/cad/Edit.h"
+#include "TempDir.h"
 #include "openmine/geometry/MeshOps.h"
 #include "openmine/geometry/Polygon2D.h"
 #include "openmine/geometry/Sweep.h"
@@ -69,11 +70,7 @@ Transform3 testTransform() {
 
 double rotationAngle(const Transform3& t) { return std::acos(std::clamp((t(0, 0) + t(1, 1) + t(2, 2) - 1) / 2, -1.0, 1.0)); }
 
-fs::path tempDir() {
-    auto d = fs::temp_directory_path() / ("openmine_proc_" + Uuid::generate().toString());
-    fs::create_directories(d);
-    return d;
-}
+test::TempDir tempDir() { return test::TempDir("openmine_proc_"); }
 
 MeshData tube(const std::vector<Vec3>& cl, const std::vector<Vec2>& profile) { return geometry::sweepProfile(cl, profile); }
 
@@ -363,7 +360,6 @@ TEST(SurveyRegistration, ControlAndIcpRegistrationInProject) {
     const Vec3 probe = truth.apply({10, 10, 0});
     const Vec3 mapped = dataset(p, ds2).transform.apply(Transform3::translation({0.2, -0.1, 0.05}).apply({10, 10, 0}));
     EXPECT_LT(distance(probe, mapped), 0.01);
-    fs::remove_all(dir);
 }
 
 // ---- Meshing -------------------------------------------------------------------------------------------
@@ -758,7 +754,6 @@ TEST(SurveyConformance, ProjectAsBuiltAndStoredResult) {
     const auto* a = p.model().analysisResults.find(c->analysisResultId);
     ASSERT_TRUE(a);
     EXPECT_EQ(nlohmann_json_count(a->payloadJson), 16u);
-    fs::remove_all(dir);
 }
 
 TEST(SurveyConformance, AdvanceReconciliationWithShiftActuals) {

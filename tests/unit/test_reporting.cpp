@@ -2,6 +2,7 @@
 // Report storage: rendered documents and externally written files become Report entities with an
 // immutable asset, in one undo step, and travel with the project file.
 #include "openmine/persistence/ProjectFile.h"
+#include "TempDir.h"
 #include "openmine/reporting/ReportDocument.h"
 
 #include <gtest/gtest.h>
@@ -47,8 +48,7 @@ TEST(Reporting, StoreRenderedDocumentAsPdfAndHtml) {
 }
 
 TEST(Reporting, StoreReportBytesValidatesUndoesAndPersists) {
-    const auto dir = fs::temp_directory_path() / ("openmine_reports_" + Uuid::generate().toString());
-    fs::create_directories(dir);
+    const test::TempDir dir("openmine_reports_");
     auto pp = Project::createNew("Reports", Date::fromYmd(2026, 11, 2));
     Project& p = *pp;
     const std::string csv = "activity,start,finish\nDEV_01,2026-11-02,2026-11-20\n";
@@ -86,5 +86,4 @@ TEST(Reporting, StoreReportBytesValidatesUndoesAndPersists) {
     EXPECT_EQ(q->assets().readBytes(*q->model().assets.find(qb->asset.id)), xlsx);
     EXPECT_EQ(q->assets().readBytes(*q->model().assets.find(q->model().reports.find(a)->asset.id)), csv);
     EXPECT_TRUE(persistence::checkProjectFile(file, true).ok);
-    fs::remove_all(dir);
 }

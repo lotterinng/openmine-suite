@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "openmine/plugins/PluginManager.h"
+#include "TempDir.h"
 #include "openmine/project/ProjectEditor.h"
 
 #include <gtest/gtest.h>
@@ -18,11 +19,9 @@ namespace fs = std::filesystem;
 namespace {
 const fs::path kDir = OPENMINE_TEST_PLUGIN_DIR;
 
-fs::path tempFile(const std::string& name, const std::string& content) {
-    const auto d = fs::temp_directory_path() / ("openmine-plugin-" + Uuid::generate().toString());
-    fs::create_directories(d);
-    std::ofstream(d / name) << content;
-    return d / name;
+fs::path writeFile(const fs::path& dir, const std::string& name, const std::string& content) {
+    std::ofstream(dir / name) << content;
+    return dir / name;
 }
 } // namespace
 
@@ -58,7 +57,8 @@ TEST(Plugins, SamplePluginImportsExportsAndRunsCommandsUndoably) {
     std::vector<std::string> sunk;
     pm.setLogSink([&](int, const std::string& id, const std::string& m) { sunk.push_back(id + ": " + m); });
     auto p = Project::createNew("Plugins", Date::fromYmd(2026, 11, 2));
-    const auto file = tempFile("pickup.stn", "# name,E,N,Z,code\nSTN1, 1000.0, 2000.0, 100.0, CP\nSTN2,1010,2000,101\nbad line\nSTN3,1010,2010,102,BM\n");
+    const test::TempDir dir("openmine-plugin-");
+    const auto file = writeFile(dir, "pickup.stn", "# name,E,N,Z,code\nSTN1, 1000.0, 2000.0, 100.0, CP\nSTN2,1010,2000,101\nbad line\nSTN3,1010,2010,102,BM\n");
     const auto r = pm.runImport(*p, file, R"({"horizontal_sigma": 0.002})");
     ASSERT_TRUE(r.ok) << r.error;
     const json rep = json::parse(r.text);
@@ -101,7 +101,6 @@ TEST(Plugins, SamplePluginImportsExportsAndRunsCommandsUndoably) {
     EXPECT_EQ(fc.at("features").size(), 3u);
     EXPECT_EQ(fc.at("features")[0].at("geometry").at("coordinates")[0], 1000.0);
     EXPECT_FALSE(pm.runCommand(*p, "no.such").ok);
-    fs::remove_all(file.parent_path());
 }
 
 TEST(Plugins, HostProtectsTheModelFromMisbehavingPlugins) {
@@ -156,8 +155,7 @@ TEST(Plugins, RescanReportsCurrentStateAndAppliesDisabling) {
     pm.unload(stations);
     EXPECT_EQ(count(pm, stations, false), 0);
     // The same id found in a second folder is reported, not loaded twice.
-    const auto copy = fs::temp_directory_path() / ("openmine-plugin-dup-" + Uuid::generate().toString());
-    fs::create_directories(copy);
+    const test::TempDir copy("openmine-plugin-dup-");
     fs::copy(kDir / "station_import", copy / "station_import", fs::copy_options::recursive);
     EXPECT_EQ(pm.loadAll({kDir, copy}, {}), 2);
     EXPECT_EQ(count(pm, stations, true), 1);
@@ -165,5 +163,5 @@ TEST(Plugins, RescanReportsCurrentStateAndAppliesDisabling) {
     for (const auto& s : pm.plugins())
         if (s.manifest.id == stations && !s.loaded) reported = s.error.find("already loaded from") != std::string::npos;
     EXPECT_TRUE(reported);
-    fs::remove_all(copy);
+    pm.unload(stations); // no library of either folder stays loaded when `copy` is removed
 }

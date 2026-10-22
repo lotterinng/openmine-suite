@@ -29,8 +29,8 @@
       "dependencies": [{ "name": "pdal", "default-features": false, "features": ["e57"] }]
     },
     "gis": {
-      "description": "PROJ coordinate transformations and GDAL raster/vector exchange (no GPL drivers)",
-      "dependencies": ["proj", { "name": "gdal", "default-features": false, "features": ["geos", "sqlite3"] }]
+      "description": "PROJ coordinate transformations and GDAL raster/vector exchange (no GPL drivers; Expat for the KML, GPX and GML readers)",
+      "dependencies": ["proj", { "name": "gdal", "default-features": false, "features": ["geos", "sqlite3", "expat"] }]
     },
     "repository": {
       "description": "PostgreSQL/PostGIS shared repository client",

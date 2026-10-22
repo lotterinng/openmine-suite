@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "openmine/geometry/Polyline.h"
+#include "TempDir.h"
 #include "openmine/occt/SweptSolid.h"
 
 #include <gtest/gtest.h>
@@ -57,11 +58,7 @@ TEST(Occt, RejectsInvalidInput) {
 
 namespace {
 constexpr double kPi = std::numbers::pi;
-std::filesystem::path tempDir() {
-    auto d = std::filesystem::temp_directory_path() / ("openmine_occt_" + Uuid::generate().toString());
-    std::filesystem::create_directories(d);
-    return d;
-}
+test::TempDir tempDir() { return test::TempDir("openmine_occt_"); }
 } // namespace
 
 TEST(OcctSolid, PrimitivesHaveExactProperties) {
@@ -222,7 +219,6 @@ TEST(OcctSolid, TransformsAndExchangeFormats) {
         EXPECT_NE(text.find(",4.,"), std::string::npos);     // maximum coordinate 4 m, not 0.004
     }
     EXPECT_THROW(occt::readStep((dir / "missing.step").string()), occt::SolidError);
-    std::filesystem::remove_all(dir);
 }
 
 TEST(OcctSolid, ProjectSolidObjectsPersistAndUndo) {
@@ -271,7 +267,6 @@ TEST(OcctSolid, ProjectSolidObjectsPersistAndUndo) {
     occt::exportSolids(*q, {u, sol}, dir / "out.step");
     const auto imported = occt::importSolids(*q, dir / "out.step", layer);
     EXPECT_EQ(imported.size(), 2u);
-    std::filesystem::remove_all(dir);
 }
 
 TEST(OcctSolid, TransformSolidObjectInPlaceAndAsCopy) {

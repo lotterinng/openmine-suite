@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "openmine/cad/Annotation.h"
+#include "TempDir.h"
 #include "openmine/cad/Edit.h"
 #include "openmine/formats/Dxf.h"
 #include "openmine/formats/DxfProject.h"
@@ -163,8 +164,7 @@ TEST(Dxf, FileRoundTripThroughProject) {
     g.layerId = layer;
     g.name = "centreline";
     ed.addGeometry(g);
-    const auto dir = std::filesystem::temp_directory_path() / ("openmine_dxf_" + Uuid::generate().toString());
-    std::filesystem::create_directories(dir);
+    const test::TempDir dir("openmine_dxf_");
     const auto file = dir / "out.dxf";
     exportProjectDxf(p, file);
     const auto r = readDxf(file);
@@ -182,7 +182,6 @@ TEST(Dxf, FileRoundTripThroughProject) {
     EXPECT_EQ(eq.findLayerByName("Imported")->colorRgb, 0x0000FFu);
     q.commands().undo(); // one undo step removes the whole import
     EXPECT_EQ(q.model().geometry.size(), before);
-    std::filesystem::remove_all(dir);
 }
 
 TEST(Dxf, UnitsOcsAndLegacyPolylines) {

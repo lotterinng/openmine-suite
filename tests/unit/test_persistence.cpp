@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "openmine/persistence/ProjectFile.h"
+#include "TempDir.h"
 #include "openmine/assets/AssetStore.h"
 #include "openmine/cad/Edit.h"
 #include "openmine/project/Attachments.h"
@@ -21,11 +22,7 @@ using namespace openmine;
 namespace fs = std::filesystem;
 
 namespace {
-fs::path tempDir() {
-    auto d = fs::temp_directory_path() / ("openmine-test-" + Uuid::generate().toString());
-    fs::create_directories(d);
-    return d;
-}
+test::TempDir tempDir() { return test::TempDir("openmine-test-"); }
 
 struct Rich {
     std::unique_ptr<Project> p = Project::createNew("Jupiter Mine — Level 675 ✓", Date::fromYmd(2026, 11, 2));
@@ -326,7 +323,6 @@ TEST(Persistence, RoundTripPreservesEveryEntityType) {
     persistence::saveProject(*q, file);
     EXPECT_TRUE(fs::exists(dir / "jupiter.openmine.bak"));
     EXPECT_TRUE(persistence::checkProjectFile(file, true).ok);
-    fs::remove_all(dir);
 }
 
 TEST(Persistence, SaveAsCopiesSidecarAssets) {
@@ -341,7 +337,6 @@ TEST(Persistence, SaveAsCopiesSidecarAssets) {
     persistence::LoadReport rep;
     auto a = persistence::loadProject(dir / "a.openmine", &rep);
     EXPECT_FALSE(rep.warnings.empty());
-    fs::remove_all(dir);
 }
 
 TEST(Persistence, FailedSaveLeavesExistingFileUntouched) {
@@ -355,7 +350,6 @@ TEST(Persistence, FailedSaveLeavesExistingFileUntouched) {
     EXPECT_EQ(fs::file_size(file), sizeBefore);
     EXPECT_FALSE(fs::exists(dir / "p.openmine.saving"));
     EXPECT_NO_THROW(persistence::loadProject(file));
-    fs::remove_all(dir);
 }
 
 TEST(Persistence, RejectsForeignAndNewerFiles) {
@@ -376,7 +370,6 @@ TEST(Persistence, RejectsForeignAndNewerFiles) {
         EXPECT_NE(std::string(e.what()).find("newer"), std::string::npos);
     }
     EXPECT_THROW(persistence::loadProject(dir / "missing.openmine"), persistence::PersistenceError);
-    fs::remove_all(dir);
 }
 
 TEST(Persistence, MigratesSchemaVersion1Projects) {
@@ -440,7 +433,6 @@ PRAGMA user_version = 1;
     auto q = persistence::loadProject(dir / "v2.openmine", &rep2);
     EXPECT_EQ(rep2.fileSchemaVersion, persistence::kCurrentSchemaVersion);
     EXPECT_FALSE(rep2.migrated);
-    fs::remove_all(dir);
 }
 
 TEST(Persistence, SchemaHasExplicitRelationships) {
@@ -594,7 +586,6 @@ TEST(Persistence, AttachmentsAreStoredVerifiedAndFollowTheirEntity) {
     p->commands().undo();
     EXPECT_TRUE(p->model().geometry.contains(gid));
     EXPECT_TRUE(p->model().attachments.contains(aid));
-    fs::remove_all(dir);
 }
 
 TEST(Persistence, CompactRemovesUnreferencedAndUnregisteredAssetsOnly) {
@@ -641,5 +632,4 @@ TEST(Persistence, CompactRemovesUnreferencedAndUnregisteredAssetsOnly) {
     EXPECT_EQ(fileBytes(dir / "keep-out.txt"), "kept");
     const auto again = persistence::compactProject(*q, true);
     EXPECT_TRUE(again.unreferencedAssets.empty() && again.orphanFiles.empty());
-    fs::remove_all(dir);
 }
