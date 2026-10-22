@@ -142,6 +142,36 @@ jobs:
           LD_LIBRARY_PATH=/tmp/clipper2-install/lib .github/scripts/logged.sh tests-minimal '\*\*\*Failed|\[  FAILED|Failure|Error|error' -- \
             ctest --test-dir build --output-on-failure
 
+  sanitizers:
+    name: Linux — AddressSanitizer/UBSan, entity stores moving on every insertion
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build cmake libsqlite3-dev libeigen3-dev nlohmann-json3-dev \
+            libnanoflann-dev zlib1g-dev libxlsxwriter-dev libgtest-dev git \
+            libocct-foundation-dev libocct-modeling-data-dev libocct-modeling-algorithms-dev libocct-data-exchange-dev
+          git clone --depth 1 --branch Clipper2_1.4.0 https://github.com/AngusJohnson/Clipper2 /tmp/clipper2
+          cmake -S /tmp/clipper2/CPP -B /tmp/clipper2-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/tmp/clipper2-install \
+            -DCLIPPER2_TESTS=OFF -DCLIPPER2_EXAMPLES=OFF -DCLIPPER2_UTILS=OFF
+          ninja -C /tmp/clipper2-build install
+      - name: Configure, build, test (see DEVELOPMENT.md, "Sanitizer build")
+        env:
+          ASAN_OPTIONS: detect_leaks=0:alloc_dealloc_mismatch=0
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_PREFIX_PATH=/tmp/clipper2-install \
+            "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer -DOPENMINE_ENTITYSTORE_ALWAYS_REALLOCATE" \
+            "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined" "-DCMAKE_MODULE_LINKER_FLAGS=-fsanitize=address,undefined" \
+            -DOPENMINE_BUILD_APP=OFF -DOPENMINE_BUILD_PYTHON=OFF -DOPENMINE_BUILD_BENCHMARKS=OFF -DOPENMINE_WITH_PDAL=OFF \
+            -DOPENMINE_WITH_OPEN3D=OFF -DOPENMINE_WITH_PROJ=OFF -DOPENMINE_WITH_GDAL=OFF -DOPENMINE_WITH_ORTOOLS=OFF \
+            -DOPENMINE_WITH_POSTGRES=OFF
+          .github/scripts/logged.sh build-asan 'error|FAILED' -- cmake --build build
+          LD_LIBRARY_PATH=/tmp/clipper2-install/lib .github/scripts/logged.sh tests-asan 'ERROR: AddressSanitizer|runtime error|\*\*\*Failed|\[  FAILED' -- \
+            ctest --test-dir build --output-on-failure -LE "docs" --timeout 3000
+
   benchmarks:
     name: Linux — engine benchmarks against budgets (Release)
     runs-on: ubuntu-24.04

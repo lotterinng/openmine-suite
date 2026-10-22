@@ -134,6 +134,30 @@ Windows binaries and pass `-DOpen3D_DIR=…` and `-Dortools_DIR=…`, or leave t
 are then reported unavailable). **Status:** the Windows path is written but has not been executed
 (see `IMPLEMENTATION_STATUS.md`).
 
+## Sanitizer build
+
+Entity stores (`EntityStore`) are vector-backed: a pointer or reference from `find()` or `all()`
+is invalidated when an entity of that kind is inserted or removed. Code that adds entities while
+it still uses others of the same kind keeps copies or ids. To find violations, build with
+AddressSanitizer and `OPENMINE_ENTITYSTORE_ALWAYS_REALLOCATE`, which moves every entity on every
+insertion, so any stale pointer becomes a reported use-after-free:
+
+```bash
+cmake -S . -B build/asan -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+  "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer -DOPENMINE_ENTITYSTORE_ALWAYS_REALLOCATE" \
+  "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined" "-DCMAKE_MODULE_LINKER_FLAGS=-fsanitize=address,undefined" \
+  -DOPENMINE_BUILD_APP=OFF -DOPENMINE_BUILD_PYTHON=OFF -DOPENMINE_WITH_ORTOOLS=OFF -DOPENMINE_WITH_OPEN3D=OFF
+ASAN_OPTIONS=detect_leaks=0 cmake --build build/asan
+ASAN_OPTIONS=detect_leaks=0:alloc_dealloc_mismatch=0 ctest --test-dir build/asan -LE "database|docs"
+```
+
+The CI job "sanitizers" runs this for the core, the modules and OCCT. Excluded, with reasons:
+OR-Tools (its Abseil headers do not compile with `-fsanitize=undefined`), Open3D (under
+AddressSanitizer Eigen switches to its own aligned allocator, which does not match the prebuilt
+Open3D library, so Eigen objects allocated inside Open3D cannot be freed by sanitized code).
+`detect_leaks=0`: PDAL leaks a few bytes in a static initialiser; `alloc_dealloc_mismatch=0`:
+PDAL's bundled PoissonRecon frees `new[]` memory with `free`.
+
 ## The GUI smoke test
 
 `openmine-desktop --smoke-test <dir>` drives the real application through every workspace: it
